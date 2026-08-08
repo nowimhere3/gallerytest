@@ -417,6 +417,7 @@ export class ProfileStore {
 
     if (mode === "replace") {
       this.#recordsByPath.clear();
+      this.#tags = [];
       this.#replaceBeforeLoad = true;
     }
 
