@@ -1169,8 +1169,14 @@ function performGalleryJump() {
   galleryJumpInput.value = "";
 }
 
-galleryJumpModeFindBtn.addEventListener("click", () => setGalleryJumpMode("find"));
-galleryJumpModePlayBtn.addEventListener("click", () => setGalleryJumpMode("play"));
+galleryJumpModeFindBtn.addEventListener("click", () => {
+  setGalleryJumpMode("find");
+  performGalleryJump();
+});
+galleryJumpModePlayBtn.addEventListener("click", () => {
+  setGalleryJumpMode("play");
+  performGalleryJump();
+});
 galleryJumpInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
