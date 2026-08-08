@@ -1248,7 +1248,19 @@ fileInput.addEventListener("change", (event) => {
 });
 
 folderInput.addEventListener("change", (event) => {
-  loadFiles(event.target.files);
+  const files = event.target.files;
+
+  // Record which top-level folder this profile is currently associated
+  // with (Phase 8.1 — Multi-Profile Foundation). Purely descriptive
+  // metadata — the folder's own name, nothing more. No matching/detection
+  // happens here or anywhere yet; that's deferred to a later phase.
+  const firstFile = files && files[0];
+  if (firstFile && firstFile.webkitRelativePath) {
+    const topFolderName = firstFile.webkitRelativePath.split("/")[0];
+    if (topFolderName) profile.setMasterFolder({ name: topFolderName });
+  }
+
+  loadFiles(files);
   folderInput.value = "";
 });
 
