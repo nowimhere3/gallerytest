@@ -119,3 +119,4 @@ If folder picking is unavailable or awkward in your browser, use **Choose Files*
 - folder/session persistence
 - panel-fill presentation mode
 - multiple independent viewers/slideshows on one page
+Many more ! 
