@@ -1,188 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Local Media Gallery</title>
-  <link rel="stylesheet" href="./styles.css" />
-</head>
-<body>
-  <div class="app-shell">
-    <header class="topbar">
-      <div>
-        <h1>Local Media Gallery</h1>
-        <p class="subtitle">
-          Single-instance slideshow app for loading local media and filling the iframe/panel it runs inside.
-        </p>
-      </div>
-    </header>
 
-    <main class="layout">
-      <section class="panel controls-panel">
-        <h2>Load Media</h2>
-
-        <div class="media-picker-row">
-          <label class="button-like secondary">
-            <span>Choose Files</span>
-            <input id="file-input" type="file" accept="image/*,video/*" multiple hidden />
-          </label>
-
-          <label class="button-like">
-            <span>Choose Folder</span>
-            <input id="folder-input" type="file" accept="image/*,video/*" multiple webkitdirectory hidden />
-          </label>
-        </div>
-
-        <p class="hint">
-          Files stay local in your browser. Nothing is uploaded.
-        </p>
-
-        <hr />
-
-        <section class="playback-section">
-        <h2>Slideshow</h2>
-
-        <div class="control-grid playback-grid">
-          <button id="play-btn" disabled>Start</button>
-          <button id="stop-btn" disabled>Stop</button>
-          <button id="prev-btn" disabled>Previous</button>
-          <button id="next-btn" disabled>Next</button>
-        </div>
-
-        <button id="clear-btn" class="danger clear-media-btn">Clear Media</button>
-
-        <hr />
-        </section>
-
-        <details class="tags-section">
-        <summary>Tags</summary>
-
-        <p class="hint">
-          Define the tag vocabulary here. Applying tags to media happens elsewhere in a future phase — this list is just the set of tags that exist.
-        </p>
-
-        <div class="tag-create-row">
-          <input id="tag-create-input" type="text" placeholder="New tag name" maxlength="40" />
-          <button id="tag-create-btn" class="secondary" type="button">Add</button>
-        </div>
-
-        <p id="tags-status-text" class="hint" role="status"></p>
-
-        <div id="tags-empty" class="hint">No tags yet.</div>
-        <div id="tags-grid" class="tags-grid hidden"></div>
-        </details>
-
-        <hr />
-
-        <details class="profile-section">
-        <summary>Profile</summary>
-
-        <p class="hint">
-          Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
-        </p>
-
-        <div class="control-stack">
-          <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
-          <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
-          <button id="profile-import-replace-btn" class="secondary" type="button">Import Profile (Replace)</button>
-          <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
-        </div>
-
-        <label class="compact-check wide-check">
-          <input id="profile-skip-missing-input" type="checkbox" />
-          <span>Only import entries for files currently loaded</span>
-        </label>
-
-        <p id="profile-status-text" class="hint" role="status"></p>
-
-        <hr />
-        </details>
-
-        <section class="slideshow-settings-section">
-
-        <div class="form-row interval-control">
-          <label for="interval-input">Interval (seconds)</label>
-          <div class="interval-stepper">
-            <button id="interval-decrease-btn" class="secondary" type="button" aria-label="Decrease interval">−</button>
-            <input id="interval-input" type="number" min="1" max="300" step="1" value="5" />
-            <button id="interval-increase-btn" class="secondary" type="button" aria-label="Increase interval">+</button>
-          </div>
-        </div>
-
-        <div class="checkbox-stack">
-          <label class="compact-check wide-check">
-            <input id="shuffle-input" type="checkbox" checked />
-            <span>Shuffle</span>
-          </label>
-
-          <label class="compact-check wide-check">
-            <input id="loop-input" type="checkbox" checked />
-            <span>Loop Playlist</span>
-          </label>
-
-          <label class="compact-check wide-check">
-            <input id="fill-input" type="checkbox" checked />
-            <span>Fill Panel</span>
-          </label>
-        </div>
-
-        <div class="status-box">
-          <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
-          <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
-          <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
-        </div>
-        <hr />
-        </section>
-      </section>
-
-      <div class="media-content">
-      <section id="viewer-panel" class="panel viewer-panel">
-        <div class="viewer-header">
-          <div class="viewer-header-main">
-            <h2>Gallery</h2>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">View</span>
-              <div class="filter-toggle" role="group" aria-label="Library filter">
-                <button id="all-media-btn" class="filter-btn active" type="button">All</button>
-                <button id="favorites-only-btn" class="filter-btn" type="button">♥ Favorites</button>
-              </div>
-            </div>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">Type</span>
-              <div class="filter-toggle" role="group" aria-label="Media type filter">
-                <button id="type-all-btn" class="filter-btn active" type="button">All</button>
-                <button id="type-images-btn" class="filter-btn" type="button">Images</button>
-                <button id="type-videos-btn" class="filter-btn" type="button">Videos</button>
-              </div>
-            </div>
-            <button id="favorite-btn" class="favorite-toggle hidden" type="button" aria-label="Toggle favorite">
-              ♡
-            </button>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">Tags</span>
-              <div class="filter-toggle" role="group" aria-label="Tag filter">
-                <button id="tags-filter-toggle-btn" class="filter-btn" type="button" aria-haspopup="true" aria-expanded="false">Tags ▼</button>
-              </div>
-            </div>
-          </div>
-          <span id="counter-text">0 / 0</span>
-        </div>
-
-        <!-- Phase 6.3 — Gallery Tag Filtering. Grows horizontally first
-             (responsive multi-column grid), vertically only as a last
-             resort, so the media grid below shifts down as little as
-             possible — the "large multi-row dropdown" the original
-             Automation UI ran into and was later refactored away from. -->
-        <div id="tags-filter-panel" class="tags-filter-panel hidden">
-          <p id="tags-filter-empty" class="hint">No tags yet — create some in Gallery Settings.</p>
-          <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
-        </div>
-
-        <div id="viewer-empty" class="viewer-empty">
-          Choose files or a folder to begin.
-        </div>
-
-        <div id="viewer-stage" class="viewer-stage hidden"></div>
       </section>
 
       <section class="panel gallery-panel">
@@ -209,16 +25,22 @@
           <div class="filter-toggle" role="group" aria-label="Jump mode">
             <button
               id="gallery-jump-mode-row-btn"
+              id="gallery-jump-mode-find-btn"
               class="filter-btn active"
               type="button"
+              aria-pressed="true"
               title="Scroll the Gallery to this item (does not open it in the Viewer)"
             >Media Row</button>
+            >Find in Gallery</button>
             <button
               id="gallery-jump-mode-slideshow-btn"
+              id="gallery-jump-mode-play-btn"
               class="filter-btn"
               type="button"
+              aria-pressed="false"
               title="Load this item into the Viewer and start there"
             >Slideshow</button>
+            >Play from here</button>
           </div>
           <button id="gallery-jump-go-btn" class="filter-btn" type="button">Enter</button>
         </div>
@@ -246,93 +68,3 @@
       <button id="overlay-play-btn" class="overlay-btn" type="button">⏯</button>
       <button id="overlay-next-btn" class="overlay-btn" type="button">▶</button>
       <button id="overlay-hide-btn" class="overlay-btn overlay-btn-hide" type="button" aria-label="Hide from presentation">🙈 Hide</button>
-      <button id="overlay-undo-hide-btn" class="overlay-btn overlay-btn-undo-hide" type="button" aria-label="Undo last hide" disabled>↩ Undo</button>
-      <button id="overlay-exit-btn" class="overlay-btn overlay-btn-danger" type="button">Exit</button>
-      <button id="overlay-settings-btn" class="overlay-btn overlay-btn-gear" type="button">⚙</button>
-    </div>
-
-    <!-- Sits between the toolbar above and the ⚙ row below — a sibling of
-         both — and only occupies layout space while open. One row, same
-         height as the toolbar: "Ghost Opacity" label, slider, percentage,
-         left to right. -->
-    <div id="ghost-popunder" class="ghost-popunder hidden">
-      <div class="ghost-popunder-row">
-        <label class="ghost-popunder-label" for="ghost-opacity-input">Ghost Opacity</label>
-        <input id="ghost-opacity-input" type="range" min="5" max="100" step="1" value="15" />
-        <span id="ghost-opacity-label">15%</span>
-      </div>
-    </div>
-
-    <!-- The "⚙" row. Appears below the toolbar — same placement pattern
-         as #automation-panel below. Same row height as the toolbar: 👻 on
-         the far left, then the "Tags" label, then up to 4 tag chips, all
-         sharing that one row. A 5th+ tag doesn't grow this row sideways —
-         it starts an additional row (.presentation-tags-overflow) of the
-         same 4-per-row shape underneath. -->
-    <div id="presentation-settings" class="presentation-settings hidden">
-      <div class="presentation-settings-row">
-        <button
-          id="ghost-toggle-btn"
-          class="ghost-toggle-btn"
-          type="button"
-          aria-haspopup="true"
-          aria-expanded="false"
-          aria-label="Ghost Opacity"
-          title="Ghost Opacity"
-        >👻</button>
-        <span class="presentation-settings-label">Tags</span>
-        <p id="presentation-tags-empty" class="hint presentation-tags-empty">No tags yet — create some in Gallery Settings.</p>
-        <div id="presentation-tags-row" class="presentation-tags-row hidden"></div>
-      </div>
-      <div id="presentation-tags-overflow" class="presentation-tags-overflow hidden"></div>
-    </div>
-
-    <!-- Compact single-row step flow. Exactly one of the three .automation-step
-         children is visible at a time (Step 1: choose type. Step 2: the chosen
-         type's controls, replacing Step 1 in place, not appended below it). -->
-    <div id="automation-panel" class="automation-panel hidden" role="group" aria-label="Loop Automations">
-      <div id="automation-step-choose" class="automation-step">
-        <button id="automation-choice-forever-btn" class="automation-chip" type="button">Forever</button>
-        <button id="automation-choice-times-btn" class="automation-chip" type="button">X Times</button>
-        <button id="automation-choice-timer-btn" class="automation-chip" type="button">Until Timer</button>
-      </div>
-
-      <div id="automation-step-times" class="automation-step automation-step-workflow hidden">
-        <button id="automation-times-back-btn" class="automation-back-btn" type="button" aria-label="Back">‹</button>
-        <div class="automation-config-group">
-          <span class="automation-step-label">X Times</span>
-          <div class="automation-mini-stepper">
-            <button id="automation-times-decrease-btn" type="button" aria-label="Decrease total plays">−</button>
-            <span id="automation-times-value" class="automation-mini-value">5</span>
-            <button id="automation-times-increase-btn" type="button" aria-label="Increase total plays">+</button>
-          </div>
-        </div>
-        <button id="automation-times-apply-btn" class="automation-chip automation-apply-btn" type="button">Apply</button>
-      </div>
-
-      <div id="automation-step-timer" class="automation-step automation-step-workflow hidden">
-        <button id="automation-timer-back-btn" class="automation-back-btn" type="button" aria-label="Back">‹</button>
-        <div class="automation-config-group">
-          <span class="automation-step-label">Min</span>
-          <div class="automation-mini-stepper">
-            <button id="automation-timer-minutes-decrease-btn" type="button" aria-label="Decrease minutes">−</button>
-            <span id="automation-timer-minutes-value" class="automation-mini-value">0</span>
-            <button id="automation-timer-minutes-increase-btn" type="button" aria-label="Increase minutes">+</button>
-          </div>
-        </div>
-        <div class="automation-config-group">
-          <span class="automation-step-label">Sec</span>
-          <div class="automation-mini-stepper">
-            <button id="automation-timer-seconds-decrease-btn" type="button" aria-label="Decrease seconds">−</button>
-            <span id="automation-timer-seconds-value" class="automation-mini-value">0</span>
-            <button id="automation-timer-seconds-increase-btn" type="button" aria-label="Increase seconds">+</button>
-          </div>
-        </div>
-        <button id="automation-timer-apply-btn" class="automation-chip automation-apply-btn" type="button">Apply</button>
-      </div>
-    </div>
-  </div>
-
-  <script type="module" src="./src/main.js"></script>
-</body>
-</html>
