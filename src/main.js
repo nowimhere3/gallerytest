@@ -45,6 +45,11 @@ const tagsFilterPanel = document.getElementById("tags-filter-panel");
 const tagsFilterEmpty = document.getElementById("tags-filter-empty");
 const tagsFilterGrid = document.getElementById("tags-filter-grid");
 
+const profileSelect = document.getElementById("profile-select");
+const profileCreateInput = document.getElementById("profile-create-input");
+const profileCreateBtn = document.getElementById("profile-create-btn");
+const profileActiveStatusText = document.getElementById("profile-active-status-text");
+
 const profileExportBtn = document.getElementById("profile-export-btn");
 const profileImportMergeBtn = document.getElementById("profile-import-merge-btn");
 const profileImportReplaceBtn = document.getElementById("profile-import-replace-btn");
@@ -1792,6 +1797,82 @@ profile.subscribe(() => {
   renderTagsFilterGrid();
 });
 
+// ---- Profile Selector / Creation (Phase 8.3) -------------------------------
+//
+// Purely a thin UI layer over ProfileStore's existing multi-profile APIs
+// (listProfiles/createProfile/switchProfile/getProfileId) — no profile
+// state is held or duplicated here. profile.subscribe() below keeps the
+// selector in sync with the registry the same way renderTagsGrid() stays
+// in sync with the tag vocabulary.
+
+function renderProfileSelector() {
+  const profiles = profile.listProfiles();
+  const activeId = profile.getProfileId();
+
+  profileSelect.innerHTML = "";
+
+  profiles.forEach((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.textContent = entry.name;
+    profileSelect.appendChild(option);
+  });
+
+  if (activeId) profileSelect.value = activeId;
+}
+
+profileSelect.addEventListener("change", async () => {
+  const targetId = profileSelect.value;
+  if (!targetId || targetId === profile.getProfileId()) return;
+
+  const ok = await profile.switchProfile(targetId);
+  if (!ok) {
+    profileActiveStatusText.textContent = "Could not switch profile.";
+    renderProfileSelector(); // revert the <select> to the still-active profile
+  }
+});
+
+async function createProfileFromInput() {
+  const name = profileCreateInput.value.trim();
+  if (!name) return;
+
+  profileCreateBtn.disabled = true;
+  try {
+    // [DEBUG-8.3-PROFILE-UI] This is where a newly-created profile becomes
+    // active: createProfile(name) registers the profile but — by design
+    // (see profile-store.js) — does NOT activate it, so switchProfile(id)
+    // is the ProfileStore API that actually performs the transition
+    // (persists activeProfileId, resets in-memory state, loads the new
+    // profile's isolated items/tags). "Save" in the UI == these two calls
+    // in sequence.
+    const created = await profile.createProfile(name);
+    await profile.switchProfile(created.id);
+
+    profileCreateInput.value = "";
+    profileActiveStatusText.textContent = `Created and switched to "${created.name}".`;
+  } catch (error) {
+    profileActiveStatusText.textContent = `Could not create profile: ${error.message}`;
+  } finally {
+    profileCreateBtn.disabled = false;
+  }
+}
+
+profileCreateBtn.addEventListener("click", createProfileFromInput);
+profileCreateInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    createProfileFromInput();
+  }
+});
+
+// Registry changes (create, switch, rename, master-folder update) all funnel
+// through ProfileStore's #emit(), same signal as favorites/tags. Keeping
+// this as its own subscription — like the Tags one above — since it reacts
+// to profile IDENTITY, not item/tag content.
+profile.subscribe(() => {
+  renderProfileSelector();
+});
+
 // ---- Profile Export / Import ----------------------------------------------
 
 let pendingImportMode = "merge";
@@ -1811,7 +1892,13 @@ function downloadTextFile(filename, text, mimeType = "application/json") {
 profileExportBtn.addEventListener("click", () => {
   const text = profile.exportText();
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  downloadTextFile(`gallery-profile-${stamp}.json`, text);
+  // Trivial, isolated filename cosmetic (Phase 8.3): the export JSON body
+  // already carries profileName (see ProfileStore#toJSON, unchanged since
+  // Phase 8.1) — this just makes the on-disk filename recognizable too
+  // when a user has several profiles exported side by side.
+  const nameSlug = profile.getProfileName().trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const filenamePrefix = nameSlug ? `gallery-profile-${nameSlug}` : "gallery-profile";
+  downloadTextFile(`${filenamePrefix}-${stamp}.json`, text);
 
   const count = profile.size();
   profileStatusText.textContent = `Exported ${count} curated item${count === 1 ? "" : "s"}.`;
@@ -1883,6 +1970,7 @@ resetLoopRuleToDefault();
 syncUndoHideButton();
 renderTagsGrid();
 renderTagsFilterGrid();
+renderProfileSelector();
 runtime.setIntervalMs(Number(intervalInput.value) * 1000);
 applyGhostOpacity(Number(ghostOpacityInput.value));
 

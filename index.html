@@ -92,6 +92,20 @@
           Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
         </p>
 
+        <div class="profile-current-row">
+          <label for="profile-select" class="profile-select-label">Profile</label>
+          <select id="profile-select"></select>
+        </div>
+
+        <div class="profile-create-row">
+          <input id="profile-create-input" type="text" placeholder="New profile name" maxlength="60" />
+          <button id="profile-create-btn" class="secondary" type="button">Save Profile</button>
+        </div>
+
+        <p id="profile-active-status-text" class="hint" role="status"></p>
+
+        <hr class="profile-inline-hr" />
+
         <div class="control-stack">
           <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
           <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>

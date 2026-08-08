@@ -317,6 +317,61 @@ button:not(:disabled):hover,
   white-space: nowrap;
 }
 
+/* Profile Selector / Creation (Phase 8.3) — deliberately styled to match
+   .tag-create-row above rather than introducing a new visual language. */
+.profile-current-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.profile-select-label {
+  color: var(--muted);
+  font-size: 0.9rem;
+  flex: 0 0 auto;
+}
+
+.profile-current-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  background: #0d1530;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.profile-create-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.profile-create-row input[type="text"] {
+  flex: 1 1 140px;
+  min-width: 0;
+  min-height: 44px;
+  background: #0d1530;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.profile-create-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.profile-inline-hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 14px 0;
+}
+
 .tags-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
