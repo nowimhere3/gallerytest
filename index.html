@@ -57,9 +57,20 @@
         <details class="tags-section">
         <summary>Tags</summary>
 
-        <p class="hint">
-          Define the tag vocabulary here. Applying tags to media happens elsewhere in a future phase — this list is just the set of tags that exist.
-        </p>
+        <div id="tag-activity-center" class="tag-activity-center" role="status" aria-live="polite" aria-label="Tag Status Update Center">
+          <div id="tag-activity-neutral" class="tag-activity-neutral">Select a tag to view its latest activity.</div>
+          <div id="tag-activity-content" class="hidden">
+            <div class="tag-activity-row">
+              <span id="tag-activity-name" class="tag-activity-value"></span>
+              <span class="tag-activity-description">(last tagged)</span>
+            </div>
+            <div class="tag-activity-row tag-activity-details">
+              <span id="tag-activity-position" class="tag-activity-value"></span>
+              <time id="tag-activity-time" class="tag-activity-value"></time>
+              <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
+            </div>
+          </div>
+        </div>
 
         <div class="tag-create-row">
           <input id="tag-create-input" type="text" placeholder="New tag name" maxlength="40" />

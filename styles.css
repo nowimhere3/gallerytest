@@ -254,6 +254,46 @@ button:not(:disabled):hover,
   width: 100%;
 }
 
+.tag-activity-center {
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border: 1px solid rgba(0, 255, 0, 0.25);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.tag-activity-center > div {
+  width: 100%;
+}
+
+.tag-activity-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.tag-activity-details {
+  justify-content: space-between;
+  margin-top: 7px;
+  gap: 12px;
+}
+
+.tag-activity-value {
+  color: #00ff00;
+  font-family: "Courier New", ui-monospace, monospace;
+  font-weight: 700;
+}
+
+.tag-activity-description,
+.tag-activity-neutral {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .tag-create-row {
   display: flex;
   flex-wrap: wrap;
@@ -512,6 +552,22 @@ button:not(:disabled):hover,
   flex-wrap: nowrap;
   overflow-x: auto;
   white-space: nowrap;
+}
+
+button.tag-status-select {
+  min-height: 28px;
+  min-width: 0;
+  padding: 2px 4px;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+
+button.tag-status-select.is-selected {
+  color: var(--neon-blue);
+  background: rgba(0, 210, 255, 0.1);
 }
 
 .gallery-jump-group .filter-btn {

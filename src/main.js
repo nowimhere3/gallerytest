@@ -57,6 +57,12 @@ const tagCreateBtn = document.getElementById("tag-create-btn");
 const tagsStatusText = document.getElementById("tags-status-text");
 const tagsEmpty = document.getElementById("tags-empty");
 const tagsGrid = document.getElementById("tags-grid");
+const tagActivityNeutral = document.getElementById("tag-activity-neutral");
+const tagActivityContent = document.getElementById("tag-activity-content");
+const tagActivityName = document.getElementById("tag-activity-name");
+const tagActivityPosition = document.getElementById("tag-activity-position");
+const tagActivityTime = document.getElementById("tag-activity-time");
+const tagActivityEmpty = document.getElementById("tag-activity-empty");
 
 const prevBtn = document.getElementById("prev-btn");
 const nextBtn = document.getElementById("next-btn");
@@ -1052,7 +1058,15 @@ function makePresentationTagButton(tag, appliedTagIds, item) {
 
   btn.addEventListener("click", () => {
     if (!item) return;
+    const state = runtime.getState();
+    const isApplying = !profile.hasItemTag(item.relativePath, tag.id);
     profile.toggleItemTag(item.relativePath, tag.id);
+    if (isApplying) {
+      profile.recordTagActivity(tag.id, {
+        position: state.currentIndex + 1,
+        total: state.total,
+      });
+    }
     // No re-render call needed here — profile.subscribe() below re-runs
     // this same function once the toggle lands, keeping this a single
     // source of truth for what the grid shows.
@@ -1564,6 +1578,51 @@ presentationControls.addEventListener("mouseleave", () => {
 // getVisibleItems(), or runtime.load() at all in this phase.
 
 let tagEditingId = null; // id of the tag currently showing its inline rename input, if any
+let selectedTagActivityId = null;
+
+function formatTagActivityTime(timestamp) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const dateText = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+  const timeText = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+  return `${dateText} · ${timeText}`;
+}
+
+function renderTagActivityCenter() {
+  const selectedTag = profile.getTags().find((tag) => tag.id === selectedTagActivityId);
+
+  tagActivityNeutral.classList.toggle("hidden", Boolean(selectedTag));
+  tagActivityContent.classList.toggle("hidden", !selectedTag);
+  if (!selectedTag) return;
+
+  tagActivityName.textContent = selectedTag.name;
+  const hasActivity =
+    Number.isInteger(selectedTag.lastTagPosition) &&
+    Number.isInteger(selectedTag.totalAtTime) &&
+    Number.isFinite(selectedTag.lastTaggedAt);
+
+  tagActivityPosition.classList.toggle("hidden", !hasActivity);
+  tagActivityTime.classList.toggle("hidden", !hasActivity);
+  tagActivityEmpty.classList.toggle("hidden", hasActivity);
+
+  if (hasActivity) {
+    tagActivityPosition.textContent = `${selectedTag.lastTagPosition} / ${selectedTag.totalAtTime}`;
+    tagActivityTime.textContent = formatTagActivityTime(selectedTag.lastTaggedAt);
+    tagActivityTime.dateTime = new Date(selectedTag.lastTaggedAt).toISOString();
+  } else {
+    tagActivityPosition.textContent = "";
+    tagActivityTime.textContent = "";
+    tagActivityTime.removeAttribute("datetime");
+  }
+}
 
 function renderTagsGrid() {
   const tags = profile.getTags();
@@ -1620,9 +1679,17 @@ function renderTagsGrid() {
       // consistent with the "keep every workflow lightweight" guidance.
       queueMicrotask(() => input.focus());
     } else {
-      const label = document.createElement("span");
-      label.className = "tag-chip";
+      const label = document.createElement("button");
+      label.type = "button";
+      label.className = "tag-chip tag-status-select";
       label.textContent = tag.name;
+      label.classList.toggle("is-selected", selectedTagActivityId === tag.id);
+      label.setAttribute("aria-pressed", selectedTagActivityId === tag.id ? "true" : "false");
+      label.addEventListener("click", () => {
+        selectedTagActivityId = tag.id;
+        renderTagsGrid();
+        renderTagActivityCenter();
+      });
       row.appendChild(label);
 
       const actions = document.createElement("div");
@@ -1690,7 +1757,11 @@ profile.subscribe(() => {
   if (tagEditingId && !profile.getTags().some((tag) => tag.id === tagEditingId)) {
     tagEditingId = null;
   }
+  if (selectedTagActivityId && !profile.getTags().some((tag) => tag.id === selectedTagActivityId)) {
+    selectedTagActivityId = null;
+  }
   renderTagsGrid();
+  renderTagActivityCenter();
   // A tag being renamed or deleted (label change, or a chip disappearing
   // entirely) needs to reach the Presentation Tags panel too, not just
   // Gallery Settings' own grid.
