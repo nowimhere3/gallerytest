@@ -373,5 +373,201 @@ The Favorites-only profile-change subscription (item favorited/hidden while alre
 
 ================
 
+BURNED DOWN OLD REPO 
+Started from Last Working Version
+“STAND ALONE “ 
+Tags,  Gallery Navigation  and UI/UX improvements
+7.6.2026
+
+
+Now I have the full picture. Let's implement. Starting with ProfileStore — it needs per-item tag assignment (currently only tag vocabulary exists):Now main.js. First, DOM references and the item.userTags stamping (currently the field exists but is never populated from the profile):Now the render function for the Presentation Mode Tags panel, next to syncFavoriteButtons/syncHideButton:Now hook it into syncControls (fires on every navigation/state change) and into the profile subscriptions:Good — runtime.subscribe(render) fires immediately with current state, so no extra boot call needed. Now the HTML — adding the Tags section into the ⚙ pop-under:Now the CSS. Let's widen the pop-under and add the button-grid + outlined→filled-neon-blue visual language:Let's verify syntax on the modified files:Both check out. Now let's rebuild the standalone bundle so it stays in sync with these changes, and quickly re-verify it.Bundle rebuilt cleanly and includes the new code. Let's ship both the updated multi-file source and the refreshed standalone build.Phase 6.2 is done. Here's what changed:
+ProfileStore (new) — item-level tag assignment didn't exist before; only the tag vocabulary did (item.userTags was a permanent empty-array placeholder). Added:
+getItemTags(path) / hasItemTag(path, id) / setItemTag(path, id, value) / toggleItemTag(path, id) — stored on the same open-shape per-path record as favorite/hidden, so it persists and exports for free.
+deleteTag() now also strips that id out of every item's tag list, so deleting a tag can't leave dangling ids behind.
+main.js
+item.userTags is now actually stamped from the profile (on load, and on every profile change) instead of sitting permanently empty.
+New renderPresentationTagsPanel(item) builds the button grid, reading applied state straight from ProfileStore (same "never trust a cached stamp" pattern as the favorite button). Wired into syncControls (so Next/Prev refresh it) and both profile.subscribe callbacks (so a rename/delete/toggle from anywhere refreshes it too).
+Click handler calls toggleItemTag and deliberately does not close the panel or manually re-render — the profile subscription re-renders it in place, which is what keeps ⚙ as the only thing that closes it.
+index.html / styles.css
+Tags section added inside the existing #presentation-settings pop-under, below Ghost Opacity.
+3-column responsive grid (repeat(3, 1fr), drops to 2 under 380px), widened the pop-under from 260px to 400px to give it room.
+Button style: transparent/outlined by default, .is-applied fills with var(--accent) — the same neon blue already used for active filter buttons — no checkmarks or badges layered on.
+Both the updated multi-file source and a freshly-rebuilt standalone index.html are attached and in sync.
+Ready for 6.3 (Gallery Tag Filtering) whenever you want to move on — the filtering pipeline already accepts a tags array (filterMedia's tags param), it's just not wired to any UI yet.
+
+==================
+
+Now let's add the state, filtering, and render logic in main.js. First, the tag-filter state variable next to viewMode/typeFilter:Now the DOM refs, next to the other filter buttons:Now the setTypeFilter/toggleTagFilter logic, right after setTypeFilter:Now wire the toggle button's click listener, next to the other filter listeners:Now update the tag-vocabulary profile.subscribe block to refresh the filter grid and prune deleted tags from the active filter set:Now the boot section needs an initial renderTagsFilterGrid() call, same as renderTagsGrid():Right — need to also reload when a tag filter is active, since assigning/removing a tag from an item can change whether it belongs in the currently tag-filtered set:Good, that's correct — the renderPresentationTagsPanel call and its purpose is still intact. Now let's add the HTML: the "Tags ▼" toolbar button and the dropdown panel.Let's verify the structure:Structure looks correct. Now let's add the CSS for .tags-filter-panel and .tags-filter-grid, .tag-filter-btn:Now let's rebuild the standalone bundle and re-verify everything's wired:Let's package and ship both the updated source and the standalone build.Phase 6.3 is done. Summary:
+Toolbar — added a Tags filter group after the favorite (♡) button, in the same row as View/Type (toolbar-filter-group), keeping the toolbar a single horizontal row. Its one button (Tags ▼) toggles the dropdown panel open/closed.
+Dropdown panel — sits directly below .viewer-header, in normal document flow (not floating/absolute), so it pushes content down rather than overlapping it. Grid is repeat(5, 1fr) → 4 on ≤720px → 2 on ≤480px, so it genuinely grows horizontally before it grows vertically, same "avoid the tall Automation-panel mistake" goal called out in the spec.
+Filtering logic — a small addition on top of what 6.2 already needed:
+activeTagFilters (array of tag ids) plugs into the existing filterMedia/getVisibleItems() pipeline via its tags param — no parallel filtering path.
+Multiple tags can be active at once, AND-combined (must carry every selected tag) — matches filterMedia's existing behavior and the Fast Tagging panel's own multi-select feel.
+Clicking a tag chip calls toggleTagFilter, which updates the grid and reloads the runtime with the same "randomize unless Favorites" logic View/Type switches already use.
+Edge cases handled:
+Deleting a tag that's currently an active filter now prunes it out of activeTagFilters and reloads — otherwise the gallery would silently show zero items after a delete.
+Tagging/untagging the current item from the Presentation panel (6.2) now also reloads the gallery if a tag filter is active, since that action can move the item in or out of the filtered set.
+Visual language — the filter chips share .filter-btn (so outlined vs. var(--accent)-filled "active" state matches View/Type/Presentation exactly) via a small .tag-filter-btn class layered on top for grid-specific sizing.
+Both the updated source and the rebuilt standalone index.html are attached and in sync. That's 6.2 and 6.3 both wired end-to-end into the shared filtering pipeline — want to move on to anything else, or take a look at how it behaves first?
+=============
+
+Now let's make all the edits. First, the CSS for .tag-filter-btn — unify with the "outlined → filled neon blue" tag visual language used elsewhere:Now the Presentation Mode CSS — the ghost pop-under, settings bar, and widening/unifying .presentation-settings to read as an extension of the control bar:Now the HTML — restructure the pop-under with the 👻 button and its nested slider pop-under:Now the JS wiring — DOM refs and the toggle logic for the ghost pop-under:Now add the click listener for ghostToggleBtn, near the other overlay button listeners:Now let's syntax-check and rebuild the standalone bundle:All wired correctly. Now let's rebuild the standalone bundle:Now package and ship:Both polish items are done, purely localized as asked — no runtime logic touched, only DOM/CSS relocation and a couple of open/close guards.
+1. Ghost → compact 👻 pop-under
+The always-visible slider row is gone from #presentation-settings; in its place is a small .presentation-settings-bar row with just the 👻 button, left-aligned.
+Clicking it opens .ghost-popunder — a small position: absolute panel anchored under the button (not in document flow, so it doesn't push the Tags section down). Same slider, same label, same applyGhostOpacity() — untouched.
+It auto-closes (resets to hidden + aria-expanded="false") whenever the parent ⚙ panel closes, the 🤖 Automation panel opens instead, or Presentation exits — so it never sits open silently underneath.
+2. Tags layout / pop-under bar
+.presentation-settings is now width: 100% inside the same min(96vw, 620px) column .presentation-controls-bar uses, and picked up that bar's exact background/border/blur values — same width, same "material," reads as one continuous bar instead of a separate floating popup.
+Selected-tag styling in Presentation was already outlined→filled-neon-blue (var(--accent), no checkmarks) — untouched.
+The Gallery's Tags ▼ dropdown (non-Presentation "View Row") previously inherited the neutral gray .filter-btn look for its unselected state. It now uses the same outlined-blue look as everywhere else, so selecting a tag there fills with the identical neon blue rather than looking like a different control type.
+Still stays open until ⚙ is clicked again — nothing about that behavior changed.
+Take a look and let me know if anything needs nudging (spacing, popunder position, column count, etc.).
+
+
+================
+
+Now let's rewrite this whole block with the new structure. First, the CSS:Now update .tag-filter-btn.active (Gallery Tags dropdown) to use the same neon blue instead of the generic --accent:Now the HTML restructure:Clean — no leftover references. The JS toggle logic (toggleGhostPopunder/closeGhostPopunder) still works unchanged since it only touches #ghost-popunder and #ghost-toggle-btn by ID. Let's verify and rebuild the standalone bundle:Now let's package and ship:All four points addressed:
+1. No more permanent 👻 row — the dedicated .presentation-settings-bar row is gone. 👻 now shares a header row with the "Tags" label inside #presentation-settings. Nothing extra is reserved until it's clicked.
+2. Ghost row placement — I pulled #ghost-popunder out of #presentation-settings entirely; it's now a sibling sitting in the gap between the settings panel and the toolbar, and only takes up layout space (not just visual space — actual height) while open, since it's normal flow now rather than position: absolute.
+One flag on this: given the toolbar is bottom-anchored and pops upward, the settings panel currently renders physically higher on screen than the toolbar. So "between the two" only has one physical placement, and I put the ghost row there — directly under the settings panel, directly above the toolbar. If you were picturing it the other way (ghost above the toolbar reading top-down, toolbar above ghost, settings elsewhere) let me know and I'll flip the stacking — quick change.
+3. 4 tags per row in the Presentation ⚙ panel (was 3), narrowing to 3 then 2 only as the viewport actually shrinks.
+4. Neon Blue for selected tags — added --neon-blue: #00d2ff / --neon-blue-glow as the blue counterpart to the #00ff00 neon green + glow already used by the Loop toggle and 🤖 button. Applied to only the selected/filled state of tag buttons — both the Presentation Fast-Tagging chips and the Gallery's Tags ▼ filter chips — with a matching glow (box-shadow) for the same intensity. Unselected/outlined tag state is untouched, and the unrelated View/Type/Favorites toggles still use the original soft --accent blue, since you scoped this to tag buttons specifically.
+Take a look and let me know on the ghost-row stacking direction and anything else.
+===============
+
+More UI Improvements 
+
+Confirmed — I need to add back the .ghost-popunder CSS (redesigned as a single row) since my str_replace removed the old block entirely. Let's add it in fresh, right before .presentation-settings:Good. Now let's check .presentation-tags-section — I removed that wrapper class from HTML earlier but let's confirm no leftover CSS/JS references to it:Clean. Now let's verify the full HTML structure renders correctly and double check JS references to the ghost popunder/tags row match the new IDs:All consistent. Now let's syntax-check and rebuild the standalone bundle:Let's restore the implicit label association for accessibility (the text was previously wrapped in a <label>):Now let's rebuild the standalone bundle and verify:All still wired correctly. Now let's package and ship the final version.Rebuilt to match your spec exactly. Here's what changed:
+The "⚙ row" now behaves like the automation panel — moved it (and the new ghost row) to appear below the toolbar, matching how #automation-panel already worked, instead of its old position above the toolbar. DOM/visual order top-to-bottom is now: Toolbar → Ghost row (when open) → ⚙/Tags row → Automation panel.
+The ⚙/Tags row is one shared row, same height as the toolbar (min-height: 42px + 10px padding, matching .overlay-btn): 👻 far left, "Tags" label next, then up to 4 tag chips — all genuinely on that one row now, via a grid-template-columns: auto auto repeat(4, 1fr) layout (👻 and the label get their own content-sized columns; the 4 tag slots are a separate fixed track so they can't distort). A 5th+ tag renders in a separate .presentation-tags-overflow grid directly below — same 4-per-row shape, but it never widens or reshapes the shared row above it.
+Ghost pop-under redesigned — was two rows tall, now one row, same height as everything else: "Ghost Opacity" label far left, slider filling the middle, percentage on the right. It's a sibling that sits between the toolbar and the ⚙ row, only taking up space while open — clicking 👻 doesn't touch the ⚙ row's own layout at all.
+One thing worth double-checking on your end: since the toolbar is fixed near the bottom of the screen and things stack upward from there, "below the toolbar" only has one physical meaning in this layout (further from the screen's bottom edge... no — further toward the bottom, since toolbar is now topmost of this group). Take a look and tell me if the stacking reads the way you pictured it — easy to flip if not.
+
+===============
+
+Gallery Navigation
+
+Now let's implement. First, the HTML — restructuring the Gallery header to add the Jump-to control on the same row:Now let's add the CSS. First checking the .gallery-favorite-badge/.gallery-card area to place new rules near related gallery styles:Now let's add the JS. First, DOM refs near the other gallery-related consts:Now add the state variable near viewMode/typeFilter/activeTagFilters:Now let's add the core logic — the placeholder updater and jump function — right before syncControls:Now hook updateGalleryJumpPlaceholder into the central render(state) dispatcher:Good, module-scoped and accessible. Now let's syntax-check:Now let's rebuild the standalone bundle and verify:This all looks correct. Let's package and ship.Phase 1 is implemented. Summary of what was built:
+Placement — added to the same row as the Gallery header, right next to the item count (h2 "Gallery" + #gallery-count now grouped in .viewer-header-main, jump control pushed to the far right via the same justify-content: space-between pattern the Viewer's own header already uses). No new panel/card/dropdown.
+Placeholder behavior — uses the native placeholder attribute (400/1421, updated on every state change via updateGalleryJumpPlaceholder), never the input's .value. That's what makes "focusing the field must not populate it" automatic and bulletproof — there's no focus/blur handler at all, because there's nothing to undo.
+Two modes, mapped to existing architecture:
+Media Row → galleryCardEls[index].scrollIntoView(). Viewer/currentIndex untouched. A brief outline (.gallery-jump-highlight, auto-clears after 1.2s) marks the scrolled-to card, since it's deliberately not the same as the "currently loaded" highlight.
+Start Slideshow At → calls runtime.setCurrentIndex(index) — the exact same call a Gallery card click already makes. No new loading path, so shuffle/loop/favorites/hidden/tags/Presentation/Fast Tagging/automation all keep working unchanged; the jump control is just another caller of the same entry point.
+Validation — /^\d+$/ regex rejects empty, negative, decimal, and non-numeric input outright; range-checked against state.total (the same filtered/visible set the runtime already exposes). Invalid input never throws — it just flashes the input red (.is-invalid, auto-clears) and stops.
+No architecture changes — no new media array, no second index/ordering system, no bypass of the lazy IntersectionObserver thumbnail mounting (scrollIntoView triggers it exactly like manual scrolling would).
+Ready for the next prompt whenever you are.
+
+==================
+
+08.07.2026
+
+Implemented Phase 2 on sandbox2. 
+Alternatively called 7.2
+Key changes:
+Repaired the previously truncated index.html using MAIN as ground truth.
+Added Find in Gallery and Play from here modes.
+Removed the visible Enter button; keyboard Enter commits navigation.
+Placeholder now uses the current position format: 400 / 1421.
+Find mode scrolls directly to the requested thumbnail and applies one persistent border.
+Play mode loads the exact requested media and returns to the Viewer.
+Clicking any Gallery thumbnail loads it and returns to the Viewer.
+Explicit selection and Gallery rebuilds clear stale Find highlighting.
+Verified in-browser with 1,001 generated media items:
+Find #400 scrolled to and visibly bordered only media-0400.svg.
+Highlight persisted beyond the old timeout.
+A second Find moved the single highlight to the new target.
+Play #777 loaded exactly media-0777.svg.
+Deep thumbnail #900 loaded exactly and returned to the Viewer.
+Placeholder remained empty input text when focused.
+No visible Enter button.
+No console errors.
+node --check and git diff --check pass.
+Modified files:
+[index.html]
+[src/main.js]
+[styles.css]
+
+ 
+=================
+7.2
+
+Implemented the Gallery navigation UX revision.
+The row now reads:
+Select [ current / total ] then → [ Find Below ] or [ Load in Player ]
+Behavior verified:
+Find Below immediately finds and highlights the entered media.
+Load in Player immediately loads the entered media into the Viewer.
+Keyboard Enter remains supported using the last selected action.
+The control remains on one horizontal row.
+Thumbnail click → Viewer → return to Viewer remains working.
+No console errors.
+Syntax and diff checks pass.
+Modified:
+[index.html]
+[src/main.js]
+[styles.css]
+
+============================
+
+7.3
+
+Implemented Prompt 3: Tags Status Update Center and Last Tag Position.
+
+Key behavior:
+
+- Status Update Center appears first in Tags.
+- New Tag remains second; existing tag chips remain below.
+- Selecting a settings tag only displays its metadata—no Gallery, Viewer, input, or playback changes.
+- Fast Tagging records position, total, and timestamp only when applying a tag.
+- Removing a tag does not overwrite its checkpoint.
+- Metadata persists through IndexedDB reload and profile export/import.
+- Older profiles without tag activity remain compatible.
+- Existing tag chip dimensions and visual language are preserved.
+- Phase 2 Gallery navigation and thumbnail behavior remain intact.
+
+Verified:
+
+- Applied `Feet` at `5 / 12`; status updated correctly.
+- Removing it retained the original timestamp and position.
+- Reload restored the checkpoint.
+- Profile JSON round-trip restored all metadata.
+- Neutral and never-used states display correctly.
+- No browser console errors.
+- JavaScript syntax and diff checks pass.
+
+Modified:
+
+- [index.html]
+- [src/main.js]
+- [src/profile/profile-store.js]
+- [styles.css]
+
+============================
+
+8.8.26
+
+The export/import code in this repo already *looks* mostly fixed on the surface — `toJSON()` includes `tags`, and `importJSON()` restores/merges them. Let me check more carefully for a subtler issue, and also verify `main.js` isn't bypassing `ProfileStore` anywhere.Good — main.js never touches IndexedDB directly. Now let's confirm my suspicion about the `#loadSavedRecords()` race condition with an actual reproduction:Found it. There's a genuine bug: `importJSON()`'s replace mode correctly does `this.#tags = incomingTags` (fully replacing the vocabulary), but the *initial* async load from IndexedDB (`#loadSavedRecords`, kicked off in the constructor) merges old tags back in **unconditionally** — it checks `#replaceBeforeLoad` for items, but not for tags. The comment above it is stale: it says "tags aren't part of the replace-import flow," which was true before this fix but is no longer true now.
+
+In the normal UI flow this is basically unreachable (a user can't click through a file picker faster than an IndexedDB read resolves) — but it's a real, reachable race for anything that imports programmatically right after construction (an automated test, a fast synthetic import, etc.), and it directly violates "Replace mode... do not silently retain unrelated old tags." Let's fix it:Let's also check `main.js`'s import/export UI wiring to make sure nothing there undermines this — e.g., the merge/replace mode selector actually passing through correctly, and the UI refreshing tags after import:Good, that's all wired correctly and unaffected. Now let's syntax-check the fix and verify it end-to-end with the automated test harness — reproducing the exact race condition to confirm the bug existed and is now fixed:Now let's build a standalone bundle from this repo so I can test it directly in a browser:That error is just from my shell one-liner fallback, not the actual file — confirmed below with `COMBINED JS OK`. Let's check for the profile UI element IDs to script this test:Rather than fight browser timing non-determinism, let me prove this precisely with a controlled unit test — isolating `ProfileStore` with a fake `indexeddb.js` whose `loadProfile()` resolves on a delay I control, so I can deterministically land the replace-import inside that race window.Bug confirmed and fixed. Now let's run the full acceptance checklist against the fixed version, using a stateful in-memory fake IndexedDB so I can simulate "reload the same folder" realistically:All 20 checks across all 6 acceptance criteria pass. Let's do a final syntax check on the full file and package it up.## What I found
+
+This repo already had *most* of the fix in place — `toJSON()` included `tags`, and `importJSON()` restored/merged them, replace-mode correctly did `this.#tags = incomingTags`. On first read it looked done.
+
+The actual bug was one level deeper, in `#loadSavedRecords()` — the async read from IndexedDB that runs once at `ProfileStore` construction. For **items**, that merge is already guarded: `if (!this.#replaceBeforeLoad) { ...merge old items... }`. For **tags**, the equivalent loop had no such guard — it ran unconditionally, with a comment that was simply stale: *"Tags aren't part of the replace-import flow (that's items-only), so this merge always runs."* That was true before this feature existed; it's no longer true now that replace-mode is defined to replace tags too.
+
+**The consequence:** if a replace-mode import happens before that initial IndexedDB read resolves, the old tag vocabulary gets merged back in right after the replace wiped it — silently reintroducing tags the user explicitly replaced away. In the real UI this window is close to unreachable (importing requires clicking through a file picker, which takes far longer than an IndexedDB read), but it's a real, reachable bug for anything importing programmatically, and it directly violates the "replace must not retain old tags" requirement.
+
+## How I verified it
+
+Rather than trust a read-through, I built two test harnesses:
+
+1. **A deterministic race reproduction** — isolated `ProfileStore` with a fake `indexeddb.js` whose `loadProfile()` resolves on a controlled delay, so I could land a replace-import inside the exact race window on demand. Confirmed the bug reproduces (`OldTag` leaks back in) on the pre-fix code, and is gone after adding the matching `#replaceBeforeLoad` guard.
+
+2. **The full acceptance checklist**, all 6 criteria (20 individual assertions) — reload persistence, export→fresh-import, old-format-without-`tags`, merge-dedup, replace-wipe (including the race window), and Favorites/Hidden/`favoritedAt`/unknown-field round-tripping. All 20 pass.
+
+## The fix
+
+One `if (!this.#replaceBeforeLoad)` guard added around the tags-merge loop in `#loadSavedRecords()`, mirroring the exact mechanism already used for items — no new state, no new flags, same pattern the codebase already established. Stale comment updated to match. Nothing else needed changing; `main.js` was already going through `ProfileStore` exclusively, no direct IndexedDB access anywhere.
+
+
 
 
