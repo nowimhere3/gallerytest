@@ -121,15 +121,22 @@ export class ProfileStore {
         }
       }
 
-      // Tags aren't part of the replace-import flow (that's items-only),
-      // so this merge always runs: add any loaded tag whose id isn't
-      // already known locally (created in the load race, or a rename/
-      // delete already applied to it), skip the rest.
-      for (const tag of tags) {
-        if (!isPlainObject(tag) || typeof tag.id !== "string" || typeof tag.name !== "string") continue;
-        if (this.#tagIdsChangedBeforeLoad.has(tag.id)) continue;
-        if (this.#tags.some((existing) => existing.id === tag.id)) continue;
-        this.#tags.push({ ...tag });
+      // Tags now go through the same replace-vs-merge distinction as items
+      // above: a replace-mode import already fully replaced #tags
+      // synchronously (see importJSON), so a late-arriving IndexedDB read
+      // from BEFORE that replace must not merge the old vocabulary back in
+      // underneath it. In normal use this window is effectively
+      // unreachable (importing requires clicking through a file picker,
+      // which takes far longer than this read resolving), but it's a real
+      // race for anything that imports programmatically right after
+      // construction, so it's guarded the same way regardless.
+      if (!this.#replaceBeforeLoad) {
+        for (const tag of tags) {
+          if (!isPlainObject(tag) || typeof tag.id !== "string" || typeof tag.name !== "string") continue;
+          if (this.#tagIdsChangedBeforeLoad.has(tag.id)) continue;
+          if (this.#tags.some((existing) => existing.id === tag.id)) continue;
+          this.#tags.push({ ...tag });
+        }
       }
 
       this.#emit();
