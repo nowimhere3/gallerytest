@@ -4,6 +4,8 @@ A small static browser app for loading **local** images and videos, viewing them
 
 ## What it does
 
+(Need to update)
+
 - Load local media directly from your computer
 - Supports:
   - selecting multiple files
