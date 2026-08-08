@@ -542,7 +542,6 @@ Modified:
 - [src/profile/profile-store.js]
 - [styles.css]
 
-============================
 
 8.8.26
 
@@ -567,6 +566,7 @@ Rather than trust a read-through, I built two test harnesses:
 ## The fix
 
 One `if (!this.#replaceBeforeLoad)` guard added around the tags-merge loop in `#loadSavedRecords()`, mirroring the exact mechanism already used for items — no new state, no new flags, same pattern the codebase already established. Stale comment updated to match. Nothing else needed changing; `main.js` was already going through `ProfileStore` exclusively, no direct IndexedDB access anywhere.
+
 
 
 
