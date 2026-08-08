@@ -1,0 +1,1306 @@
+:root {
+  --bg: #0b1020;
+  --panel: #121933;
+  --panel-2: #182243;
+  --border: #2b396d;
+  --text: #eef2ff;
+  --muted: #a8b3d1;
+  --accent: #6ea8fe;
+  --accent-2: #8b5cf6;
+  --danger: #ef4444;
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+  --radius: 16px;
+  --ghost-opacity: 0.18;
+  /* Blue counterpart to the neon green already used for the Loop toggle
+     and 🤖 Automation button (#00ff00, glow rgba(0, 170, 0, ...)) — same
+     saturation/brightness family, just blue. Used for "selected tag". */
+  --neon-blue: #00d2ff;
+  --neon-blue-glow: rgba(0, 210, 255, 0.55);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: linear-gradient(180deg, #09101d, #0d1430 45%, #0b1020);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  padding: 24px;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app-shell {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.topbar {
+  margin-bottom: 20px;
+}
+
+.topbar h1 {
+  margin: 0 0 6px;
+  font-size: 2rem;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 20px;
+  margin-bottom: 20px;
+  align-items: start;
+}
+
+.panel {
+  background: rgba(18, 25, 51, 0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.controls-panel h2,
+.viewer-panel h2,
+.gallery-panel h2 {
+  margin-top: 0;
+}
+
+.controls-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.playback-section {
+  order: 1;
+}
+
+.slideshow-settings-section {
+  order: 2;
+}
+
+.tags-section {
+  order: 3;
+}
+
+/* The <hr> between Tags and Profile is a direct flex child of
+   .controls-panel, same as .tags-section/.profile-section. Every other
+   section here gets an explicit `order` — this divider needs one too, or
+   it defaults to order:0 and gets flex-reordered to the very top of the
+   panel (grouped with the other unordered elements), nowhere near Tags or
+   Profile. Tying it to order:3 keeps it in document order right after
+   .tags-section (ties resolve by source order) and still before
+   .profile-section's order:4. Targeted by adjacency so the HTML itself
+   never has to change. */
+.tags-section + hr {
+  order: 3;
+}
+
+.tags-section summary {
+  cursor: pointer;
+  font-size: 1.5em;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.tags-section[open] summary {
+  margin-bottom: 16px;
+}
+
+.profile-section {
+  order: 4;
+}
+
+.profile-section summary {
+  cursor: pointer;
+  font-size: 1.5em;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.profile-section[open] summary {
+  margin-bottom: 16px;
+}
+
+.media-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.control-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.media-picker-row {
+  display: grid;
+  grid-template-columns: 1fr 3fr;
+  gap: 10px;
+}
+
+.button-like,
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: #081121;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform 0.12s ease, opacity 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+.button-like.secondary,
+button.secondary {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+button.danger {
+  background: #35151a;
+  color: #ffd9dd;
+  border-color: #6b202b;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button:not(:disabled):hover,
+.button-like:hover {
+  transform: translateY(-1px);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.form-row {
+  margin-bottom: 14px;
+}
+
+.form-row label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+}
+
+.form-row input[type="number"] {
+  width: 100%;
+  background: #0d1530;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.interval-stepper {
+  display: grid;
+  grid-template-columns: 52px 1fr 52px;
+  gap: 8px;
+}
+
+.interval-stepper button {
+  min-height: 44px;
+  padding: 0;
+  font-size: 1.35rem;
+}
+
+.interval-stepper input[type="number"] {
+  min-height: 44px;
+  text-align: center;
+}
+
+.checkbox-stack {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.clear-media-btn {
+  width: 100%;
+}
+
+.tag-create-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.tag-create-row input[type="text"] {
+  flex: 1 1 140px;
+  min-width: 0;
+  min-height: 44px;
+  background: #0d1530;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.tag-create-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.tags-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.tag-chip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 40px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(70, 130, 255, 0.4);
+  background: rgba(30, 60, 140, 0.18);
+}
+
+.tag-chip-row.is-editing {
+  border-color: rgba(70, 130, 255, 0.7);
+  background: rgba(30, 60, 140, 0.3);
+}
+
+.tag-chip {
+  color: #9ec2ff;
+  font-weight: 600;
+  font-size: 0.92rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-chip-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.tag-action-btn {
+  min-height: 30px;
+  min-width: 30px;
+  padding: 0;
+  font-size: 0.85rem;
+  background: rgba(9, 16, 29, 0.65);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.tag-rename-input {
+  flex: 1;
+  min-height: 30px;
+  background: #0d1530;
+  border: 1px solid rgba(70, 130, 255, 0.6);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 0.9rem;
+  min-width: 0;
+}
+
+.status-box {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(9, 16, 29, 0.65);
+  color: var(--muted);
+  display: grid;
+  gap: 8px;
+}
+
+.viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.viewer-header-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.viewer-header-main h2 {
+  margin: 0;
+  line-height: 36px;
+}
+
+.filter-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+.toolbar-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-filter-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.filter-btn {
+  min-height: 36px;
+  padding: 7px 12px;
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.filter-btn.active {
+  background: var(--accent);
+  color: #081121;
+  border-color: transparent;
+}
+
+/* Phase 6.3 — Gallery Tag Filtering. Deliberately a plain in-flow panel
+   (not a floating/absolute overlay) so it pushes the viewer content down
+   rather than covering it — the media grid "shifts downward only by the
+   minimum amount necessary" comes from the panel actually being short,
+   not from stacking on top of anything. */
+.tags-filter-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(8, 14, 26, 0.55);
+}
+
+.tags-filter-panel .hint {
+  margin: 0;
+}
+
+/* Grow horizontally first, vertically second: a fixed 4 columns on
+   comfortably wide viewers, narrowing gracefully rather than wrapping into
+   extra rows before it needs to. New rows only ever contain the overflow
+   (e.g. a 6th tag on its own second row of one), never a padded-out row. */
+.tags-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .tags-filter-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .tags-filter-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Same Tag visual language as everywhere else (Presentation's Fast Tagging
+   panel, Gallery Settings' own tag chips): outlined blue by default, filled
+   neon blue (var(--accent)) when active — distinct from the neutral gray
+   .filter-btn look View/Type use, since these ARE tags, not a plain
+   toggle. The .active fill itself already comes from .filter-btn.active;
+   only the unselected/outlined state needs overriding here. */
+.tag-filter-btn {
+  min-height: 36px;
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  color: #9ec2ff;
+  border-color: rgba(70, 130, 255, 0.5);
+}
+
+/* Same neon blue as the Presentation Tags panel's "applied" state (see
+   .presentation-tag-btn.is-applied) — overrides the plain .filter-btn.active
+   accent fill that View/Type/Favorites use, since these specifically ARE
+   tags and should read with the same intensity as everywhere else tags
+   appear. */
+.tag-filter-btn.active {
+  background: var(--neon-blue);
+  color: #001522;
+  border-color: transparent;
+  box-shadow: 0 0 12px var(--neon-blue-glow), 0 0 6px var(--neon-blue-glow);
+}
+
+.viewer-stage {
+  width: 100%;
+  min-height: 500px;
+  height: min(68vh, 760px);
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #050814;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.viewer-stage img,
+.viewer-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.viewer-empty,
+.gallery-empty {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: rgba(8, 14, 26, 0.45);
+  text-align: center;
+  padding: 20px;
+}
+
+/* Phase 1 — Gallery Media Navigation. A compact utility row, not a new
+   panel: reuses .filter-btn/.filter-toggle exactly as the View/Type/Tags
+   toolbars do, and .toolbar-filter-label for "Jump to:" — no new visual
+   language introduced. flex-wrap is a narrow-viewport safety net only;
+   this is one row by design at normal widths. */
+.gallery-jump-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gallery-jump-input {
+  width: 84px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.gallery-jump-input::placeholder {
+  color: var(--muted);
+}
+
+/* Momentary feedback for invalid/out-of-range/empty input — cleared
+   automatically a moment later, no persistent error state to manage. */
+.gallery-jump-input.is-invalid {
+  border-color: var(--danger);
+}
+
+/* Brief highlight on the card Media Row scrolled to — distinct from the
+   .gallery-card.active outline (which tracks the Viewer's currentIndex),
+   since Media Row deliberately never touches the Viewer/currentIndex. */
+.gallery-card.gallery-jump-highlight {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+.gallery-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: rgba(8, 14, 26, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.gallery-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+}
+
+.gallery-card.active {
+  border-color: var(--accent-2);
+  box-shadow: inset 0 0 0 1px var(--accent-2);
+}
+
+.gallery-favorite-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(128, 0, 32, 0.9);
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.gallery-hidden-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 20, 26, 0.9);
+  color: #fff;
+  font-size: 0.95rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* Hidden items stay fully visible/manageable in the Gallery (per spec —
+   nothing is removed), just visually deprioritized so they read as
+   "excluded from Presentation" at a glance. */
+.gallery-card.is-hidden-media {
+  opacity: 0.55;
+}
+
+.gallery-card.is-hidden-media:hover {
+  opacity: 0.85;
+}
+
+.gallery-thumb {
+  width: 100%;
+  flex-shrink: 0;
+  aspect-ratio: 1 / 1;
+  background: #020617;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.gallery-thumb img,
+.gallery-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.gallery-meta {
+  padding: 10px;
+}
+
+.gallery-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.gallery-type {
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.compact-check {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(9, 16, 29, 0.65);
+  color: var(--text);
+  padding: 8px 12px;
+}
+
+.compact-check input {
+  margin: 0;
+}
+
+.loop-toggle-control {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(9, 16, 29, 0.65);
+  color: #ff3333;
+  cursor: pointer;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  transition: color 0.16s ease, filter 0.16s ease, text-shadow 0.16s ease;
+}
+
+.loop-toggle-control input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loop-toggle-control.is-enabled {
+  color: #00ff00;
+  text-shadow: 0 0 12px #00ff00, 0 0 6px #00aa00;
+  filter: drop-shadow(0 0 4px #00ff00);
+}
+
+.loop-toggle-control:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.overlay-loop-toggle {
+  flex: 0 0 94px;
+  min-width: 94px;
+}
+
+.wide-check {
+  justify-content: flex-start;
+}
+
+.favorite-toggle {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(128, 0, 32, 0.18);
+  color: #ffd7e2;
+  border: 1px solid rgba(255, 140, 170, 0.35);
+  font-size: 1.15rem;
+}
+
+.favorite-toggle.is-favorite {
+  background: rgba(160, 0, 48, 0.92);
+  color: #fff;
+  border-color: rgba(255, 160, 190, 0.6);
+}
+
+.hidden {
+  display: none !important;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 18px 0;
+}
+
+/* Simulated fullscreen inside iframe/page */
+.simulated-fullscreen {
+  max-width: none;
+  width: 100%;
+  min-height: 100vh;
+}
+
+.simulated-fullscreen-layout {
+  grid-template-columns: 1fr;
+  margin-bottom: 0;
+}
+
+.simulated-fullscreen-layout .controls-panel {
+  display: none;
+}
+
+.simulated-fullscreen-viewer {
+  min-height: 100vh;
+  padding: 0;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  background: #000;
+}
+
+.simulated-fullscreen-viewer .viewer-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  margin: 0;
+  padding: 14px 18px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+
+.simulated-fullscreen-viewer .viewer-header .favorite-toggle {
+  pointer-events: auto;
+}
+
+.simulated-fullscreen-viewer .viewer-stage {
+  width: 100%;
+  height: 100vh;
+  min-height: 100vh;
+  border: none;
+  border-radius: 0;
+}
+
+.simulated-fullscreen-viewer .viewer-stage img,
+.simulated-fullscreen-viewer .viewer-stage video {
+  object-fit: contain;
+  background: #000;
+}
+
+/* Bottom-center ghost overlay controls */
+.presentation-controls {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(96vw, 620px);
+  opacity: var(--ghost-opacity);
+  transition: opacity 0.15s ease, bottom 0.15s ease;
+  pointer-events: auto;
+}
+
+/* Ghost visibility is driven by JS (mouseenter/mouseleave on
+   #presentation-controls) rather than :hover/:focus-within — see main.js.
+   CSS :focus-within doesn't clear on mouseleave, which was leaving the
+   bar visibly "stuck" after any button click. */
+
+.presentation-controls-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.overlay-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 42px;
+  border-radius: 14px;
+  background: #1c274b;
+  color: #fff;
+  border: 1px solid #324579;
+  padding: 10px 8px;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.overlay-btn-favorite {
+  flex: 0 0 56px;
+  background: rgba(128, 0, 32, 0.35);
+  border-color: rgba(255, 140, 170, 0.35);
+  font-size: 1.1rem;
+}
+
+.overlay-btn-favorite.is-favorite {
+  background: rgba(160, 0, 48, 0.95);
+  border-color: rgba(255, 160, 190, 0.65);
+}
+
+.overlay-btn-hide {
+  flex: 0 0 84px;
+  background: rgba(40, 40, 48, 0.6);
+  font-size: 0.85rem;
+}
+
+.overlay-btn-hide.is-hidden {
+  background: rgba(90, 40, 10, 0.85);
+  border-color: rgba(255, 180, 120, 0.5);
+}
+
+.overlay-btn-undo-hide {
+  flex: 0 0 76px;
+  background: rgba(40, 40, 48, 0.6);
+  font-size: 0.85rem;
+}
+
+.overlay-btn-undo-hide:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.overlay-btn-automation {
+  flex: 0 0 52px;
+  font-size: 1.1rem;
+  background: rgba(9, 16, 29, 0.65);
+  transition: color 0.16s ease, filter 0.16s ease, text-shadow 0.16s ease;
+}
+
+/* Deliberately the EXACT SAME glow as .loop-toggle-control.is-enabled —
+   the automation button should read as "unlocked by the same Loop state"
+   at a glance, not as a differently-themed control. */
+.overlay-btn-automation.is-available {
+  color: #00ff00;
+  text-shadow: 0 0 12px #00ff00, 0 0 6px #00aa00;
+  filter: drop-shadow(0 0 4px #00ff00);
+  border-color: rgba(0, 255, 0, 0.35);
+}
+
+.overlay-btn-gear {
+  flex: 0 0 52px;
+  font-size: 1rem;
+}
+
+.overlay-btn-danger {
+  background: #3a151a;
+  border-color: #6b202b;
+}
+
+/* Sits between the toolbar above and the "⚙ row" below — a sibling of
+   both, not nested inside either — and only occupies layout space while
+   open. One row, same height/material as the toolbar: "Ghost Opacity"
+   label far left, slider next, percentage on the right. */
+.ghost-popunder {
+  width: 100%;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.ghost-popunder-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 42px;
+}
+
+.ghost-popunder-label {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ghost-popunder-row input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#ghost-opacity-label {
+  flex: 0 0 auto;
+  min-width: 3.5ch;
+  text-align: right;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.presentation-settings {
+  /* Same "material" (background/border/blur) as the toolbar, and same
+     per-row height (min-height 42px content + 10px padding, matching
+     .overlay-btn) — this reads as another toolbar-style row, appearing
+     below the toolbar exactly like #automation-panel does, not as a
+     separate floating popup. Radius stays a softer 20px rather than the
+     toolbar's full pill, since a 5th+ tag can grow this to two rows. */
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* The shared row: 👻, then the "Tags" label, then up to 4 tag chips (or
+   the empty-state hint spanning the same space). Explicit auto/auto
+   columns for 👻 + label keep them sized to their own content — the tag
+   columns are a separate, fixed repeat(4, 1fr) track so a 5th+ tag
+   (rendered in .presentation-tags-overflow below, NOT in this row) can
+   never widen column 1 or 2 by association. */
+.presentation-settings-row {
+  display: grid;
+  grid-template-columns: auto auto repeat(4, 1fr);
+  align-items: center;
+  gap: 10px 12px;
+}
+
+.ghost-toggle-btn {
+  grid-column: 1;
+  flex: 0 0 auto;
+  min-width: 40px;
+  min-height: 42px;
+  padding: 6px 10px;
+  border-radius: 14px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 1rem;
+}
+
+.ghost-toggle-btn.is-open {
+  background: var(--accent);
+  color: #081121;
+  border-color: transparent;
+}
+
+.presentation-settings-label {
+  grid-column: 2;
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.presentation-tags-empty {
+  grid-column: 3 / -1;
+  margin: 0;
+}
+
+.presentation-tags-row {
+  /* display: contents lets these tag buttons become direct grid items of
+     the shared row above (landing in its tag-only columns 3–6) instead of
+     boxed inside their own nested container — grid-column here would be
+     inert once that happens, so it's intentionally not set. */
+  display: contents;
+}
+
+/* 5th+ tag: same 4-per-row shape, own row(s) below the shared one — never
+   widens the shared row sideways. */
+.presentation-tags-overflow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px 12px;
+  margin-top: 10px;
+}
+
+.presentation-tag-btn {
+  min-height: 42px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: transparent;
+  color: #9ec2ff;
+  border: 1px solid rgba(70, 130, 255, 0.5);
+  font-weight: 600;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.presentation-tag-btn:disabled {
+  opacity: 0.35;
+}
+
+/* Outlined -> Filled Neon Blue. Applied = filled, nothing else — no
+   checkmarks, no badges layered on top. --neon-blue/--neon-blue-glow are
+   the blue counterpart to the neon green already used for the Loop toggle
+   and 🤖 Automation button (#00ff00 + matching glow) — same treatment,
+   different hue, so "applied" reads with the same intensity across the
+   app. */
+.presentation-tag-btn.is-applied {
+  background: var(--neon-blue);
+  color: #001522;
+  border-color: transparent;
+  box-shadow: 0 0 12px var(--neon-blue-glow), 0 0 6px var(--neon-blue-glow);
+}
+
+/* Compact single-row Loop Automation step flow. Deliberately NOT built on
+   .presentation-settings (that's the tall vertical-card look this replaces)
+   — it's sized and styled to read as one more Presentation Mode control
+   row, not a settings form. Exactly one .automation-step is visible at a
+   time; switching steps swaps content in place rather than growing the
+   row's height. */
+.automation-panel {
+  width: min(96vw, 620px);
+}
+
+.automation-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* Very narrow viewports: allow the pill to relax into a short, still-
+   compact two-line wrap (via flex-wrap above) rather than clipping or
+   overflowing — this is the "last resort" wrap the spec allows, never the
+   old tall vertical card. */
+@media (max-width: 520px) {
+  .automation-step {
+    border-radius: 18px;
+  }
+}
+
+/* Phase 5.2 refinement — Reduce Scroll Drift: on the configuration steps
+   (Back → grouped controls → Apply), .automation-apply-btn's margin-left:
+   auto already claims all remaining row width for itself, which left Back
+   and the config groups pinned flush to the left edge — a wide, empty gap
+   in the middle reads as scroll drift, not balance. Nudging the whole
+   pre-Apply cluster in by ~15-20% recentres the workflow without touching
+   Apply's own right-alignment or adding any gap *between* controls. Scoped
+   to the two configuration steps only — the Step 1 chip row has no Back
+   button/Apply asymmetry and is already well-balanced by justify-content:
+   center. */
+.automation-step-workflow {
+  padding-left: 17%;
+}
+
+@media (max-width: 520px) {
+  /* At the two-line wrap breakpoint there's no long empty middle gap left
+     to balance (Apply drops to its own line), so the offset would only
+     eat into already-tight horizontal space. Drop it here and let the
+     narrow layout's own centering handle balance instead. */
+  .automation-step-workflow {
+    padding-left: 0;
+  }
+}
+
+.automation-chip {
+  min-height: 36px;
+  padding: 6px 12px;
+  border-radius: 14px;
+  background: #1c274b;
+  color: #fff;
+  border: 1px solid #324579;
+  font-weight: 700;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.automation-apply-btn {
+  background: rgba(0, 120, 0, 0.55);
+  border-color: rgba(0, 255, 0, 0.4);
+  /* Primary Action reads as its own group, separated from Value Controls
+     by noticeably more whitespace than the Navigation/Type/Value rhythm
+     uses between themselves — achieved purely with spacing, no divider. */
+  margin-left: auto;
+}
+
+.automation-back-btn {
+  flex: 0 0 30px;
+  min-height: 30px;
+  min-width: 30px;
+  padding: 0;
+  border-radius: 999px;
+  background: #1c274b;
+  color: #fff;
+  border: 1px solid #324579;
+  font-size: 1.1rem;
+  line-height: 1;
+  /* A touch more room after Navigation than the base rhythm, so Back
+     reads as its own step rather than blending into Automation Type. */
+  margin-right: 4px;
+}
+
+.automation-step-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+/* Phase 5.2 refinement — each configuration group (label + its stepper,
+   e.g. "Min [-][0][+]") is now wrapped in its own subtle card, so the eye
+   reads it as one interactive unit instead of scanning across a long
+   uninterrupted row of controls. Same visual language as the pill row
+   itself (dark translucent fill, hairline border) but a step down in
+   weight, so groups read as nested "chips" that belong to the row rather
+   than a second, competing surface. Two of these can sit side by side
+   (Min, Sec) on the Timer step; the Times step has exactly one. */
+.automation-config-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 3px top/bottom + the 30px stepper buttons below = 36px total, matching
+     .automation-apply-btn's own min-height exactly, so grouping the
+     controls doesn't grow the row past its existing single-line height. */
+  padding: 3px 12px 3px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.automation-mini-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Slightly larger than the old flat-row sizing (28px -> 30px, 1rem ->
+   1.05rem) for better readability/touch targets now that each stepper
+   has its own card to fill, while staying well inside the row's existing
+   single-line height. */
+.automation-mini-stepper button {
+  flex: 0 0 30px;
+  min-height: 30px;
+  min-width: 30px;
+  padding: 0;
+  border-radius: 8px;
+  background: #1c274b;
+  color: #fff;
+  border: 1px solid #324579;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.automation-mini-value {
+  display: inline-block;
+  min-width: 24px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+@media (max-width: 980px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  /* Media takes priority on narrow layouts — controls drop below it
+     instead of appearing first just because they're first in the DOM. */
+  .viewer-stage {
+    min-height: 320px;
+    height: 52vh;
+  }
+
+  .simulated-fullscreen-viewer .viewer-stage {
+    min-height: 100vh;
+    height: 100vh;
+  }
+}
+
+@media (max-width: 520px) {
+  .media-picker-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tags-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .viewer-header {
+    align-items: flex-start;
+  }
+
+  .viewer-header-main {
+    flex-wrap: wrap;
+  }
+
+  .gallery-jump-group {
+    width: 100%;
+  }
+
+  .toolbar-filter-group {
+    order: 3;
+    width: 100%;
+  }
+
+  .filter-toggle {
+    width: 100%;
+  }
+
+  .filter-btn {
+    flex: 1 1 0;
+  }
+
+  .presentation-controls {
+    width: min(98vw, 440px);
+    bottom: 10px;
+  }
+
+  .presentation-controls-bar {
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .overlay-btn {
+    min-height: 38px;
+    padding: 8px 6px;
+    font-size: 0.82rem;
+  }
+
+  .overlay-btn-favorite,
+  .overlay-btn-gear {
+    flex-basis: 42px;
+  }
+
+  .overlay-btn-hide {
+    flex-basis: 52px;
+    font-size: 1.1rem;
+  }
+
+  .overlay-btn-undo-hide {
+    flex-basis: 48px;
+    font-size: 0.72rem;
+  }
+
+  .overlay-btn-automation {
+    flex-basis: 42px;
+  }
+
+  .favorite-toggle {
+    min-width: 40px;
+    min-height: 40px;
+    font-size: 1rem;
+  }
+}
