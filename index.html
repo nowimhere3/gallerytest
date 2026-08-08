@@ -196,8 +196,8 @@
              numbering ("400" = the 400th item in the current
              Gallery-visible sequence), same set the runtime/filter
              pipeline already produces — no second ordering system. -->
-        <div class="gallery-jump-group" role="group" aria-label="Jump to media">
-          <span class="toolbar-filter-label">Jump to:</span>
+        <div class="gallery-jump-group" role="group" aria-label="Select and navigate to media">
+          <span class="toolbar-filter-label">Select</span>
           <input
             id="gallery-jump-input"
             type="text"
@@ -206,21 +206,22 @@
             class="gallery-jump-input"
             aria-label="Media number to jump to"
           />
-          <div class="filter-toggle" role="group" aria-label="Jump mode">
-            <button
-              id="gallery-jump-mode-row-btn"
-              class="filter-btn active"
-              type="button"
-              title="Scroll the Gallery to this item (does not open it in the Viewer)"
-            >Media Row</button>
-            <button
-              id="gallery-jump-mode-slideshow-btn"
-              class="filter-btn"
-              type="button"
-              title="Load this item into the Viewer and start there"
-            >Slideshow</button>
-          </div>
-          <button id="gallery-jump-go-btn" class="filter-btn" type="button">Enter</button>
+          <span class="gallery-jump-separator">then →</span>
+          <button
+            id="gallery-jump-mode-find-btn"
+            class="filter-btn active"
+            type="button"
+            aria-pressed="true"
+            title="Find this media in the Gallery"
+          >Find Below</button>
+          <span class="gallery-jump-separator">or</span>
+          <button
+            id="gallery-jump-mode-play-btn"
+            class="filter-btn"
+            type="button"
+            aria-pressed="false"
+            title="Load this media into the Viewer"
+          >Load in Player</button>
         </div>
       </div>
 

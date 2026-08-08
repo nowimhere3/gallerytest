@@ -503,16 +503,23 @@ button:not(:disabled):hover,
   padding: 20px;
 }
 
-/* Phase 1 — Gallery Media Navigation. A compact utility row, not a new
-   panel: reuses .filter-btn/.filter-toggle exactly as the View/Type/Tags
-   toolbars do, and .toolbar-filter-label for "Jump to:" — no new visual
-   language introduced. flex-wrap is a narrow-viewport safety net only;
-   this is one row by design at normal widths. */
+/* Gallery Media Navigation. A compact single-row utility control that
+   reuses the existing toolbar label and button visual language. */
 .gallery-jump-group {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.gallery-jump-group .filter-btn {
+  flex: 0 0 auto;
+}
+
+.gallery-jump-separator {
+  color: var(--muted);
 }
 
 .gallery-jump-input {
@@ -536,12 +543,11 @@ button:not(:disabled):hover,
   border-color: var(--danger);
 }
 
-/* Brief highlight on the card Media Row scrolled to — distinct from the
-   .gallery-card.active outline (which tracks the Viewer's currentIndex),
-   since Media Row deliberately never touches the Viewer/currentIndex. */
+/* Persistent target border for Find in Gallery. It is distinct from the
+   active-card border, which continues to track the Viewer's current item. */
 .gallery-card.gallery-jump-highlight {
-  outline: 2px solid var(--accent-2);
-  outline-offset: 2px;
+  outline: 4px solid var(--accent-2);
+  outline-offset: 3px;
 }
 
 .gallery-grid {
