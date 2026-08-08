@@ -79,9 +79,8 @@ const galleryEmpty = document.getElementById("gallery-empty");
 const galleryGrid = document.getElementById("gallery-grid");
 
 const galleryJumpInput = document.getElementById("gallery-jump-input");
-const galleryJumpModeRowBtn = document.getElementById("gallery-jump-mode-row-btn");
-const galleryJumpModeSlideshowBtn = document.getElementById("gallery-jump-mode-slideshow-btn");
-const galleryJumpGoBtn = document.getElementById("gallery-jump-go-btn");
+const galleryJumpModeFindBtn = document.getElementById("gallery-jump-mode-find-btn");
+const galleryJumpModePlayBtn = document.getElementById("gallery-jump-mode-play-btn");
 
 const presentationControls = document.getElementById("presentation-controls");
 const presentationSettings = document.getElementById("presentation-settings");
@@ -133,7 +132,7 @@ let allItems = [];
 let viewMode = "all"; // "all" | "favorites"
 let typeFilter = "all"; // "all" | "image" | "video" — Media Type filter (Filtering Phase 1)
 let activeTagFilters = []; // tag ids — Gallery Tag Filtering (Phase 6.3), AND-combined via filterMedia
-let galleryJumpMode = "row"; // "row" | "slideshow" — Gallery Media Navigation (Phase 1)
+let galleryJumpMode = "find"; // "find" | "play" — Gallery Media Navigation (Phase 1 / 1a)
 let fillModeActive = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
@@ -163,6 +162,7 @@ let renderedGalleryGeneration = -1;
 let galleryCardEls = [];
 let galleryThumbEls = [];
 let galleryObserver = null;
+let galleryJumpHighlightedCard = null; // Phase 1a — target card from "Find in Gallery", cleared on next meaningful action
 
 // ---- Loop Automations (Phase 5 + Phase 5.1 refinement) ---------------------
 //
@@ -890,6 +890,10 @@ function fullRebuildGallery(state) {
   galleryGrid.innerHTML = "";
   galleryCardEls = [];
   galleryThumbEls = [];
+  // The list itself just changed (filter switch, reload, etc.) — any
+  // "Find in Gallery" highlight was pointing at a card that no longer
+  // exists in the same form, so it's a meaningful-enough action to clear it.
+  galleryJumpHighlightedCard = null;
 
   if (!state.items.length) {
     galleryGrid.classList.add("hidden");
@@ -954,7 +958,15 @@ function fullRebuildGallery(state) {
     card.appendChild(meta);
 
     card.addEventListener("click", () => {
+      // Phase 1a — one click does both: load it into the Viewer, and put
+      // the Gallery back where it belongs, so the Viewer (not a deep
+      // scroll position) is the user's natural destination. The previous
+      // "Find in Gallery" target highlight is now moot — the user just
+      // explicitly picked something — so it's cleared here too rather
+      // than lingering until its own timeout.
       runtime.setCurrentIndex(index);
+      clearGalleryJumpHighlight();
+      window.scrollTo({ top: 0 });
     });
 
     galleryGrid.appendChild(card);
@@ -1085,26 +1097,28 @@ function renderPresentationTagsPanel(item) {
   });
 }
 
-// ---- Gallery Media Navigation (Phase 1) ------------------------------------
+// ---- Gallery Media Navigation (Phase 1 / 1a) -------------------------------
 //
 // "Jump to" reuses the SAME visible-items sequence the runtime/filter
 // pipeline already produces (state.items / galleryCardEls, built in
 // fullRebuildGallery from that exact same state) — no second ordering
 // system, no bypassing the existing Viewer loading mechanism, no touching
-// the Gallery's lazy thumbnail mounting (scrollIntoView just brings a
-// card into the IntersectionObserver's view like scrolling by hand would).
+// the Gallery's lazy thumbnail mounting. All cards exist in the DOM as
+// soon as the list is built (only each card's own thumbnail media is
+// lazy-mounted) — see fullRebuildGallery — so galleryCardEls[index] is
+// always already there to jump to, with nothing extra to force-render.
 
 function setGalleryJumpMode(mode) {
   galleryJumpMode = mode;
-  galleryJumpModeRowBtn.classList.toggle("active", mode === "row");
-  galleryJumpModeSlideshowBtn.classList.toggle("active", mode === "slideshow");
+  galleryJumpModeFindBtn.classList.toggle("active", mode === "find");
+  galleryJumpModePlayBtn.classList.toggle("active", mode === "play");
 }
 
 // Placeholder-only — never becomes the input's actual value. Native
 // `placeholder` already guarantees focusing the field doesn't populate it,
 // so no extra focus/blur handling is needed to satisfy that requirement.
 function updateGalleryJumpPlaceholder(state) {
-  galleryJumpInput.placeholder = state.hasItems ? `${state.currentIndex + 1}/${state.total}` : "";
+  galleryJumpInput.placeholder = state.hasItems ? `${state.currentIndex + 1} / ${state.total}` : "";
 }
 
 function flashInvalidGalleryJumpInput() {
@@ -1114,6 +1128,12 @@ function flashInvalidGalleryJumpInput() {
   void galleryJumpInput.offsetWidth;
   galleryJumpInput.classList.add("is-invalid");
   window.setTimeout(() => galleryJumpInput.classList.remove("is-invalid"), 500);
+}
+
+function clearGalleryJumpHighlight() {
+  if (!galleryJumpHighlightedCard) return;
+  galleryJumpHighlightedCard.classList.remove("gallery-jump-highlight");
+  galleryJumpHighlightedCard = null;
 }
 
 function performGalleryJump() {
@@ -1136,27 +1156,33 @@ function performGalleryJump() {
 
   const zeroBasedIndex = oneBased - 1;
 
-  if (galleryJumpMode === "slideshow") {
-    // "Take me there and load it" — the exact same call a Gallery card
-    // click already makes.
+  if (galleryJumpMode === "play") {
+    // "Put this media into the Viewer and start from here" — the exact
+    // same call a Gallery card click already makes.
     runtime.setCurrentIndex(zeroBasedIndex);
   } else {
-    // "Take me to this part of my library" — scroll only, Viewer/
-    // currentIndex untouched.
+    // "Take me directly to this item in my library" — jump only, no
+    // smooth-scroll animation (an immediate position change reads as
+    // instant even in a 1000+ item gallery), Viewer/currentIndex
+    // untouched. Reuses the same target-highlight the thumbnail click
+    // below also clears, rather than inventing a second one.
     const card = galleryCardEls[zeroBasedIndex];
     if (card) {
-      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      clearGalleryJumpHighlight();
+      card.scrollIntoView({ block: "center" });
       card.classList.add("gallery-jump-highlight");
-      window.setTimeout(() => card.classList.remove("gallery-jump-highlight"), 1200);
+      galleryJumpHighlightedCard = card;
     }
   }
 
   galleryJumpInput.value = "";
 }
 
-galleryJumpModeRowBtn.addEventListener("click", () => setGalleryJumpMode("row"));
-galleryJumpModeSlideshowBtn.addEventListener("click", () => setGalleryJumpMode("slideshow"));
-galleryJumpGoBtn.addEventListener("click", () => performGalleryJump());
+setGalleryJumpMode(galleryJumpMode);
+galleryJumpModeFindBtn.addEventListener("click", () => setGalleryJumpMode("find"));
+galleryJumpModePlayBtn.addEventListener("click", () => setGalleryJumpMode("play"));
+// No visible Enter button by design — keyboard Enter is the sole commit
+// mechanism, so there's never a second control doing the same thing.
 galleryJumpInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();

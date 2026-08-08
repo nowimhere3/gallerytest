@@ -192,10 +192,12 @@
           <span id="gallery-count">0 items</span>
         </div>
 
-        <!-- Phase 1 — Gallery Media Navigation. Human-readable 1-based
-             numbering ("400" = the 400th item in the current
+        <!-- Phase 1a — Find in Gallery / Play from here. Human-readable
+             1-based numbering ("400" = the 400th item in the current
              Gallery-visible sequence), same set the runtime/filter
-             pipeline already produces — no second ordering system. -->
+             pipeline already produces — no second ordering system. No
+             visible Enter button by design: keyboard Enter is the commit
+             mechanism (see main.js). -->
         <div class="gallery-jump-group" role="group" aria-label="Jump to media">
           <span class="toolbar-filter-label">Jump to:</span>
           <input
@@ -204,23 +206,22 @@
             inputmode="numeric"
             autocomplete="off"
             class="gallery-jump-input"
-            aria-label="Media number to jump to"
+            aria-label="Media number to jump to. Press Enter to go."
           />
           <div class="filter-toggle" role="group" aria-label="Jump mode">
             <button
-              id="gallery-jump-mode-row-btn"
+              id="gallery-jump-mode-find-btn"
               class="filter-btn active"
               type="button"
-              title="Scroll the Gallery to this item (does not open it in the Viewer)"
-            >Media Row</button>
+              title="Jump the Gallery directly to this item (does not open it in the Viewer)"
+            >Find in Gallery</button>
             <button
-              id="gallery-jump-mode-slideshow-btn"
+              id="gallery-jump-mode-play-btn"
               class="filter-btn"
               type="button"
               title="Load this item into the Viewer and start there"
-            >Slideshow</button>
+            >Play from here</button>
           </div>
-          <button id="gallery-jump-go-btn" class="filter-btn" type="button">Enter</button>
         </div>
       </div>
 
