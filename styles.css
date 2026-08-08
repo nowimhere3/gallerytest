@@ -536,12 +536,11 @@ button:not(:disabled):hover,
   border-color: var(--danger);
 }
 
-/* Brief highlight on the card Media Row scrolled to — distinct from the
-   .gallery-card.active outline (which tracks the Viewer's currentIndex),
-   since Media Row deliberately never touches the Viewer/currentIndex. */
+/* Persistent target border for Find in Gallery. It is distinct from the
+   active-card border, which continues to track the Viewer's current item. */
 .gallery-card.gallery-jump-highlight {
-  outline: 2px solid var(--accent-2);
-  outline-offset: 2px;
+  outline: 4px solid var(--accent-2);
+  outline-offset: 3px;
 }
 
 .gallery-grid {

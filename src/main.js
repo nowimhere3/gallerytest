@@ -79,9 +79,8 @@ const galleryEmpty = document.getElementById("gallery-empty");
 const galleryGrid = document.getElementById("gallery-grid");
 
 const galleryJumpInput = document.getElementById("gallery-jump-input");
-const galleryJumpModeRowBtn = document.getElementById("gallery-jump-mode-row-btn");
-const galleryJumpModeSlideshowBtn = document.getElementById("gallery-jump-mode-slideshow-btn");
-const galleryJumpGoBtn = document.getElementById("gallery-jump-go-btn");
+const galleryJumpModeFindBtn = document.getElementById("gallery-jump-mode-find-btn");
+const galleryJumpModePlayBtn = document.getElementById("gallery-jump-mode-play-btn");
 
 const presentationControls = document.getElementById("presentation-controls");
 const presentationSettings = document.getElementById("presentation-settings");
@@ -133,7 +132,7 @@ let allItems = [];
 let viewMode = "all"; // "all" | "favorites"
 let typeFilter = "all"; // "all" | "image" | "video" — Media Type filter (Filtering Phase 1)
 let activeTagFilters = []; // tag ids — Gallery Tag Filtering (Phase 6.3), AND-combined via filterMedia
-let galleryJumpMode = "row"; // "row" | "slideshow" — Gallery Media Navigation (Phase 1)
+let galleryJumpMode = "find"; // "find" | "play" — Gallery Media Navigation (Phase 2)
 let fillModeActive = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
@@ -163,6 +162,7 @@ let renderedGalleryGeneration = -1;
 let galleryCardEls = [];
 let galleryThumbEls = [];
 let galleryObserver = null;
+let galleryJumpTargetIndex = null;
 
 // ---- Loop Automations (Phase 5 + Phase 5.1 refinement) ---------------------
 //
@@ -890,6 +890,7 @@ function fullRebuildGallery(state) {
   galleryGrid.innerHTML = "";
   galleryCardEls = [];
   galleryThumbEls = [];
+  galleryJumpTargetIndex = null;
 
   if (!state.items.length) {
     galleryGrid.classList.add("hidden");
@@ -954,7 +955,9 @@ function fullRebuildGallery(state) {
     card.appendChild(meta);
 
     card.addEventListener("click", () => {
+      clearGalleryJumpTarget();
       runtime.setCurrentIndex(index);
+      viewerPanel.scrollIntoView({ behavior: "smooth", block: "start" });
     });
 
     galleryGrid.appendChild(card);
@@ -1096,15 +1099,24 @@ function renderPresentationTagsPanel(item) {
 
 function setGalleryJumpMode(mode) {
   galleryJumpMode = mode;
-  galleryJumpModeRowBtn.classList.toggle("active", mode === "row");
-  galleryJumpModeSlideshowBtn.classList.toggle("active", mode === "slideshow");
+  galleryJumpModeFindBtn.classList.toggle("active", mode === "find");
+  galleryJumpModePlayBtn.classList.toggle("active", mode === "play");
+  galleryJumpModeFindBtn.setAttribute("aria-pressed", mode === "find" ? "true" : "false");
+  galleryJumpModePlayBtn.setAttribute("aria-pressed", mode === "play" ? "true" : "false");
+}
+
+function clearGalleryJumpTarget() {
+  if (galleryJumpTargetIndex !== null) {
+    galleryCardEls[galleryJumpTargetIndex]?.classList.remove("gallery-jump-highlight");
+  }
+  galleryJumpTargetIndex = null;
 }
 
 // Placeholder-only — never becomes the input's actual value. Native
 // `placeholder` already guarantees focusing the field doesn't populate it,
 // so no extra focus/blur handling is needed to satisfy that requirement.
 function updateGalleryJumpPlaceholder(state) {
-  galleryJumpInput.placeholder = state.hasItems ? `${state.currentIndex + 1}/${state.total}` : "";
+  galleryJumpInput.placeholder = state.hasItems ? `${state.currentIndex + 1} / ${state.total}` : "";
 }
 
 function flashInvalidGalleryJumpInput() {
@@ -1136,27 +1148,29 @@ function performGalleryJump() {
 
   const zeroBasedIndex = oneBased - 1;
 
-  if (galleryJumpMode === "slideshow") {
+  if (galleryJumpMode === "play") {
     // "Take me there and load it" — the exact same call a Gallery card
     // click already makes.
+    clearGalleryJumpTarget();
     runtime.setCurrentIndex(zeroBasedIndex);
+    viewerPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   } else {
     // "Take me to this part of my library" — scroll only, Viewer/
     // currentIndex untouched.
     const card = galleryCardEls[zeroBasedIndex];
     if (card) {
+      clearGalleryJumpTarget();
+      galleryJumpTargetIndex = zeroBasedIndex;
       card.scrollIntoView({ behavior: "smooth", block: "center" });
       card.classList.add("gallery-jump-highlight");
-      window.setTimeout(() => card.classList.remove("gallery-jump-highlight"), 1200);
     }
   }
 
   galleryJumpInput.value = "";
 }
 
-galleryJumpModeRowBtn.addEventListener("click", () => setGalleryJumpMode("row"));
-galleryJumpModeSlideshowBtn.addEventListener("click", () => setGalleryJumpMode("slideshow"));
-galleryJumpGoBtn.addEventListener("click", () => performGalleryJump());
+galleryJumpModeFindBtn.addEventListener("click", () => setGalleryJumpMode("find"));
+galleryJumpModePlayBtn.addEventListener("click", () => setGalleryJumpMode("play"));
 galleryJumpInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
