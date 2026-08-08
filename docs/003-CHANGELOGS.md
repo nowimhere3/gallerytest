@@ -567,6 +567,17 @@ Rather than trust a read-through, I built two test harnesses:
 
 One `if (!this.#replaceBeforeLoad)` guard added around the tags-merge loop in `#loadSavedRecords()`, mirroring the exact mechanism already used for items — no new state, no new flags, same pattern the codebase already established. Stale comment updated to match. Nothing else needed changing; `main.js` was already going through `ProfileStore` exclusively, no direct IndexedDB access anywhere.
 
+==========
+
+**7.3 — Playback Filtering Foundation + Media Metadata.** Updated **5 files:** `index.html`, `styles.css`, `src/main.js`, `src/profile/profile-store.js`, and `src/providers/local-file-input-provider.js`. The provider now stamps media with normalized metadata (`mediaType`, `systemTags`, and future-ready `userTags`), while the UI gained a unified **All / Images / Videos** type selector alongside the existing All / Favorites view controls.
+
+`src/main.js` now routes media through one shared filtering pipeline before handing the eligible collection to `MediaRuntime`, so Gallery, Slideshow, Shuffle, and Presentation all operate on the same filtered set without adding duplicate filtering logic to Runtime. `ProfileStore` also gained `favoritedAt`, allowing Favorites view to show the **most recently favorited media first** while preserving normal gallery ordering everywhere else.
+
+The purpose of 7.3 was to create a clean, reusable foundation for increasingly powerful playback filtering—especially future **user Tags**—without complicating the playback engine. `MediaRuntime` itself was left untouched: filtering determines **what media is eligible**, while Runtime remains responsible only for navigating and playing that resulting collection.
+
+
+===============
+
 
 
 
