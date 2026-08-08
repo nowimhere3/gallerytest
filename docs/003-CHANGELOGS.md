@@ -543,6 +543,30 @@ Modified:
 - [styles.css]
 
 
+8.8.26
+
+The export/import code in this repo already *looks* mostly fixed on the surface — `toJSON()` includes `tags`, and `importJSON()` restores/merges them. Let me check more carefully for a subtler issue, and also verify `main.js` isn't bypassing `ProfileStore` anywhere.Good — main.js never touches IndexedDB directly. Now let's confirm my suspicion about the `#loadSavedRecords()` race condition with an actual reproduction:Found it. There's a genuine bug: `importJSON()`'s replace mode correctly does `this.#tags = incomingTags` (fully replacing the vocabulary), but the *initial* async load from IndexedDB (`#loadSavedRecords`, kicked off in the constructor) merges old tags back in **unconditionally** — it checks `#replaceBeforeLoad` for items, but not for tags. The comment above it is stale: it says "tags aren't part of the replace-import flow," which was true before this fix but is no longer true now.
+
+In the normal UI flow this is basically unreachable (a user can't click through a file picker faster than an IndexedDB read resolves) — but it's a real, reachable race for anything that imports programmatically right after construction (an automated test, a fast synthetic import, etc.), and it directly violates "Replace mode... do not silently retain unrelated old tags." Let's fix it:Let's also check `main.js`'s import/export UI wiring to make sure nothing there undermines this — e.g., the merge/replace mode selector actually passing through correctly, and the UI refreshing tags after import:Good, that's all wired correctly and unaffected. Now let's syntax-check the fix and verify it end-to-end with the automated test harness — reproducing the exact race condition to confirm the bug existed and is now fixed:Now let's build a standalone bundle from this repo so I can test it directly in a browser:That error is just from my shell one-liner fallback, not the actual file — confirmed below with `COMBINED JS OK`. Let's check for the profile UI element IDs to script this test:Rather than fight browser timing non-determinism, let me prove this precisely with a controlled unit test — isolating `ProfileStore` with a fake `indexeddb.js` whose `loadProfile()` resolves on a delay I control, so I can deterministically land the replace-import inside that race window.Bug confirmed and fixed. Now let's run the full acceptance checklist against the fixed version, using a stateful in-memory fake IndexedDB so I can simulate "reload the same folder" realistically:All 20 checks across all 6 acceptance criteria pass. Let's do a final syntax check on the full file and package it up.## What I found
+
+This repo already had *most* of the fix in place — `toJSON()` included `tags`, and `importJSON()` restored/merged them, replace-mode correctly did `this.#tags = incomingTags`. On first read it looked done.
+
+The actual bug was one level deeper, in `#loadSavedRecords()` — the async read from IndexedDB that runs once at `ProfileStore` construction. For **items**, that merge is already guarded: `if (!this.#replaceBeforeLoad) { ...merge old items... }`. For **tags**, the equivalent loop had no such guard — it ran unconditionally, with a comment that was simply stale: *"Tags aren't part of the replace-import flow (that's items-only), so this merge always runs."* That was true before this feature existed; it's no longer true now that replace-mode is defined to replace tags too.
+
+**The consequence:** if a replace-mode import happens before that initial IndexedDB read resolves, the old tag vocabulary gets merged back in right after the replace wiped it — silently reintroducing tags the user explicitly replaced away. In the real UI this window is close to unreachable (importing requires clicking through a file picker, which takes far longer than an IndexedDB read), but it's a real, reachable bug for anything importing programmatically, and it directly violates the "replace must not retain old tags" requirement.
+
+## How I verified it
+
+Rather than trust a read-through, I built two test harnesses:
+
+1. **A deterministic race reproduction** — isolated `ProfileStore` with a fake `indexeddb.js` whose `loadProfile()` resolves on a controlled delay, so I could land a replace-import inside the exact race window on demand. Confirmed the bug reproduces (`OldTag` leaks back in) on the pre-fix code, and is gone after adding the matching `#replaceBeforeLoad` guard.
+
+2. **The full acceptance checklist**, all 6 criteria (20 individual assertions) — reload persistence, export→fresh-import, old-format-without-`tags`, merge-dedup, replace-wipe (including the race window), and Favorites/Hidden/`favoritedAt`/unknown-field round-tripping. All 20 pass.
+
+## The fix
+
+One `if (!this.#replaceBeforeLoad)` guard added around the tags-merge loop in `#loadSavedRecords()`, mirroring the exact mechanism already used for items — no new state, no new flags, same pattern the codebase already established. Stale comment updated to match. Nothing else needed changing; `main.js` was already going through `ProfileStore` exclusively, no direct IndexedDB access anywhere.
+
 
 
 

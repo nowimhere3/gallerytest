@@ -121,15 +121,22 @@ export class ProfileStore {
         }
       }
 
-      // Tags aren't part of the replace-import flow (that's items-only),
-      // so this merge always runs: add any loaded tag whose id isn't
-      // already known locally (created in the load race, or a rename/
-      // delete already applied to it), skip the rest.
-      for (const tag of tags) {
-        if (!isPlainObject(tag) || typeof tag.id !== "string" || typeof tag.name !== "string") continue;
-        if (this.#tagIdsChangedBeforeLoad.has(tag.id)) continue;
-        if (this.#tags.some((existing) => existing.id === tag.id)) continue;
-        this.#tags.push({ id: tag.id, name: tag.name });
+      // Tags now go through the same replace-vs-merge distinction as items
+      // above: a replace-mode import already fully replaced #tags
+      // synchronously (see importJSON), so a late-arriving IndexedDB read
+      // from BEFORE that replace must not merge the old vocabulary back in
+      // underneath it. In normal use this window is effectively
+      // unreachable (importing requires clicking through a file picker,
+      // which takes far longer than this read resolving), but it's a real
+      // race for anything that imports programmatically right after
+      // construction, so it's guarded the same way regardless.
+      if (!this.#replaceBeforeLoad) {
+        for (const tag of tags) {
+          if (!isPlainObject(tag) || typeof tag.id !== "string" || typeof tag.name !== "string") continue;
+          if (this.#tagIdsChangedBeforeLoad.has(tag.id)) continue;
+          if (this.#tags.some((existing) => existing.id === tag.id)) continue;
+          this.#tags.push({ ...tag });
+        }
       }
 
       this.#emit();
@@ -217,6 +224,32 @@ export class ProfileStore {
     // Sorted by name for a stable, predictable grid — creation order isn't
     // meaningful once there are more than a couple of tags.
     return this.#tags.map((tag) => ({ ...tag })).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  recordTagActivity(tagId, { position, total, timestamp = Date.now() } = {}) {
+    const tag = this.#tags.find((candidate) => candidate.id === tagId);
+    const normalizedPosition = Number(position);
+    const normalizedTotal = Number(total);
+    const normalizedTimestamp = Number(timestamp);
+
+    if (
+      !tag ||
+      !Number.isInteger(normalizedPosition) ||
+      !Number.isInteger(normalizedTotal) ||
+      normalizedPosition < 1 ||
+      normalizedTotal < normalizedPosition ||
+      !Number.isFinite(normalizedTimestamp)
+    ) {
+      return false;
+    }
+
+    tag.lastTagPosition = normalizedPosition;
+    tag.totalAtTime = normalizedTotal;
+    tag.lastTaggedAt = normalizedTimestamp;
+    this.#tagIdsChangedBeforeLoad.add(tagId);
+    this.#emit();
+    this.#persist();
+    return true;
   }
 
   #tagNameExists(name, excludingId = null) {
@@ -340,6 +373,7 @@ export class ProfileStore {
       kind: KIND,
       exportedAt: new Date().toISOString(),
       items,
+      tags: this.#tags.map((tag) => ({ ...tag })),
     };
   }
 
@@ -383,6 +417,7 @@ export class ProfileStore {
 
     if (mode === "replace") {
       this.#recordsByPath.clear();
+      this.#tags = [];
       this.#replaceBeforeLoad = true;
     }
 
@@ -404,6 +439,27 @@ export class ProfileStore {
       this.#setRecord(path, { ...existing, ...incoming });
       this.#changedBeforeLoad.add(path);
       applied += 1;
+    }
+
+    if (Array.isArray(parsed.tags)) {
+      const incomingTags = parsed.tags.filter(
+        (tag) => isPlainObject(tag) && typeof tag.id === "string" && tag.id && typeof tag.name === "string" && tag.name
+      );
+
+      if (mode === "replace") {
+        this.#tags = incomingTags.map((tag) => ({ ...tag }));
+      } else {
+        for (const incomingTag of incomingTags) {
+          const existingIndex = this.#tags.findIndex((tag) => tag.id === incomingTag.id);
+          if (existingIndex >= 0) {
+            this.#tags[existingIndex] = { ...this.#tags[existingIndex], ...incomingTag };
+          } else {
+            this.#tags.push({ ...incomingTag });
+          }
+        }
+      }
+
+      incomingTags.forEach((tag) => this.#tagIdsChangedBeforeLoad.add(tag.id));
     }
 
     this.#emit();
