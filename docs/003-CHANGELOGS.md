@@ -577,7 +577,40 @@ The purpose of 7.3 was to create a clean, reusable foundation for increasingly p
 
 
 ===============
+Midnight 8.9.2026
 
+Let me read this in large connected chunks to understand the full picture before making changes.Now update the 4 button handlers and the keyboard handler to use this new centralized function:Now the keyboard handler — this is the actual root-cause fix (it wasn't calling the reset helper at all):Now Change A — the 🤖 genuine toggle:Now let's check the `viewer-header`'s standalone favorite/loop controls (non-Presentation) to make sure I don't accidentally break them, since `.favorite-toggle` is separate from `.overlay-btn-favorite`.Now the main toolbar button block (Change C hierarchy):Both should widen together to stay visually consistent with the toolbar. Let's update both:Now let's update the narrow-viewport responsive block to account for all the new sizing, and add an intermediate breakpoint for smoother scaling:Now let's add the intermediate breakpoint (≤700px) right before this ≤520px block, for smoother scaling from the wider desktop sizing:Now let's update `index.html` for the 🔁 icon-only display and `main.js` for the corresponding JS text change:Let's check CSS brace balance and do a quick lint pass:Good, clean. Now let's view the final toolbar CSS block end-to-end to double-check correctness:This all looks correct and consistent. Now let's package the final deliverable — all files touched in this phase.## PM Loop Reset + 🤖 Toggle + Toolbar Resizing + Favorites Fix — Summary
+
+I inspected the current code first (per the doc's instructions), then made targeted fixes. Here's where things stand:
+
+### 1. Root cause of ordinary Loop persistence
+Two separate bugs, both in `src/main.js`:
+- **Keyboard nav bypassed the reset entirely.** `handlePresentationKeydown()`'s ArrowLeft/ArrowRight cases called `runtime.next()`/`runtime.previous()` directly, never calling any invalidation helper — unlike the Prev/Next buttons, which did.
+- **The existing helper had the wrong polarity.** `invalidateActiveFiniteAutomation()` only reset the rule when it was **not** `"forever"` — i.e., it already correctly protected X Times/Until Timer, but it explicitly skipped Forever/ordinary Loop (`if (activeLoopRule.type === "forever") return;`), which is backwards from what's needed.
+
+### 2. Fix applied
+Added one centralized `handleManualNavigationLoopReset()`, now called from all 4 manual-nav entry points (Gallery Prev/Next, Presentation overlay Prev/Next) **and** the keyboard handler (the actual missing wire):
+- If Loop is on and `activeLoopRule.type === "forever"` → turns Loop off via `syncVideoLoopControl()` (same path the 🔁 checkbox itself uses).
+- Otherwise → falls through to the **untouched** `invalidateActiveFiniteAutomation()`, preserving X Times/Until Timer's existing tested behavior exactly.
+
+### 3. 🤖 toggle (Change A)
+Rewrote `overlayAutomationBtn`'s click handler into a genuine binary toggle: OFF→ON opens the panel (unchanged); ON→OFF now turns Loop off entirely via `syncVideoLoopControl()` instead of just hiding the panel. **Judgment call:** this removes the old "reopen a closed panel while Loop stays on" affordance — the spec's exact two-state model doesn't leave room for that middle state, and its tests confirm this.
+
+### 4. Toolbar resizing (Change C)
+- `styles.css`: gave ◀/⏯/▶ higher flex-grow + larger font-size (1.75rem desktop), bumped ❤️/🔁/🤖/etc. sizing, widened the toolbar cap to 720px, added a new intermediate `≤700px` breakpoint plus retuned the existing `≤520px` one so everything still fits without clipping/scrolling.
+- 🔁 now shows only the icon (`index.html` + `main.js`); ON/OFF is conveyed via color/glow and the title tooltip only.
+
+### 5. Favorites randomization (Change D)
+On inspection, this was **already correctly implemented** — `shouldRandomizeInitialSelection()` already returns `viewMode !== "favorites"` and is already wired into every relevant call site (`loadFiles`, `setViewMode`, `setTypeFilter`, `toggleTagFilter`). No code changes were needed or made here.
+
+### Verified
+- `node --check` passes on `main.js`.
+- CSS brace count balanced (207/207).
+- No unrelated files touched — `ProfileStore`/IndexedDB/providers untouched, exactly as scoped.
+
+**Caveat:** I don't have a browser in this environment, so the toolbar sizing/breakpoints are reasoned through carefully but not pixel-verified — worth a quick visual check on a real narrow viewport before calling Change C fully done.
+
+Files changed: `index.html`, `styles.css`, `src/main.js` — all three copied to outputs, but I hit the tool-call limit before I could call `present_files` to hand them to you. Let me know and I'll deliver them next turn.
 
 
 
