@@ -874,12 +874,28 @@ hr {
   min-height: 100vh;
 }
 
+/* Fill Panel / Presentation Mode replaces the ordinary Gallery chrome
+   entirely rather than layering on top of it — the page heading/subtitle
+   live outside .layout entirely, so they need their own rule here rather
+   than being covered by .simulated-fullscreen-layout below. */
+.simulated-fullscreen .topbar {
+  display: none;
+}
+
 .simulated-fullscreen-layout {
   grid-template-columns: 1fr;
   margin-bottom: 0;
 }
 
 .simulated-fullscreen-layout .controls-panel {
+  display: none;
+}
+
+/* The second Gallery section (grid + its own header/jump controls) sits
+   alongside .viewer-panel in the same grid and was never hidden by the
+   .controls-panel rule above — during Fill Panel it's ordinary Gallery
+   chrome too, same as the sidebar. */
+.simulated-fullscreen-layout .gallery-panel {
   display: none;
 }
 
@@ -892,20 +908,15 @@ hr {
   background: #000;
 }
 
-.simulated-fullscreen-viewer .viewer-header {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 5;
-  margin: 0;
-  padding: 14px 18px;
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
-  pointer-events: none;
-}
-
-.simulated-fullscreen-viewer .viewer-header .favorite-toggle {
-  pointer-events: auto;
+/* Root-cause fix: this used to reposition the normal Gallery header
+   (View/Type/Tags filters + the normal favorite toggle) as a
+   pointer-events:none overlay strip rather than actually hiding it — so
+   it stayed visibly on screen during Fill Panel. Presentation Mode has
+   its own complete PM-UI toolbar (#presentation-controls) for
+   navigation/favoriting; the ordinary header has no role here at all. */
+.simulated-fullscreen-viewer .viewer-header,
+.simulated-fullscreen-viewer #tags-filter-panel {
+  display: none;
 }
 
 .simulated-fullscreen-viewer .viewer-stage {
