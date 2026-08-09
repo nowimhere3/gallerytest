@@ -613,5 +613,39 @@ On inspection, this was **already correctly implemented** — `shouldRandomizeIn
 Files changed: `index.html`, `styles.css`, `src/main.js` — all three copied to outputs, but I hit the tool-call limit before I could call `present_files` to hand them to you. Let me know and I'll deliver them next turn.
 
 
+=====================
+
+"Gallery View Row 'Leakage' During Fullscreen / Fill Screen mode"
+
+Now let's apply the fix — root cause confirmed. I'll replace the reposition-based treatment with a true hide, and add rules for the other leaking chrome (topbar, gallery-panel, tags-filter-panel):All three classes match exactly what I used in CSS — `.simulated-fullscreen` on `.app-shell`, `.simulated-fullscreen-layout` on `.layout`, `.simulated-fullscreen-viewer` on `#viewer-panel`. Both `enterFillMode()` and `exitFillMode()` add/remove the same set, so exit fully restores everything via pure CSS reversal — no JS changes needed. Let's verify no stray syntax issues and do a final brace check.No JS changes were needed for this fix — confirmed clean. Let's package and deliver just `styles.css`.## Fix — Hide Normal Gallery UI During Fill Panel / Presentation Mode
+
+**1. Root cause**
+
+Fill Panel only ever hid the left sidebar (`.controls-panel`). The other leaking chrome was never addressed:
+- `.viewer-header` (the View/Type/Tags toolbar + normal ♡ favorite button) was **repositioned**, not hidden — `.simulated-fullscreen-viewer .viewer-header` set `position: absolute` + a gradient background + `pointer-events: none`, but it stayed fully visible, overlaid at the top of the fullscreen view.
+- `.gallery-panel` (the second Gallery section — grid + its own header/jump controls) had **no fullscreen rule at all**, so it just sat there in the page flow, fully visible.
+- `.topbar` (the `<h1>Local Media Gallery</h1>` + subtitle) lives outside `.layout` entirely, so it was never touched by any existing fullscreen rule.
+
+**2. Files changed**
+
+Only `styles.css`. No HTML or JS changes were needed — `enterFillMode()`/`exitFillMode()` in `main.js` already toggle exactly the three classes (`simulated-fullscreen` / `simulated-fullscreen-layout` / `simulated-fullscreen-viewer`) this fix hooks into, so the existing state machine did all the work.
+
+**3. What's now hidden during Fill Panel**
+- `.topbar` (page heading + subtitle)
+- `.viewer-header` inside the fullscreen viewer (View/All/♥ Favorites/Type/Images/Videos/♡/Tags — the whole normal toolbar)
+- `#tags-filter-panel` (the Tags dropdown, in case it was left open)
+- `.gallery-panel` (the second Gallery grid section + its header/jump controls)
+
+`.controls-panel` continues to be hidden as before.
+
+**4. Exit restores everything**
+
+All four new rules are scoped to the same three existing classes exit already removes — nothing new to clean up, no JS state to reset. Normal UI returns exactly as it was.
+
+**5. PM-UI / Ghost Opacity confirmed unaffected**
+
+`#presentation-controls`, `.automation-panel`, and `#ghost-popunder` are siblings of `.viewer-header`/`.layout`, not descendants targeted by any of these selectors — untouched.
+
+
 
 
