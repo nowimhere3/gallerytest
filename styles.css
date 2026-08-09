@@ -795,17 +795,16 @@ button.tag-status-select.is-selected {
 }
 
 .loop-toggle-control {
-  min-height: 44px;
+  min-height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 14px;
   background: rgba(9, 16, 29, 0.65);
   color: #ff3333;
   cursor: pointer;
   font-weight: 800;
-  letter-spacing: 0.04em;
   transition: color 0.16s ease, filter 0.16s ease, text-shadow 0.16s ease;
 }
 
@@ -826,9 +825,15 @@ button.tag-status-select.is-selected {
   outline-offset: 2px;
 }
 
+/* Toolbar resizing/polish pass: 🔁 now shows only the icon (state is
+   conveyed by color/glow + the title tooltip, set in main.js), so its
+   fixed width can shrink from the old text-sized 94px down to a compact
+   utility-tier square — freeing width for ◀ ⏯ ▶ below — while the icon
+   itself scales up via font-size so it's still easy to read at a glance. */
 .overlay-loop-toggle {
-  flex: 0 0 94px;
-  min-width: 94px;
+  flex: 0 0 60px;
+  min-width: 60px;
+  font-size: 1.6rem;
 }
 
 .wide-check {
@@ -928,7 +933,7 @@ hr {
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  width: min(96vw, 620px);
+  width: min(96vw, 720px);
   opacity: var(--ghost-opacity);
   transition: opacity 0.15s ease, bottom 0.15s ease;
   pointer-events: auto;
@@ -956,7 +961,7 @@ hr {
 .overlay-btn {
   flex: 1 1 0;
   min-width: 0;
-  min-height: 42px;
+  min-height: 56px;
   border-radius: 14px;
   background: #1c274b;
   color: #fff;
@@ -966,11 +971,31 @@ hr {
   font-size: 0.95rem;
 }
 
+/* ---- Toolbar visual hierarchy (Presentation Mode resizing/polish) --------
+   PRIMARY  — ◀ ⏯ ▶ (#overlay-prev-btn/#overlay-play-btn/#overlay-next-btn,
+              unmodified base .overlay-btn otherwise): the toolbar's most-
+              used navigation controls, so they get a higher flex-grow
+              share of the row (claiming space from the fixed-width utility
+              buttons around them) AND a visibly larger icon glyph — the
+              button text IS the icon character here, so scaling font-size
+              scales the icon itself, not just the surrounding box.
+   HIGH-FREQUENCY — ❤️ Favorite: comfortable fixed size, close to PRIMARY's
+              height, but not competing for the row's flexible space.
+   UTILITY  — 🔁 (above), 🤖, 🙈 Hide, ↩ Undo, Exit, ⚙: same row height for
+              a balanced toolbar, but compact fixed widths. */
+#overlay-prev-btn,
+#overlay-play-btn,
+#overlay-next-btn {
+  flex: 1.7 1 0;
+  font-size: 1.75rem;
+  padding: 6px 4px;
+}
+
 .overlay-btn-favorite {
-  flex: 0 0 56px;
+  flex: 0 0 64px;
   background: rgba(128, 0, 32, 0.35);
   border-color: rgba(255, 140, 170, 0.35);
-  font-size: 1.1rem;
+  font-size: 1.5rem;
 }
 
 .overlay-btn-favorite.is-favorite {
@@ -979,7 +1004,7 @@ hr {
 }
 
 .overlay-btn-hide {
-  flex: 0 0 84px;
+  flex: 0 0 78px;
   background: rgba(40, 40, 48, 0.6);
   font-size: 0.85rem;
 }
@@ -990,9 +1015,9 @@ hr {
 }
 
 .overlay-btn-undo-hide {
-  flex: 0 0 76px;
+  flex: 0 0 70px;
   background: rgba(40, 40, 48, 0.6);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
 }
 
 .overlay-btn-undo-hide:disabled {
@@ -1001,8 +1026,8 @@ hr {
 }
 
 .overlay-btn-automation {
-  flex: 0 0 52px;
-  font-size: 1.1rem;
+  flex: 0 0 56px;
+  font-size: 1.3rem;
   background: rgba(9, 16, 29, 0.65);
   transition: color 0.16s ease, filter 0.16s ease, text-shadow 0.16s ease;
 }
@@ -1018,13 +1043,15 @@ hr {
 }
 
 .overlay-btn-gear {
-  flex: 0 0 52px;
-  font-size: 1rem;
+  flex: 0 0 56px;
+  font-size: 1.1rem;
 }
 
 .overlay-btn-danger {
+  flex: 0 0 64px;
   background: #3a151a;
   border-color: #6b202b;
+  font-size: 0.85rem;
 }
 
 /* Sits between the toolbar above and the "⚙ row" below — a sibling of
@@ -1186,7 +1213,7 @@ hr {
    time; switching steps swaps content in place rather than growing the
    row's height. */
 .automation-panel {
-  width: min(96vw, 620px);
+  width: min(96vw, 720px);
 }
 
 .automation-step {
@@ -1351,6 +1378,58 @@ hr {
   }
 }
 
+@media (max-width: 700px) {
+  /* Intermediate easing step (Toolbar resizing/polish pass): brings the
+     enlarged desktop PRIMARY/HIGH-FREQUENCY sizing down gradually before
+     the ≤520px query below does the final, tightest squeeze — avoids a
+     single abrupt jump from "large desktop icons" to "small phone icons". */
+  .presentation-controls {
+    width: min(97vw, 560px);
+  }
+
+  .presentation-controls-bar {
+    gap: 6px;
+    padding: 8px;
+  }
+
+  #overlay-prev-btn,
+  #overlay-play-btn,
+  #overlay-next-btn {
+    min-height: 50px;
+    font-size: 1.4rem;
+    padding: 6px 4px;
+  }
+
+  .overlay-loop-toggle {
+    flex-basis: 50px;
+    min-width: 50px;
+    font-size: 1.35rem;
+  }
+
+  .overlay-btn-favorite {
+    flex-basis: 54px;
+    font-size: 1.3rem;
+  }
+
+  .overlay-btn-automation {
+    flex-basis: 48px;
+    font-size: 1.15rem;
+  }
+
+  .overlay-btn-hide {
+    flex-basis: 66px;
+  }
+
+  .overlay-btn-undo-hide {
+    flex-basis: 60px;
+  }
+
+  .overlay-btn-danger,
+  .overlay-btn-gear {
+    flex-basis: 48px;
+  }
+}
+
 @media (max-width: 520px) {
   .media-picker-row {
     grid-template-columns: 1fr;
@@ -1396,14 +1475,37 @@ hr {
   }
 
   .overlay-btn {
-    min-height: 38px;
+    min-height: 40px;
     padding: 8px 6px;
     font-size: 0.82rem;
+  }
+
+  #overlay-prev-btn,
+  #overlay-play-btn,
+  #overlay-next-btn {
+    min-height: 40px;
+    font-size: 1.15rem;
+    padding: 6px 4px;
+  }
+
+  .overlay-loop-toggle {
+    flex-basis: 44px;
+    min-width: 44px;
+    font-size: 1.15rem;
   }
 
   .overlay-btn-favorite,
   .overlay-btn-gear {
     flex-basis: 42px;
+  }
+
+  .overlay-btn-favorite {
+    font-size: 1.1rem;
+  }
+
+  .overlay-btn-danger {
+    flex-basis: 44px;
+    font-size: 0.72rem;
   }
 
   .overlay-btn-hide {
@@ -1418,6 +1520,7 @@ hr {
 
   .overlay-btn-automation {
     flex-basis: 42px;
+    font-size: 1rem;
   }
 
   .favorite-toggle {

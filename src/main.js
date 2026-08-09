@@ -30,7 +30,6 @@ const shuffleInput = document.getElementById("shuffle-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
 const videoLoopControl = document.getElementById("video-loop-control");
-const videoLoopStateText = document.getElementById("video-loop-state-text");
 const fillInput = document.getElementById("fill-input");
 
 const allMediaBtn = document.getElementById("all-media-btn");
@@ -469,7 +468,10 @@ function toggleTagsFilterPanel() {
 function syncVideoLoopControl() {
   const enabled = videoLoopInput.checked;
   videoLoopControl.classList.toggle("is-enabled", enabled);
-  videoLoopStateText.textContent = enabled ? "🔁 ON" : "🔁 OFF";
+  // Toolbar resizing/polish pass (Change C1): the visible control shows
+  // only the 🔁 icon now — ON/OFF is communicated by color/glow (see
+  // .loop-toggle-control.is-enabled) plus this title tooltip, not by text
+  // in the button itself.
   videoLoopControl.title = enabled ? "Loop: ON (click to disable)" : "Loop: OFF (click to enable)";
 
   // Loop Rules cannot exist independently — they're only ever available
@@ -586,6 +588,44 @@ function invalidateActiveFiniteAutomation() {
   loopRuleVideoToken += 1;
   loopRuleCompletedPlays = 0;
   activeLoopRule = { type: "forever" };
+}
+
+// ---- Manual-navigation Loop/Automation reset (Presentation Mode regression
+// pass) ----------------------------------------------------------------
+//
+// Single entry point for every manual-navigation control — Gallery
+// Prev/Next, Presentation overlay Prev/Next, and Presentation keyboard
+// Left/Right — so the branching below exists exactly once rather than at
+// each call site.
+//
+// There are two cases:
+//
+// 1. Ordinary indefinite looping — the plain 🔁 toggle with no automation
+//    configured, and the "Forever" automation choice, are the SAME
+//    `activeLoopRule.type === "forever"` state (see the block comment
+//    above `activeLoopRule`'s declaration). It belongs to the item being
+//    left, not whatever the user is navigating to, so manual navigation
+//    ends it outright: Loop OFF, automation reset, panel closed — routed
+//    through the exact same syncVideoLoopControl() path the 🔁 checkbox's
+//    own change listener uses, so there is still only one way Loop ever
+//    turns off.
+//
+// 2. Finite automations (X Times / Until Timer) are explicitly EXEMPT from
+//    the above — they keep using the existing, already-working
+//    invalidateActiveFiniteAutomation() behavior (cancel only that rule's
+//    progress/timer; the master Loop toggle itself is left alone). Their
+//    counting/timer/completion/handoff lifecycle is untouched by this
+//    function.
+function handleManualNavigationLoopReset() {
+  if (videoLoopInput.checked && activeLoopRule.type === "forever") {
+    // [DEBUG-8.4-MANUAL-NAV-RESET] Ordinary infinite Loop / Forever
+    // automation is cancelled here on manual navigation.
+    videoLoopInput.checked = false;
+    syncVideoLoopControl();
+    return;
+  }
+
+  invalidateActiveFiniteAutomation();
 }
 
 function resetLoopRuleToDefault() {
@@ -1317,11 +1357,11 @@ typeVideosBtn.addEventListener("click", () => setTypeFilter("video"));
 tagsFilterToggleBtn.addEventListener("click", () => toggleTagsFilterPanel());
 
 prevBtn.addEventListener("click", () => {
-  invalidateActiveFiniteAutomation();
+  handleManualNavigationLoopReset();
   runtime.previous();
 });
 nextBtn.addEventListener("click", () => {
-  invalidateActiveFiniteAutomation();
+  handleManualNavigationLoopReset();
   runtime.next();
 });
 
@@ -1356,11 +1396,11 @@ overlayFavoriteBtn.addEventListener("click", () => {
 });
 
 overlayPrevBtn.addEventListener("click", () => {
-  invalidateActiveFiniteAutomation();
+  handleManualNavigationLoopReset();
   runtime.previous();
 });
 overlayNextBtn.addEventListener("click", () => {
-  invalidateActiveFiniteAutomation();
+  handleManualNavigationLoopReset();
   runtime.next();
 });
 
@@ -1424,14 +1464,16 @@ overlayAutomationBtn.addEventListener("click", () => {
     return;
   }
 
-  if (automationPanel.classList.contains("hidden")) {
-    openAutomationEditor();
-  } else {
-    // Closing via 🤖 again is navigation, not a cancel-with-side-effects:
-    // discard whatever draft was mid-edit, but never touch the already
-    // applied automation (Requirement 7, "close without Apply").
-    closeAutomationEditor();
-  }
+  // [DEBUG-8.4-AUTOMATION-TOGGLE] 🤖 is now a genuine ON/OFF control, not
+  // just a panel-visibility switch: while Loop is on, ANY click here turns
+  // it back off — cancelling the active automation, clearing its
+  // timer/progress, and closing the panel — via the exact same
+  // syncVideoLoopControl() path the 🔁 checkbox itself uses. Does not
+  // navigate media. (Previously this branch only toggled the panel's
+  // hidden state, leaving Loop running with no way to turn it off from 🤖
+  // itself — that one-directional behavior is the bug this replaces.)
+  videoLoopInput.checked = false;
+  syncVideoLoopControl();
 });
 
 // -- Step 1: choose the automation type --
@@ -1545,10 +1587,12 @@ function handlePresentationKeydown(event) {
   switch (event.key) {
     case "ArrowRight":
       event.preventDefault();
+      handleManualNavigationLoopReset();
       runtime.next();
       break;
     case "ArrowLeft":
       event.preventDefault();
+      handleManualNavigationLoopReset();
       runtime.previous();
       break;
     case " ":
