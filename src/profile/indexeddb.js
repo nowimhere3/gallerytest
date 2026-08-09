@@ -200,6 +200,25 @@ export async function loadRegistry() {
 }
 
 /**
+ * Deletes a single profile's stored item/tag data. Does not touch the
+ * registry — callers (ProfileStore.deleteProfile) are responsible for
+ * removing/replacing the corresponding registry entry separately, since
+ * "which profile is active" and "this profile's data no longer exists"
+ * are two distinct facts that can't both be expressed by one delete().
+ */
+export async function deleteProfileData(profileId) {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).delete(profileId);
+    await completeTransaction(transaction);
+  } finally {
+    database.close();
+  }
+}
+
+/**
  * Saves the complete profile registry. Like saveProfileData, this replaces
  * the whole row, so callers must always pass the full { activeProfileId,
  * profiles } shape, not a partial update.

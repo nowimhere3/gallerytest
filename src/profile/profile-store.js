@@ -19,6 +19,7 @@ import {
   saveProfileData,
   loadRegistry,
   saveRegistry,
+  deleteProfileData,
   generateProfileId,
   DEFAULT_PROFILE_NAME,
 } from "./indexeddb.js";
@@ -309,6 +310,80 @@ export class ProfileStore {
     }
 
     this.#emit();
+    return true;
+  }
+
+  // Deletes a profile from the registry (Phase 8.3 — Profile Management)
+  // and its persisted item/tag data. If the deleted profile was active,
+  // falls back to another known profile — deterministically the next one
+  // in registry order — or, if it was the LAST profile, creates a fresh
+  // empty default profile so the app is never left without an active
+  // Gallery world. Deleting a non-active profile only touches the
+  // registry list; it never resets this store's current in-memory state.
+  //
+  // Never deletes/modifies any actual media files — this only removes
+  // ProfileStore-owned metadata (registry entry + IndexedDB row).
+  //
+  // No-op (returns false) if profileId isn't a known profile.
+  async deleteProfile(profileId) {
+    await this.#ready;
+    if (!profileId) return false;
+
+    const index = this.#profiles.findIndex((candidate) => candidate.id === profileId);
+    if (index === -1) return false;
+
+    const wasActive = profileId === this.#profileId;
+    this.#profiles.splice(index, 1);
+
+    let nextActiveId = this.#profileId;
+    if (wasActive) {
+      let fallback = this.#profiles[0] || null;
+
+      // Deleting the only remaining profile can't leave the registry
+      // empty — the app always needs an active Gallery world to load into,
+      // same as a genuinely fresh install (#resolveActiveProfile above).
+      if (!fallback) {
+        const now = Date.now();
+        fallback = {
+          id: generateProfileId(),
+          name: DEFAULT_PROFILE_NAME,
+          masterFolder: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        this.#profiles.push(fallback);
+      }
+
+      nextActiveId = fallback.id;
+    }
+
+    try {
+      await saveRegistry({ activeProfileId: nextActiveId, profiles: this.#profiles });
+    } catch (error) {
+      console.warn("Could not save the profile registry after deletion.", error);
+    }
+
+    try {
+      await deleteProfileData(profileId);
+    } catch (error) {
+      console.warn("Could not delete the profile's stored data.", error);
+    }
+
+    if (wasActive) {
+      // [DEBUG-8.3-PROFILE-DELETE] Deleting the ACTIVE profile needs the
+      // exact same full-isolation reset switchProfile() already performs
+      // (clear in-memory items/tags, load the new active profile's own
+      // data) — reuse it instead of duplicating that logic here.
+      // this.#profileId is forced to null first so switchProfile's
+      // same-id guard doesn't treat nextActiveId as a no-op; the registry
+      // write above already persisted nextActiveId as active, so
+      // switchProfile's own registry write is a harmless repeat.
+      this.#profileId = null;
+      await this.switchProfile(nextActiveId);
+    } else {
+      this.#emit();
+    }
+
     return true;
   }
 

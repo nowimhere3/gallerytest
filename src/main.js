@@ -46,6 +46,7 @@ const tagsFilterEmpty = document.getElementById("tags-filter-empty");
 const tagsFilterGrid = document.getElementById("tags-filter-grid");
 
 const profileSelect = document.getElementById("profile-select");
+const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
 const profileActiveStatusText = document.getElementById("profile-active-status-text");
@@ -1862,6 +1863,27 @@ profileCreateInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
     createProfileFromInput();
+  }
+});
+
+profileDeleteBtn.addEventListener("click", async () => {
+  const activeId = profile.getProfileId();
+  if (!activeId) return;
+
+  const activeName = profile.getProfileName();
+  const confirmed = window.confirm(
+    `Delete profile "${activeName}"? This removes its tags, favorites, and hidden state. Your media files are not affected. This cannot be undone.`
+  );
+  if (!confirmed) return;
+
+  profileDeleteBtn.disabled = true;
+  try {
+    await profile.deleteProfile(activeId);
+    profileActiveStatusText.textContent = `Deleted "${activeName}". Now on "${profile.getProfileName()}".`;
+  } catch (error) {
+    profileActiveStatusText.textContent = `Could not delete profile: ${error.message}`;
+  } finally {
+    profileDeleteBtn.disabled = false;
   }
 });
 

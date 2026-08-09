@@ -343,6 +343,11 @@ button:not(:disabled):hover,
   padding: 10px 12px;
 }
 
+.profile-delete-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .profile-create-row {
   display: flex;
   flex-wrap: wrap;
