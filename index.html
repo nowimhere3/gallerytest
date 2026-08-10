@@ -92,6 +92,21 @@
           Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
         </p>
 
+        <div class="profile-current-row">
+          <label for="profile-select" class="profile-select-label">Profile</label>
+          <select id="profile-select"></select>
+          <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete</button>
+        </div>
+
+        <div class="profile-create-row">
+          <input id="profile-create-input" type="text" placeholder="New profile name" maxlength="60" />
+          <button id="profile-create-btn" class="secondary" type="button">Save Profile</button>
+        </div>
+
+        <p id="profile-active-status-text" class="hint" role="status"></p>
+
+        <hr class="profile-inline-hr" />
+
         <div class="control-stack">
           <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
           <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
@@ -251,7 +266,7 @@
       <button id="overlay-favorite-btn" class="overlay-btn overlay-btn-favorite hidden" type="button" aria-label="Toggle favorite">♡</button>
       <label id="video-loop-control" class="loop-toggle-control overlay-loop-toggle" title="Loop: OFF (click to enable)">
         <input id="video-loop-input" type="checkbox" />
-        <span id="video-loop-state-text">🔁 OFF</span>
+        <span id="video-loop-state-text">🔁</span>
       </label>
       <button id="overlay-automation-btn" class="overlay-btn overlay-btn-automation" type="button" title="Loop Automations" aria-label="Loop Automations">🤖</button>
       <button id="overlay-prev-btn" class="overlay-btn" type="button">◀</button>

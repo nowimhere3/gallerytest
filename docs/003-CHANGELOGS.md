@@ -567,6 +567,84 @@ Rather than trust a read-through, I built two test harnesses:
 
 One `if (!this.#replaceBeforeLoad)` guard added around the tags-merge loop in `#loadSavedRecords()`, mirroring the exact mechanism already used for items — no new state, no new flags, same pattern the codebase already established. Stale comment updated to match. Nothing else needed changing; `main.js` was already going through `ProfileStore` exclusively, no direct IndexedDB access anywhere.
 
+==========
+
+**7.3 — Playback Filtering Foundation + Media Metadata.** Updated **5 files:** `index.html`, `styles.css`, `src/main.js`, `src/profile/profile-store.js`, and `src/providers/local-file-input-provider.js`. The provider now stamps media with normalized metadata (`mediaType`, `systemTags`, and future-ready `userTags`), while the UI gained a unified **All / Images / Videos** type selector alongside the existing All / Favorites view controls.
+
+`src/main.js` now routes media through one shared filtering pipeline before handing the eligible collection to `MediaRuntime`, so Gallery, Slideshow, Shuffle, and Presentation all operate on the same filtered set without adding duplicate filtering logic to Runtime. `ProfileStore` also gained `favoritedAt`, allowing Favorites view to show the **most recently favorited media first** while preserving normal gallery ordering everywhere else.
+
+The purpose of 7.3 was to create a clean, reusable foundation for increasingly powerful playback filtering—especially future **user Tags**—without complicating the playback engine. `MediaRuntime` itself was left untouched: filtering determines **what media is eligible**, while Runtime remains responsible only for navigating and playing that resulting collection.
+
+
+===============
+Midnight 8.9.2026
+
+Let me read this in large connected chunks to understand the full picture before making changes.Now update the 4 button handlers and the keyboard handler to use this new centralized function:Now the keyboard handler — this is the actual root-cause fix (it wasn't calling the reset helper at all):Now Change A — the 🤖 genuine toggle:Now let's check the `viewer-header`'s standalone favorite/loop controls (non-Presentation) to make sure I don't accidentally break them, since `.favorite-toggle` is separate from `.overlay-btn-favorite`.Now the main toolbar button block (Change C hierarchy):Both should widen together to stay visually consistent with the toolbar. Let's update both:Now let's update the narrow-viewport responsive block to account for all the new sizing, and add an intermediate breakpoint for smoother scaling:Now let's add the intermediate breakpoint (≤700px) right before this ≤520px block, for smoother scaling from the wider desktop sizing:Now let's update `index.html` for the 🔁 icon-only display and `main.js` for the corresponding JS text change:Let's check CSS brace balance and do a quick lint pass:Good, clean. Now let's view the final toolbar CSS block end-to-end to double-check correctness:This all looks correct and consistent. Now let's package the final deliverable — all files touched in this phase.## PM Loop Reset + 🤖 Toggle + Toolbar Resizing + Favorites Fix — Summary
+
+I inspected the current code first (per the doc's instructions), then made targeted fixes. Here's where things stand:
+
+### 1. Root cause of ordinary Loop persistence
+Two separate bugs, both in `src/main.js`:
+- **Keyboard nav bypassed the reset entirely.** `handlePresentationKeydown()`'s ArrowLeft/ArrowRight cases called `runtime.next()`/`runtime.previous()` directly, never calling any invalidation helper — unlike the Prev/Next buttons, which did.
+- **The existing helper had the wrong polarity.** `invalidateActiveFiniteAutomation()` only reset the rule when it was **not** `"forever"` — i.e., it already correctly protected X Times/Until Timer, but it explicitly skipped Forever/ordinary Loop (`if (activeLoopRule.type === "forever") return;`), which is backwards from what's needed.
+
+### 2. Fix applied
+Added one centralized `handleManualNavigationLoopReset()`, now called from all 4 manual-nav entry points (Gallery Prev/Next, Presentation overlay Prev/Next) **and** the keyboard handler (the actual missing wire):
+- If Loop is on and `activeLoopRule.type === "forever"` → turns Loop off via `syncVideoLoopControl()` (same path the 🔁 checkbox itself uses).
+- Otherwise → falls through to the **untouched** `invalidateActiveFiniteAutomation()`, preserving X Times/Until Timer's existing tested behavior exactly.
+
+### 3. 🤖 toggle (Change A)
+Rewrote `overlayAutomationBtn`'s click handler into a genuine binary toggle: OFF→ON opens the panel (unchanged); ON→OFF now turns Loop off entirely via `syncVideoLoopControl()` instead of just hiding the panel. **Judgment call:** this removes the old "reopen a closed panel while Loop stays on" affordance — the spec's exact two-state model doesn't leave room for that middle state, and its tests confirm this.
+
+### 4. Toolbar resizing (Change C)
+- `styles.css`: gave ◀/⏯/▶ higher flex-grow + larger font-size (1.75rem desktop), bumped ❤️/🔁/🤖/etc. sizing, widened the toolbar cap to 720px, added a new intermediate `≤700px` breakpoint plus retuned the existing `≤520px` one so everything still fits without clipping/scrolling.
+- 🔁 now shows only the icon (`index.html` + `main.js`); ON/OFF is conveyed via color/glow and the title tooltip only.
+
+### 5. Favorites randomization (Change D)
+On inspection, this was **already correctly implemented** — `shouldRandomizeInitialSelection()` already returns `viewMode !== "favorites"` and is already wired into every relevant call site (`loadFiles`, `setViewMode`, `setTypeFilter`, `toggleTagFilter`). No code changes were needed or made here.
+
+### Verified
+- `node --check` passes on `main.js`.
+- CSS brace count balanced (207/207).
+- No unrelated files touched — `ProfileStore`/IndexedDB/providers untouched, exactly as scoped.
+
+**Caveat:** I don't have a browser in this environment, so the toolbar sizing/breakpoints are reasoned through carefully but not pixel-verified — worth a quick visual check on a real narrow viewport before calling Change C fully done.
+
+Files changed: `index.html`, `styles.css`, `src/main.js` — all three copied to outputs, but I hit the tool-call limit before I could call `present_files` to hand them to you. Let me know and I'll deliver them next turn.
+
+
+=====================
+
+"Gallery View Row 'Leakage' During Fullscreen / Fill Screen mode"
+
+Now let's apply the fix — root cause confirmed. I'll replace the reposition-based treatment with a true hide, and add rules for the other leaking chrome (topbar, gallery-panel, tags-filter-panel):All three classes match exactly what I used in CSS — `.simulated-fullscreen` on `.app-shell`, `.simulated-fullscreen-layout` on `.layout`, `.simulated-fullscreen-viewer` on `#viewer-panel`. Both `enterFillMode()` and `exitFillMode()` add/remove the same set, so exit fully restores everything via pure CSS reversal — no JS changes needed. Let's verify no stray syntax issues and do a final brace check.No JS changes were needed for this fix — confirmed clean. Let's package and deliver just `styles.css`.## Fix — Hide Normal Gallery UI During Fill Panel / Presentation Mode
+
+**1. Root cause**
+
+Fill Panel only ever hid the left sidebar (`.controls-panel`). The other leaking chrome was never addressed:
+- `.viewer-header` (the View/Type/Tags toolbar + normal ♡ favorite button) was **repositioned**, not hidden — `.simulated-fullscreen-viewer .viewer-header` set `position: absolute` + a gradient background + `pointer-events: none`, but it stayed fully visible, overlaid at the top of the fullscreen view.
+- `.gallery-panel` (the second Gallery section — grid + its own header/jump controls) had **no fullscreen rule at all**, so it just sat there in the page flow, fully visible.
+- `.topbar` (the `<h1>Local Media Gallery</h1>` + subtitle) lives outside `.layout` entirely, so it was never touched by any existing fullscreen rule.
+
+**2. Files changed**
+
+Only `styles.css`. No HTML or JS changes were needed — `enterFillMode()`/`exitFillMode()` in `main.js` already toggle exactly the three classes (`simulated-fullscreen` / `simulated-fullscreen-layout` / `simulated-fullscreen-viewer`) this fix hooks into, so the existing state machine did all the work.
+
+**3. What's now hidden during Fill Panel**
+- `.topbar` (page heading + subtitle)
+- `.viewer-header` inside the fullscreen viewer (View/All/♥ Favorites/Type/Images/Videos/♡/Tags — the whole normal toolbar)
+- `#tags-filter-panel` (the Tags dropdown, in case it was left open)
+- `.gallery-panel` (the second Gallery grid section + its header/jump controls)
+
+`.controls-panel` continues to be hidden as before.
+
+**4. Exit restores everything**
+
+All four new rules are scoped to the same three existing classes exit already removes — nothing new to clean up, no JS state to reset. Normal UI returns exactly as it was.
+
+**5. PM-UI / Ghost Opacity confirmed unaffected**
+
+`#presentation-controls`, `.automation-panel`, and `#ghost-popunder` are siblings of `.viewer-header`/`.layout`, not descendants targeted by any of these selectors — untouched.
 
 
 
