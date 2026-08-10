@@ -156,6 +156,72 @@ input {
   gap: 10px;
 }
 
+/* [FSA] Its own row — now a single "Choose Folder (FSA)" button; resuming
+   a remembered library happens via the .fsa-recent-libraries list below
+   instead of a second button here. */
+.fsa-picker-row {
+  grid-template-columns: 1fr;
+  margin-top: 10px;
+}
+
+/* [LIBRARY-REGISTRY] "Recent Libraries" list — one row per remembered FSA
+   folder. Mirrors .tag-chip-row's row/remove-button pattern elsewhere in
+   this file rather than inventing a new visual language. */
+.fsa-recent-libraries {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.fsa-recent-libraries.is-loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.fsa-recent-library-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.fsa-recent-library-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+}
+
+.fsa-recent-library-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.fsa-recent-library-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.fsa-recent-library-remove-btn {
+  flex: 0 0 auto;
+  min-width: 36px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+}
+
 .button-like,
 button {
   display: inline-flex;

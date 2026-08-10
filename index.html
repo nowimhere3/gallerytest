@@ -1,5 +1,3 @@
-
-
 Index · HTML
 <!DOCTYPE html>
 <html lang="en">
@@ -39,6 +37,21 @@ Index · HTML
         <p class="hint">
           Files stay local in your browser. Nothing is uploaded.
         </p>
+
+        <!-- [FSA] File System Access folder access — an ADDITIONAL way to
+             load a folder, alongside Choose Files/Choose Folder above (not
+             a replacement). -->
+        <div class="media-picker-row fsa-picker-row">
+          <button id="fsa-choose-folder-btn" class="button-like secondary" type="button">
+            <span>Choose Folder (FSA)</span>
+          </button>
+        </div>
+        <!-- [LIBRARY-REGISTRY] Populated by renderRecentLibraries() in
+             main.js — one row per previously-chosen FSA folder, most
+             recently opened first. Hidden (via the `hidden` class) when
+             empty. -->
+        <div id="fsa-recent-libraries" class="fsa-recent-libraries hidden"></div>
+        <p id="fsa-status-text" class="hint" role="status"></p>
  
         <hr />
  
@@ -371,4 +384,3 @@ Index · HTML
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>
- 
