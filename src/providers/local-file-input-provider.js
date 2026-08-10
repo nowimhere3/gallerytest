@@ -13,18 +13,24 @@ const EXTENSIONLESS_MIME_FALLBACKS = {
   ts: "video",
 };
 
-function getExtension(file) {
+// Exported (FSA support) so src/providers/fsa-file-provider.js can classify
+// files with the EXACT same rules as the proven local-folder path — a
+// second, drifting copy of "is this a supported file / what kind is it"
+// is exactly the kind of inconsistency that would make the two folder
+// sources behave differently for the same file. Behavior here is
+// unchanged; only the `export` keywords are new.
+export function getExtension(file) {
   const name = file.name || "";
   const dot = name.lastIndexOf(".");
   return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
-function isSupportedFile(file) {
+export function isSupportedFile(file) {
   if (SUPPORTED_PREFIXES.some((prefix) => file.type.startsWith(prefix))) return true;
   return !file.type && Boolean(EXTENSIONLESS_MIME_FALLBACKS[getExtension(file)]);
 }
 
-function getKind(file) {
+export function getKind(file) {
   if (file.type.startsWith("image/")) return "image";
   if (file.type.startsWith("video/")) return "video";
   return EXTENSIONLESS_MIME_FALLBACKS[getExtension(file)] || "unknown";

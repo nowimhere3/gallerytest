@@ -39,6 +39,21 @@ Index · HTML
         <p class="hint">
           Files stay local in your browser. Nothing is uploaded.
         </p>
+
+        <!-- [FSA] File System Access folder access — an ADDITIONAL way to
+             load a folder, alongside Choose Files/Choose Folder above (not
+             a replacement). "Start Here" only appears once a folder has
+             been chosen this way at least once (this session or a past
+             one). -->
+        <div class="media-picker-row fsa-picker-row">
+          <button id="fsa-choose-folder-btn" class="button-like secondary" type="button">
+            <span>Choose Folder (FSA)</span>
+          </button>
+          <button id="fsa-start-here-btn" class="button-like fsa-start-here-btn hidden" type="button" disabled>
+            <span>Start Here</span>
+          </button>
+        </div>
+        <p id="fsa-status-text" class="hint" role="status"></p>
  
         <hr />
  

@@ -156,6 +156,19 @@ input {
   gap: 10px;
 }
 
+/* [FSA] Its own row/grid — deliberately NOT sharing .media-picker-row's
+   1fr/3fr split above (that ratio is specific to Choose Files/Choose
+   Folder). These two buttons are equally weighted. */
+.fsa-picker-row {
+  grid-template-columns: 1fr 1fr;
+  margin-top: 10px;
+}
+
+.fsa-start-here-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .button-like,
 button {
   display: inline-flex;
