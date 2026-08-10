@@ -1,10 +1,18 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { ProfileStore } from "./profile/profile-store.js";
+import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
 const profile = new ProfileStore();
 const runtime = new MediaRuntime({ profile });
+
+// [TS-POC] Single adapter instance reused across items — attach() always
+// tears down whatever it was previously doing first, so this is safe to
+// call repeatedly across NEXT/PREV without accumulating state. See
+// src/playback/ts-playback-adapter.js for the full explanation.
+const tsPlaybackAdapter = new TsPlaybackAdapter();
+let tsDiagnosticCounter = 0;
 
 // Files are processed in chunks of this size (with a yield to the browser
 // between chunks) so very large folder selections (1000+ files) don't
@@ -30,7 +38,6 @@ const shuffleInput = document.getElementById("shuffle-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
 const videoLoopControl = document.getElementById("video-loop-control");
-const videoLoopStateText = document.getElementById("video-loop-state-text");
 const fillInput = document.getElementById("fill-input");
 
 const allMediaBtn = document.getElementById("all-media-btn");
@@ -44,6 +51,12 @@ const tagsFilterToggleBtn = document.getElementById("tags-filter-toggle-btn");
 const tagsFilterPanel = document.getElementById("tags-filter-panel");
 const tagsFilterEmpty = document.getElementById("tags-filter-empty");
 const tagsFilterGrid = document.getElementById("tags-filter-grid");
+
+const profileSelect = document.getElementById("profile-select");
+const profileDeleteBtn = document.getElementById("profile-delete-btn");
+const profileCreateInput = document.getElementById("profile-create-input");
+const profileCreateBtn = document.getElementById("profile-create-btn");
+const profileActiveStatusText = document.getElementById("profile-active-status-text");
 
 const profileExportBtn = document.getElementById("profile-export-btn");
 const profileImportMergeBtn = document.getElementById("profile-import-merge-btn");
@@ -463,7 +476,10 @@ function toggleTagsFilterPanel() {
 function syncVideoLoopControl() {
   const enabled = videoLoopInput.checked;
   videoLoopControl.classList.toggle("is-enabled", enabled);
-  videoLoopStateText.textContent = enabled ? "🔁 ON" : "🔁 OFF";
+  // Toolbar resizing/polish pass (Change C1): the visible control shows
+  // only the 🔁 icon now — ON/OFF is communicated by color/glow (see
+  // .loop-toggle-control.is-enabled) plus this title tooltip, not by text
+  // in the button itself.
   videoLoopControl.title = enabled ? "Loop: ON (click to disable)" : "Loop: OFF (click to enable)";
 
   // Loop Rules cannot exist independently — they're only ever available
@@ -580,6 +596,44 @@ function invalidateActiveFiniteAutomation() {
   loopRuleVideoToken += 1;
   loopRuleCompletedPlays = 0;
   activeLoopRule = { type: "forever" };
+}
+
+// ---- Manual-navigation Loop/Automation reset (Presentation Mode regression
+// pass) ----------------------------------------------------------------
+//
+// Single entry point for every manual-navigation control — Gallery
+// Prev/Next, Presentation overlay Prev/Next, and Presentation keyboard
+// Left/Right — so the branching below exists exactly once rather than at
+// each call site.
+//
+// There are two cases:
+//
+// 1. Ordinary indefinite looping — the plain 🔁 toggle with no automation
+//    configured, and the "Forever" automation choice, are the SAME
+//    `activeLoopRule.type === "forever"` state (see the block comment
+//    above `activeLoopRule`'s declaration). It belongs to the item being
+//    left, not whatever the user is navigating to, so manual navigation
+//    ends it outright: Loop OFF, automation reset, panel closed — routed
+//    through the exact same syncVideoLoopControl() path the 🔁 checkbox's
+//    own change listener uses, so there is still only one way Loop ever
+//    turns off.
+//
+// 2. Finite automations (X Times / Until Timer) are explicitly EXEMPT from
+//    the above — they keep using the existing, already-working
+//    invalidateActiveFiniteAutomation() behavior (cancel only that rule's
+//    progress/timer; the master Loop toggle itself is left alone). Their
+//    counting/timer/completion/handoff lifecycle is untouched by this
+//    function.
+function handleManualNavigationLoopReset() {
+  if (videoLoopInput.checked && activeLoopRule.type === "forever") {
+    // [DEBUG-8.4-MANUAL-NAV-RESET] Ordinary infinite Loop / Forever
+    // automation is cancelled here on manual navigation.
+    videoLoopInput.checked = false;
+    syncVideoLoopControl();
+    return;
+  }
+
+  invalidateActiveFiniteAutomation();
 }
 
 function resetLoopRuleToDefault() {
@@ -700,7 +754,19 @@ function togglePlay() {
 
 // ---- Rendering ---------------------------------------------------------
 
+// [TS-POC] Extension check only — kept local to main.js's routing
+// decision rather than added as a new MediaItem field, since this branch
+// exists to answer a feasibility question, not to grow the item schema.
+function isTsItem(item) {
+  return typeof item.name === "string" && item.name.toLowerCase().endsWith(".ts");
+}
+
 function clearViewerNode() {
+  // Unconditional and cheap even when the outgoing item wasn't .ts — see
+  // TsPlaybackAdapter#detach()'s own comment for why this is the simplest
+  // correct place to guarantee cleanup on every item change.
+  tsPlaybackAdapter.detach();
+
   if (currentViewerNode && currentViewerNode.tagName === "VIDEO") {
     currentViewerNode.pause();
     currentViewerNode.removeAttribute("src");
@@ -766,13 +832,25 @@ function buildViewer(state) {
 
   if (item.kind === "video") {
     const video = document.createElement("video");
-    video.src = item.url;
     video.controls = true;
     video.playsInline = true;
     video.preload = "metadata";
     video.muted = true;
     currentViewerNode = video;
     viewerStage.appendChild(video);
+
+    if (isTsItem(item)) {
+      // [TS-POC] Phase 5 diagnostic timing — counter-based ID only, never
+      // the filename/path, per the branch's logging requirement.
+      const diagnosticId = `ts-${++tsDiagnosticCounter}`;
+      tsPlaybackAdapter.attach(video, item.file, {
+        onTiming: (label, elapsedMs) => {
+          console.log(`[TS TEST] ${diagnosticId} ${label}: ${elapsedMs.toFixed(1)}ms`);
+        },
+      });
+    } else {
+      video.src = item.url;
+    }
 
     // A fresh video is on screen — arm whatever the active Loop Rule
     // needs for it (e.g. start an "Until Timer" countdown), and capture
@@ -1248,7 +1326,19 @@ fileInput.addEventListener("change", (event) => {
 });
 
 folderInput.addEventListener("change", (event) => {
-  loadFiles(event.target.files);
+  const files = event.target.files;
+
+  // Record which top-level folder this profile is currently associated
+  // with (Phase 8.1 — Multi-Profile Foundation). Purely descriptive
+  // metadata — the folder's own name, nothing more. No matching/detection
+  // happens here or anywhere yet; that's deferred to a later phase.
+  const firstFile = files && files[0];
+  if (firstFile && firstFile.webkitRelativePath) {
+    const topFolderName = firstFile.webkitRelativePath.split("/")[0];
+    if (topFolderName) profile.setMasterFolder({ name: topFolderName });
+  }
+
+  loadFiles(files);
   folderInput.value = "";
 });
 
@@ -1299,11 +1389,11 @@ typeVideosBtn.addEventListener("click", () => setTypeFilter("video"));
 tagsFilterToggleBtn.addEventListener("click", () => toggleTagsFilterPanel());
 
 prevBtn.addEventListener("click", () => {
-  invalidateActiveFiniteAutomation();
+  handleManualNavigationLoopReset();
   runtime.previous();
 });
 nextBtn.addEventListener("click", () => {
-  invalidateActiveFiniteAutomation();
+  handleManualNavigationLoopReset();
   runtime.next();
 });
 
@@ -1338,11 +1428,11 @@ overlayFavoriteBtn.addEventListener("click", () => {
 });
 
 overlayPrevBtn.addEventListener("click", () => {
-  invalidateActiveFiniteAutomation();
+  handleManualNavigationLoopReset();
   runtime.previous();
 });
 overlayNextBtn.addEventListener("click", () => {
-  invalidateActiveFiniteAutomation();
+  handleManualNavigationLoopReset();
   runtime.next();
 });
 
@@ -1406,14 +1496,16 @@ overlayAutomationBtn.addEventListener("click", () => {
     return;
   }
 
-  if (automationPanel.classList.contains("hidden")) {
-    openAutomationEditor();
-  } else {
-    // Closing via 🤖 again is navigation, not a cancel-with-side-effects:
-    // discard whatever draft was mid-edit, but never touch the already
-    // applied automation (Requirement 7, "close without Apply").
-    closeAutomationEditor();
-  }
+  // [DEBUG-8.4-AUTOMATION-TOGGLE] 🤖 is now a genuine ON/OFF control, not
+  // just a panel-visibility switch: while Loop is on, ANY click here turns
+  // it back off — cancelling the active automation, clearing its
+  // timer/progress, and closing the panel — via the exact same
+  // syncVideoLoopControl() path the 🔁 checkbox itself uses. Does not
+  // navigate media. (Previously this branch only toggled the panel's
+  // hidden state, leaving Loop running with no way to turn it off from 🤖
+  // itself — that one-directional behavior is the bug this replaces.)
+  videoLoopInput.checked = false;
+  syncVideoLoopControl();
 });
 
 // -- Step 1: choose the automation type --
@@ -1527,10 +1619,12 @@ function handlePresentationKeydown(event) {
   switch (event.key) {
     case "ArrowRight":
       event.preventDefault();
+      handleManualNavigationLoopReset();
       runtime.next();
       break;
     case "ArrowLeft":
       event.preventDefault();
+      handleManualNavigationLoopReset();
       runtime.previous();
       break;
     case " ":
@@ -1780,6 +1874,103 @@ profile.subscribe(() => {
   renderTagsFilterGrid();
 });
 
+// ---- Profile Selector / Creation (Phase 8.3) -------------------------------
+//
+// Purely a thin UI layer over ProfileStore's existing multi-profile APIs
+// (listProfiles/createProfile/switchProfile/getProfileId) — no profile
+// state is held or duplicated here. profile.subscribe() below keeps the
+// selector in sync with the registry the same way renderTagsGrid() stays
+// in sync with the tag vocabulary.
+
+function renderProfileSelector() {
+  const profiles = profile.listProfiles();
+  const activeId = profile.getProfileId();
+
+  profileSelect.innerHTML = "";
+
+  profiles.forEach((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.textContent = entry.name;
+    profileSelect.appendChild(option);
+  });
+
+  if (activeId) profileSelect.value = activeId;
+}
+
+profileSelect.addEventListener("change", async () => {
+  const targetId = profileSelect.value;
+  if (!targetId || targetId === profile.getProfileId()) return;
+
+  const ok = await profile.switchProfile(targetId);
+  if (!ok) {
+    profileActiveStatusText.textContent = "Could not switch profile.";
+    renderProfileSelector(); // revert the <select> to the still-active profile
+  }
+});
+
+async function createProfileFromInput() {
+  const name = profileCreateInput.value.trim();
+  if (!name) return;
+
+  profileCreateBtn.disabled = true;
+  try {
+    // [DEBUG-8.3-PROFILE-UI] This is where a newly-created profile becomes
+    // active: createProfile(name) registers the profile but — by design
+    // (see profile-store.js) — does NOT activate it, so switchProfile(id)
+    // is the ProfileStore API that actually performs the transition
+    // (persists activeProfileId, resets in-memory state, loads the new
+    // profile's isolated items/tags). "Save" in the UI == these two calls
+    // in sequence.
+    const created = await profile.createProfile(name);
+    await profile.switchProfile(created.id);
+
+    profileCreateInput.value = "";
+    profileActiveStatusText.textContent = `Created and switched to "${created.name}".`;
+  } catch (error) {
+    profileActiveStatusText.textContent = `Could not create profile: ${error.message}`;
+  } finally {
+    profileCreateBtn.disabled = false;
+  }
+}
+
+profileCreateBtn.addEventListener("click", createProfileFromInput);
+profileCreateInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    createProfileFromInput();
+  }
+});
+
+profileDeleteBtn.addEventListener("click", async () => {
+  const activeId = profile.getProfileId();
+  if (!activeId) return;
+
+  const activeName = profile.getProfileName();
+  const confirmed = window.confirm(
+    `Delete profile "${activeName}"? This removes its tags, favorites, and hidden state. Your media files are not affected. This cannot be undone.`
+  );
+  if (!confirmed) return;
+
+  profileDeleteBtn.disabled = true;
+  try {
+    await profile.deleteProfile(activeId);
+    profileActiveStatusText.textContent = `Deleted "${activeName}". Now on "${profile.getProfileName()}".`;
+  } catch (error) {
+    profileActiveStatusText.textContent = `Could not delete profile: ${error.message}`;
+  } finally {
+    profileDeleteBtn.disabled = false;
+  }
+});
+
+// Registry changes (create, switch, rename, master-folder update) all funnel
+// through ProfileStore's #emit(), same signal as favorites/tags. Keeping
+// this as its own subscription — like the Tags one above — since it reacts
+// to profile IDENTITY, not item/tag content.
+profile.subscribe(() => {
+  renderProfileSelector();
+});
+
 // ---- Profile Export / Import ----------------------------------------------
 
 let pendingImportMode = "merge";
@@ -1799,7 +1990,13 @@ function downloadTextFile(filename, text, mimeType = "application/json") {
 profileExportBtn.addEventListener("click", () => {
   const text = profile.exportText();
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  downloadTextFile(`gallery-profile-${stamp}.json`, text);
+  // Trivial, isolated filename cosmetic (Phase 8.3): the export JSON body
+  // already carries profileName (see ProfileStore#toJSON, unchanged since
+  // Phase 8.1) — this just makes the on-disk filename recognizable too
+  // when a user has several profiles exported side by side.
+  const nameSlug = profile.getProfileName().trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const filenamePrefix = nameSlug ? `gallery-profile-${nameSlug}` : "gallery-profile";
+  downloadTextFile(`${filenamePrefix}-${stamp}.json`, text);
 
   const count = profile.size();
   profileStatusText.textContent = `Exported ${count} curated item${count === 1 ? "" : "s"}.`;
@@ -1871,6 +2068,7 @@ resetLoopRuleToDefault();
 syncUndoHideButton();
 renderTagsGrid();
 renderTagsFilterGrid();
+renderProfileSelector();
 runtime.setIntervalMs(Number(intervalInput.value) * 1000);
 applyGhostOpacity(Number(ghostOpacityInput.value));
 

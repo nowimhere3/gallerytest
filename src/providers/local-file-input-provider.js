@@ -1,14 +1,33 @@
 const SUPPORTED_PREFIXES = ["image/", "video/"];
 const DEFAULT_BATCH_SIZE = 250;
 
+// [TS-POC] Chrome (and most browsers) report File.type === "" for local
+// .ts files — there's no registered MIME type for MPEG Transport Stream —
+// so MIME-prefix detection alone silently rejects them before they ever
+// become MediaItems. This is a narrow, conservative fallback: extension
+// match, and ONLY when the browser gave us no MIME type at all (so a
+// mislabeled-but-real file.type is never overridden), and ONLY for the
+// one extension this experimental branch is testing. It is deliberately
+// not a general "unknown extensions are fine" allowlist.
+const EXTENSIONLESS_MIME_FALLBACKS = {
+  ts: "video",
+};
+
+function getExtension(file) {
+  const name = file.name || "";
+  const dot = name.lastIndexOf(".");
+  return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
+}
+
 function isSupportedFile(file) {
-  return SUPPORTED_PREFIXES.some((prefix) => file.type.startsWith(prefix));
+  if (SUPPORTED_PREFIXES.some((prefix) => file.type.startsWith(prefix))) return true;
+  return !file.type && Boolean(EXTENSIONLESS_MIME_FALLBACKS[getExtension(file)]);
 }
 
 function getKind(file) {
   if (file.type.startsWith("image/")) return "image";
   if (file.type.startsWith("video/")) return "video";
-  return "unknown";
+  return EXTENSIONLESS_MIME_FALLBACKS[getExtension(file)] || "unknown";
 }
 
 function safeRelativePath(file) {

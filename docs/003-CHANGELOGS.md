@@ -567,6 +567,145 @@ Rather than trust a read-through, I built two test harnesses:
 
 One `if (!this.#replaceBeforeLoad)` guard added around the tags-merge loop in `#loadSavedRecords()`, mirroring the exact mechanism already used for items — no new state, no new flags, same pattern the codebase already established. Stale comment updated to match. Nothing else needed changing; `main.js` was already going through `ProfileStore` exclusively, no direct IndexedDB access anywhere.
 
+==========
+
+**7.3 — Playback Filtering Foundation + Media Metadata.** Updated **5 files:** `index.html`, `styles.css`, `src/main.js`, `src/profile/profile-store.js`, and `src/providers/local-file-input-provider.js`. The provider now stamps media with normalized metadata (`mediaType`, `systemTags`, and future-ready `userTags`), while the UI gained a unified **All / Images / Videos** type selector alongside the existing All / Favorites view controls.
+
+`src/main.js` now routes media through one shared filtering pipeline before handing the eligible collection to `MediaRuntime`, so Gallery, Slideshow, Shuffle, and Presentation all operate on the same filtered set without adding duplicate filtering logic to Runtime. `ProfileStore` also gained `favoritedAt`, allowing Favorites view to show the **most recently favorited media first** while preserving normal gallery ordering everywhere else.
+
+The purpose of 7.3 was to create a clean, reusable foundation for increasingly powerful playback filtering—especially future **user Tags**—without complicating the playback engine. `MediaRuntime` itself was left untouched: filtering determines **what media is eligible**, while Runtime remains responsible only for navigating and playing that resulting collection.
+
+
+===============
+Midnight 8.9.2026
+
+Let me read this in large connected chunks to understand the full picture before making changes.Now update the 4 button handlers and the keyboard handler to use this new centralized function:Now the keyboard handler — this is the actual root-cause fix (it wasn't calling the reset helper at all):Now Change A — the 🤖 genuine toggle:Now let's check the `viewer-header`'s standalone favorite/loop controls (non-Presentation) to make sure I don't accidentally break them, since `.favorite-toggle` is separate from `.overlay-btn-favorite`.Now the main toolbar button block (Change C hierarchy):Both should widen together to stay visually consistent with the toolbar. Let's update both:Now let's update the narrow-viewport responsive block to account for all the new sizing, and add an intermediate breakpoint for smoother scaling:Now let's add the intermediate breakpoint (≤700px) right before this ≤520px block, for smoother scaling from the wider desktop sizing:Now let's update `index.html` for the 🔁 icon-only display and `main.js` for the corresponding JS text change:Let's check CSS brace balance and do a quick lint pass:Good, clean. Now let's view the final toolbar CSS block end-to-end to double-check correctness:This all looks correct and consistent. Now let's package the final deliverable — all files touched in this phase.## PM Loop Reset + 🤖 Toggle + Toolbar Resizing + Favorites Fix — Summary
+
+I inspected the current code first (per the doc's instructions), then made targeted fixes. Here's where things stand:
+
+### 1. Root cause of ordinary Loop persistence
+Two separate bugs, both in `src/main.js`:
+- **Keyboard nav bypassed the reset entirely.** `handlePresentationKeydown()`'s ArrowLeft/ArrowRight cases called `runtime.next()`/`runtime.previous()` directly, never calling any invalidation helper — unlike the Prev/Next buttons, which did.
+- **The existing helper had the wrong polarity.** `invalidateActiveFiniteAutomation()` only reset the rule when it was **not** `"forever"` — i.e., it already correctly protected X Times/Until Timer, but it explicitly skipped Forever/ordinary Loop (`if (activeLoopRule.type === "forever") return;`), which is backwards from what's needed.
+
+### 2. Fix applied
+Added one centralized `handleManualNavigationLoopReset()`, now called from all 4 manual-nav entry points (Gallery Prev/Next, Presentation overlay Prev/Next) **and** the keyboard handler (the actual missing wire):
+- If Loop is on and `activeLoopRule.type === "forever"` → turns Loop off via `syncVideoLoopControl()` (same path the 🔁 checkbox itself uses).
+- Otherwise → falls through to the **untouched** `invalidateActiveFiniteAutomation()`, preserving X Times/Until Timer's existing tested behavior exactly.
+
+### 3. 🤖 toggle (Change A)
+Rewrote `overlayAutomationBtn`'s click handler into a genuine binary toggle: OFF→ON opens the panel (unchanged); ON→OFF now turns Loop off entirely via `syncVideoLoopControl()` instead of just hiding the panel. **Judgment call:** this removes the old "reopen a closed panel while Loop stays on" affordance — the spec's exact two-state model doesn't leave room for that middle state, and its tests confirm this.
+
+### 4. Toolbar resizing (Change C)
+- `styles.css`: gave ◀/⏯/▶ higher flex-grow + larger font-size (1.75rem desktop), bumped ❤️/🔁/🤖/etc. sizing, widened the toolbar cap to 720px, added a new intermediate `≤700px` breakpoint plus retuned the existing `≤520px` one so everything still fits without clipping/scrolling.
+- 🔁 now shows only the icon (`index.html` + `main.js`); ON/OFF is conveyed via color/glow and the title tooltip only.
+
+### 5. Favorites randomization (Change D)
+On inspection, this was **already correctly implemented** — `shouldRandomizeInitialSelection()` already returns `viewMode !== "favorites"` and is already wired into every relevant call site (`loadFiles`, `setViewMode`, `setTypeFilter`, `toggleTagFilter`). No code changes were needed or made here.
+
+### Verified
+- `node --check` passes on `main.js`.
+- CSS brace count balanced (207/207).
+- No unrelated files touched — `ProfileStore`/IndexedDB/providers untouched, exactly as scoped.
+
+**Caveat:** I don't have a browser in this environment, so the toolbar sizing/breakpoints are reasoned through carefully but not pixel-verified — worth a quick visual check on a real narrow viewport before calling Change C fully done.
+
+Files changed: `index.html`, `styles.css`, `src/main.js` — all three copied to outputs, but I hit the tool-call limit before I could call `present_files` to hand them to you. Let me know and I'll deliver them next turn.
+
+
+=====================
+
+"Gallery View Row 'Leakage' During Fullscreen / Fill Screen mode"
+
+Now let's apply the fix — root cause confirmed. I'll replace the reposition-based treatment with a true hide, and add rules for the other leaking chrome (topbar, gallery-panel, tags-filter-panel):All three classes match exactly what I used in CSS — `.simulated-fullscreen` on `.app-shell`, `.simulated-fullscreen-layout` on `.layout`, `.simulated-fullscreen-viewer` on `#viewer-panel`. Both `enterFillMode()` and `exitFillMode()` add/remove the same set, so exit fully restores everything via pure CSS reversal — no JS changes needed. Let's verify no stray syntax issues and do a final brace check.No JS changes were needed for this fix — confirmed clean. Let's package and deliver just `styles.css`.## Fix — Hide Normal Gallery UI During Fill Panel / Presentation Mode
+
+**1. Root cause**
+
+Fill Panel only ever hid the left sidebar (`.controls-panel`). The other leaking chrome was never addressed:
+- `.viewer-header` (the View/Type/Tags toolbar + normal ♡ favorite button) was **repositioned**, not hidden — `.simulated-fullscreen-viewer .viewer-header` set `position: absolute` + a gradient background + `pointer-events: none`, but it stayed fully visible, overlaid at the top of the fullscreen view.
+- `.gallery-panel` (the second Gallery section — grid + its own header/jump controls) had **no fullscreen rule at all**, so it just sat there in the page flow, fully visible.
+- `.topbar` (the `<h1>Local Media Gallery</h1>` + subtitle) lives outside `.layout` entirely, so it was never touched by any existing fullscreen rule.
+
+**2. Files changed**
+
+Only `styles.css`. No HTML or JS changes were needed — `enterFillMode()`/`exitFillMode()` in `main.js` already toggle exactly the three classes (`simulated-fullscreen` / `simulated-fullscreen-layout` / `simulated-fullscreen-viewer`) this fix hooks into, so the existing state machine did all the work.
+
+**3. What's now hidden during Fill Panel**
+- `.topbar` (page heading + subtitle)
+- `.viewer-header` inside the fullscreen viewer (View/All/♥ Favorites/Type/Images/Videos/♡/Tags — the whole normal toolbar)
+- `#tags-filter-panel` (the Tags dropdown, in case it was left open)
+- `.gallery-panel` (the second Gallery grid section + its header/jump controls)
+
+`.controls-panel` continues to be hidden as before.
+
+**4. Exit restores everything**
+
+All four new rules are scoped to the same three existing classes exit already removes — nothing new to clean up, no JS state to reset. Normal UI returns exactly as it was.
+
+**5. PM-UI / Ghost Opacity confirmed unaffected**
+
+`#presentation-controls`, `.automation-panel`, and `#ghost-popunder` are siblings of `.viewer-header`/`.layout`, not descendants targeted by any of these selectors — untouched.
+
+==================
+
+
+MAJOR UPDATE !!! .TS "Support" is LIVE !! 
+
+Now let's check the top of main.js for imports (to add the ts-playback-adapter import) and confirm current provider import path.Good, ESM imports work fine. Now let's implement Phase 1 — update the local file provider:Now let's create the isolated TS playback adapter:Let me fix a token-capture bug in the SourceBuffer's `updateend` listener:Now let's wire the adapter into `main.js`. First add the import and instantiate:Now add a small `isTsItem` helper near the other rendering helpers, and hook `clearViewerNode()`:Now update the `buildViewer` video-creation block to route `.ts` items through the adapter:Good — no dependency on `video.src` being set synchronously; it's purely timer/token bookkeeping. Now let's add the mux.js CDN script tag to `index.html`:Let's double-check the full `buildViewer` video block for correctness and inspect the final adapter file once more:This wires correctly. Let's do a final grep sanity pass across all touched files, then package and deliver.All wired end-to-end. Now let's package the deliverables — new file plus the three changed files.## `.ts` Playback Proof-of-Concept — Report
+
+**Files changed/added** (working from the fresh `gallerytest-sandboxTS.zip` you provided, not the earlier sandbox2 lineage):
+- `src/providers/local-file-input-provider.js` — edited (Phase 1)
+- `src/playback/ts-playback-adapter.js` — **new** (Phase 2/4/5)
+- `src/main.js` — edited (Phase 3/4 integration)
+- `index.html` — edited (mux.js CDN script tag)
+
+### Phase 1 — Discovery
+Added a narrow fallback: a file is accepted if its MIME prefix matches `image/`/`video/` **or** if `file.type === ""` (Chrome's actual behavior for local `.ts`) **and** its extension is `.ts`. `getKind()` maps that case to `"video"`. Nothing else about the extension-detection logic is generalized — nothing else with an empty `file.type` gets waved through. Identity (`id`), `relativePath`, `file`, batching, and everything downstream (profiles/tags/favorites/hidden) are untouched — `.ts` items flow through the exact same pipeline as any other video.
+
+### Phase 2 — TS playback adapter
+New, fully isolated module (`TsPlaybackAdapter`). Flow: reads the whole `File` via `arrayBuffer()`, pushes it to `mux.js`'s `Transmuxer` in 1MB chunks (yielding between chunks), and appends the resulting fragmented-MP4 segments to a `MediaSource`/`SourceBuffer` feeding the existing `<video>` element. mux.js (`window.muxjs`) is loaded via a CDN `<script>` tag in `index.html` — no new build tooling. **Known simplification**: the SourceBuffer's codec string (`avc1.64001f, mp4a.40.2`) is a broadly-compatible default rather than derived from the actual SPS — fine for the PoC's H.264 Main/High + AAC-LC test files, but worth revisiting if real files hit `unsupported-codec`.
+
+### Phase 3 — Viewer integration
+`buildViewer()`'s existing video branch is unchanged except for one branch point: `.ts` items call `tsPlaybackAdapter.attach(video, item.file, {...})` instead of `video.src = item.url`. Everything downstream — loop rules, the `"ended"` listener, PM toolbar, Gallery/Presentation navigation, favorites, tags, hidden state — operates on the same `<video>` element exactly as before and required zero changes. Gallery **thumbnails** (`mountThumbMedia`) were deliberately left on native `<video src>` — out of this phase's scope per the spec's PM-focused wording; `.ts` thumbnails will likely just show a blank frame rather than error.
+
+### Phase 4 — Cleanup
+`clearViewerNode()` now unconditionally calls `tsPlaybackAdapter.detach()` before doing anything else — cheap no-op for non-`.ts` items. `detach()` bumps an internal token (invalidating any in-flight transmux/append callbacks from a superseded item), aborts a mid-update `SourceBuffer`, releases the `MediaSource`, and revokes the object URL. Every async callback in the adapter (transmuxer `data`/`done`, `SourceBuffer` `updateend`) is guarded by a captured (not live-read) token comparison, so rapid NEXT/PREV can't leak stale segments into a new video.
+
+### Phase 5 — Diagnostic timing
+`onTiming(label, elapsedMs)` fires at `adapter-start` (0ms baseline), `mediasource-open`, `first-media-appended`, `canplay`, and `playing`, plus a couple of best-effort error labels (`read-error`, `append-error`, `unsupported-codec`, `unsupported-fallback-native-src`). `main.js` logs these as `[TS TEST] ts-<n> <label>: <ms>ms` — a per-attach incrementing counter, never the filename/path.
+
+### What I could not verify
+This sandbox has no browser and no network access (`npm`/CDN fetches both fail here), so **none of this has been run against real `.ts` files** — only inspected and syntax-checked (`node --check` passes on all three JS files). Before trusting the Phase 6 NEXT-switching numbers, I'd want to confirm in an actual browser: mux.js loads from the CDN URL, the default codec string matches your sample files' actual H.264 profile, and the `MediaSource`/`SourceBuffer` sequencing behaves as expected under rapid NEXT/PREV.
+
+Here is the updated file tree reflecting the full repository layout:
+
+```text
+gallerytest-sandboxTS/
+├── README.md
+├── docs/
+│   ├── 000-PHILOSOPHY.md
+│   ├── 001-ARCHITECTURE.md
+│   ├── 002-ROADMAP.md
+│   ├── 003-CHANGELOGS.md
+│   └── UPDATE.txt
+├── index.html                                 [MODIFIED] Added mux.js CDN script tag
+├── styles.css
+└── src/
+    ├── main.js                                [MODIFIED] Added adapter import, isTsItem helper, clearViewerNode() & buildViewer() wiring
+    ├── playback/                              [NEW DIRECTORY]
+    │   └── ts-playback-adapter.js             [NEW FILE] MediaSource/mux.js adapter implementation
+    ├── profile/
+    │   ├── indexeddb.js
+    │   └── profile-store.js
+    ├── providers/
+    │   └── local-file-input-provider.js       [MODIFIED] Added .ts extension fallback for empty MIME types
+    └── runtime/
+        └── media-runtime.js
+
+```
+
+==================
+
 
 
 
