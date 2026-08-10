@@ -1,10 +1,26 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
+import { FsaFileProvider } from "./providers/fsa-file-provider.js";
+import { listLibraries, addOrUpdateLibrary, touchLibrary, removeLibrary } from "./storage/library-registry.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { ProfileStore } from "./profile/profile-store.js";
+import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
+// [FSA] A second, independent provider for the File System Access folder
+// path. Only one of `provider`/`fsaProvider` ever has "live" object URLs
+// at a time — whichever load function runs disposes the OTHER one first
+// (see loadFiles/loadFromFsaHandle below), since only one media set is
+// ever actually loaded into the app at once.
+const fsaProvider = new FsaFileProvider();
 const profile = new ProfileStore();
 const runtime = new MediaRuntime({ profile });
+
+// [TS-POC] Single adapter instance reused across items — attach() always
+// tears down whatever it was previously doing first, so this is safe to
+// call repeatedly across NEXT/PREV without accumulating state. See
+// src/playback/ts-playback-adapter.js for the full explanation.
+const tsPlaybackAdapter = new TsPlaybackAdapter();
+let tsDiagnosticCounter = 0;
 
 // Files are processed in chunks of this size (with a yield to the browser
 // between chunks) so very large folder selections (1000+ files) don't
@@ -23,6 +39,9 @@ const layoutEl = document.querySelector(".layout");
 
 const fileInput = document.getElementById("file-input");
 const folderInput = document.getElementById("folder-input");
+const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
+const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
+const fsaStatusText = document.getElementById("fsa-status-text");
 const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
@@ -273,6 +292,24 @@ function getVisibleItems() {
   return filtered;
 }
 
+// Shared tail of every "a folder/fileset finished loading" path (the
+// original webkitdirectory path AND the FSA path below). Stamps
+// favorite/hidden/tag status from the Profile immediately, before
+// getVisibleItems() (used by reloadRuntime) might filter down to Favorites
+// Only — otherwise that filter would run against items that don't know
+// their own favorite/hidden status yet.
+function finishLoadingItems(items) {
+  items.forEach((item) => {
+    item.isFavorite = profile.isFavorite(item.relativePath);
+    item.isHidden = profile.isHidden(item.relativePath);
+    item.favoritedAt = profile.getFavoritedAt(item.relativePath);
+    item.userTags = profile.getItemTags(item.relativePath);
+  });
+
+  allItems = items;
+  reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
+}
+
 async function loadFiles(fileList) {
   const total = (fileList || []).length;
   if (!total || isLoadingFiles) return;
@@ -289,6 +326,9 @@ async function loadFiles(fileList) {
   setLoadingState(true, total);
   lastHiddenRelativePath = null;
   syncUndoHideButton();
+  // [FSA] Switching TO the local-picker path — release whatever the FSA
+  // path had loaded, since only one media set is ever active at once.
+  fsaProvider.dispose();
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -298,22 +338,257 @@ async function loadFiles(fileList) {
       },
     });
 
-    // Stamp favorite/hidden status from the Profile immediately, before
-    // getVisibleItems() (used by reloadRuntime below) might filter down to
-    // Favorites Only — otherwise that filter would run against items that
-    // don't know their own favorite/hidden status yet.
-    items.forEach((item) => {
-      item.isFavorite = profile.isFavorite(item.relativePath);
-      item.isHidden = profile.isHidden(item.relativePath);
-      item.favoritedAt = profile.getFavoritedAt(item.relativePath);
-      item.userTags = profile.getItemTags(item.relativePath);
-    });
-
-    allItems = items;
-    reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
+    finishLoadingItems(items);
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
+  }
+}
+
+// ---- File System Access API folder loading -------------------------------
+//
+// Mirrors loadFiles() above (same staging: clear, setLoadingState, dispose
+// the other provider, finishLoadingItems tail) but drives FsaFileProvider's
+// recursive directory walk instead of a FileList. Kept as its own function
+// rather than folded into loadFiles since the two inputs (a File[]-like
+// FileList vs. a directory handle) and their progress semantics ("N of
+// known total" vs. "N found so far") are different enough that forcing one
+// shared signature would obscure both.
+function isFsaSupported() {
+  return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
+}
+
+async function loadFromFsaHandle(dirHandle, libraryRecord) {
+  if (isLoadingFiles) return;
+
+  isLoadingFiles = true;
+
+  bumpGalleryGeneration();
+  runtime.clear();
+  clearViewerNode();
+  exitFillMode();
+  setLoadingState(true);
+  statusText.textContent = "Scanning folder…";
+  lastHiddenRelativePath = null;
+  syncUndoHideButton();
+  // [FSA] Switching TO the FSA path — release whatever the local <input>
+  // picker had loaded.
+  provider.dispose();
+
+  fsaStatusText.textContent = "";
+
+  // [LIBRARY-REGISTRY] Reliability requirement: given the diagnosed FSA
+  // traversal gap (see library-registry.js's header comment / the
+  // investigation this came out of), a resume must never silently trust
+  // whatever count a fresh walk returns. Compare against what this
+  // library's registry record last reported, if anything.
+  const previousCount = libraryRecord && typeof libraryRecord.itemCount === "number" ? libraryRecord.itemCount : null;
+
+  try {
+    const result = await fsaProvider.loadFromDirectoryHandle(dirHandle, {
+      batchSize: BATCH_SIZE,
+      onProgress: (loaded) => {
+        statusText.textContent = `Scanning folder… ${loaded} media file${loaded === 1 ? "" : "s"} found so far`;
+      },
+    });
+
+    const count = result.items.length;
+    const driftNote =
+      previousCount !== null && previousCount !== count
+        ? ` (previously ${previousCount} item${previousCount === 1 ? "" : "s"} on record — folder contents may have changed, or the scan may be incomplete; see console)`
+        : "";
+
+    if (result.incomplete) {
+      // Reliability requirement: an interrupted scan must never be
+      // reported as if it were a complete one. Diagnostics already went to
+      // the console (see FsaFileProvider); this surfaces it to the user
+      // too, with whatever was actually found before the failure.
+      fsaStatusText.textContent =
+        `Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded.${driftNote} ` +
+        "Check the browser console for details, then try again.";
+    } else if (result.diagnostics.errors.length) {
+      fsaStatusText.textContent =
+        `Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
+        `${result.diagnostics.errors.length === 1 ? "" : "s"} could not be read (see console).${driftNote}`;
+    } else {
+      fsaStatusText.textContent = `Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
+    }
+
+    finishLoadingItems(result.items);
+
+    if (libraryRecord && libraryRecord.id) {
+      try {
+        await touchLibrary(libraryRecord.id, { itemCount: count });
+      } catch (error) {
+        // Doesn't affect this session's already-loaded library — only
+        // means the registry's remembered count/timestamp is stale.
+        console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
+      }
+      await renderRecentLibraries();
+    }
+  } catch (error) {
+    console.error("[FSA] Failed to load the selected folder.", error);
+    fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
+  } finally {
+    isLoadingFiles = false;
+    setLoadingState(false);
+  }
+}
+
+fsaChooseFolderBtn.addEventListener("click", async () => {
+  if (!isFsaSupported()) {
+    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    return;
+  }
+
+  let dirHandle;
+  try {
+    dirHandle = await window.showDirectoryPicker();
+  } catch (error) {
+    if (error && error.name === "AbortError") return; // user closed the picker — not an error
+    console.error("[FSA] Folder picker failed.", error);
+    fsaStatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    return;
+  }
+
+  // [LIBRARY-REGISTRY] addOrUpdateLibrary() deduplicates via the real FSA
+  // isSameEntry() identity check, so re-picking a folder that's already
+  // registered updates that record instead of creating a duplicate entry.
+  let record;
+  try {
+    record = await addOrUpdateLibrary(dirHandle);
+    await renderRecentLibraries();
+  } catch (error) {
+    // Persistence failing doesn't block using the folder THIS session —
+    // it just won't be resumable next time. Fall back to an in-memory-only
+    // record so the load below still has something to report drift against.
+    console.warn("[LIBRARY-REGISTRY] Could not save this folder for future sessions.", error);
+    record = { id: null, name: dirHandle.name, itemCount: null };
+  }
+
+  await loadFromFsaHandle(dirHandle, record);
+});
+
+// [LIBRARY-REGISTRY] Resumes one specific remembered library (a click on a
+// "Recent Libraries" row) — checks/re-requests read permission for its
+// saved handle, same flow the old single-slot "Start Here" button used,
+// now parameterized by which record was clicked instead of a fixed key.
+async function resumeLibrary(record) {
+  fsaStatusText.textContent = "Checking folder access…";
+
+  const dirHandle = record.handle;
+  if (!dirHandle) {
+    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Choose Folder (FSA)".`;
+    return;
+  }
+
+  // Browsers do not guarantee stored permission survives a restart —
+  // check first, and only prompt if actually needed. requestPermission()
+  // must be called from a user gesture; this click handler is one.
+  try {
+    let permission = await dirHandle.queryPermission({ mode: "read" });
+    if (permission !== "granted") {
+      permission = await dirHandle.requestPermission({ mode: "read" });
+    }
+    if (permission !== "granted") {
+      fsaStatusText.textContent = `Access to "${record.name}" was not granted.`;
+      return;
+    }
+  } catch (error) {
+    // A handle can become genuinely invalid (folder deleted/moved, browser
+    // data cleared, etc.) — fail gracefully rather than throwing, and stop
+    // offering a broken resume for it.
+    console.error("[FSA] A saved folder is no longer accessible.", error);
+    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Libraries.`;
+    try {
+      await removeLibrary(record.id);
+    } catch (removeError) {
+      console.warn("[LIBRARY-REGISTRY] Could not remove the stale library record.", removeError);
+    }
+    await renderRecentLibraries();
+    return;
+  }
+
+  await loadFromFsaHandle(dirHandle, record);
+}
+
+function formatLibraryMeta(record) {
+  const parts = [];
+  if (typeof record.itemCount === "number") {
+    parts.push(`${record.itemCount} item${record.itemCount === 1 ? "" : "s"}`);
+  }
+  if (record.lastOpenedAt) parts.push(`opened ${formatRelativeTime(record.lastOpenedAt)}`);
+  return parts.join(" · ");
+}
+
+function formatRelativeTime(timestamp) {
+  const diffMs = Date.now() - timestamp;
+  const minute = 60000;
+  const hour = 3600000;
+  const day = 86400000;
+  if (diffMs < minute) return "just now";
+  if (diffMs < hour) return `${Math.round(diffMs / minute)}m ago`;
+  if (diffMs < day) return `${Math.round(diffMs / hour)}h ago`;
+  const days = Math.round(diffMs / day);
+  return days === 1 ? "yesterday" : `${days}d ago`;
+}
+
+// [LIBRARY-REGISTRY] Re-renders the "Recent Libraries" list from IndexedDB.
+// Rebuilt from scratch each call (list is small — a handful of libraries
+// at most) rather than diffed, matching renderTagsGrid()'s existing
+// pattern elsewhere in this file. Does NOT touch permissions or load
+// anything on its own — purely a metadata read, safe to call at boot.
+async function renderRecentLibraries() {
+  let records;
+  try {
+    records = await listLibraries();
+  } catch (error) {
+    console.warn("[LIBRARY-REGISTRY] Could not read saved libraries.", error);
+    records = [];
+  }
+
+  fsaRecentLibrariesEl.innerHTML = "";
+  fsaRecentLibrariesEl.classList.toggle("hidden", records.length === 0);
+
+  for (const record of records) {
+    const row = document.createElement("div");
+    row.className = "fsa-recent-library-row";
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "fsa-recent-library-btn";
+    openBtn.addEventListener("click", () => resumeLibrary(record));
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "fsa-recent-library-name";
+    nameEl.textContent = record.name;
+
+    const metaEl = document.createElement("span");
+    metaEl.className = "fsa-recent-library-meta";
+    metaEl.textContent = formatLibraryMeta(record);
+
+    openBtn.appendChild(nameEl);
+    openBtn.appendChild(metaEl);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "fsa-recent-library-remove-btn";
+    removeBtn.title = `Forget "${record.name}"`;
+    removeBtn.setAttribute("aria-label", `Forget "${record.name}"`);
+    removeBtn.textContent = "✕";
+    removeBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        await removeLibrary(record.id);
+      } catch (error) {
+        console.warn("[LIBRARY-REGISTRY] Could not forget this library.", error);
+      }
+      await renderRecentLibraries();
+    });
+
+    row.appendChild(openBtn);
+    row.appendChild(removeBtn);
+    fsaRecentLibrariesEl.appendChild(row);
   }
 }
 
@@ -321,6 +596,11 @@ function setLoadingState(isLoading, total) {
   fileInput.disabled = isLoading;
   folderInput.disabled = isLoading;
   clearBtn.disabled = isLoading || !allItems.length;
+  // [FSA] Prevent starting a second folder load (either source) while one
+  // is already in progress — mirrors the existing fileInput/folderInput
+  // disabling above.
+  fsaChooseFolderBtn.disabled = isLoading;
+  fsaRecentLibrariesEl.classList.toggle("is-loading", isLoading);
 
   if (isLoading) {
     statusText.textContent = total ? `Loading media… 0 / ${total}` : "Loading media…";
@@ -746,7 +1026,19 @@ function togglePlay() {
 
 // ---- Rendering ---------------------------------------------------------
 
+// [TS-POC] Extension check only — kept local to main.js's routing
+// decision rather than added as a new MediaItem field, since this branch
+// exists to answer a feasibility question, not to grow the item schema.
+function isTsItem(item) {
+  return typeof item.name === "string" && item.name.toLowerCase().endsWith(".ts");
+}
+
 function clearViewerNode() {
+  // Unconditional and cheap even when the outgoing item wasn't .ts — see
+  // TsPlaybackAdapter#detach()'s own comment for why this is the simplest
+  // correct place to guarantee cleanup on every item change.
+  tsPlaybackAdapter.detach();
+
   if (currentViewerNode && currentViewerNode.tagName === "VIDEO") {
     currentViewerNode.pause();
     currentViewerNode.removeAttribute("src");
@@ -812,13 +1104,25 @@ function buildViewer(state) {
 
   if (item.kind === "video") {
     const video = document.createElement("video");
-    video.src = item.url;
     video.controls = true;
     video.playsInline = true;
     video.preload = "metadata";
     video.muted = true;
     currentViewerNode = video;
     viewerStage.appendChild(video);
+
+    if (isTsItem(item)) {
+      // [TS-POC] Phase 5 diagnostic timing — counter-based ID only, never
+      // the filename/path, per the branch's logging requirement.
+      const diagnosticId = `ts-${++tsDiagnosticCounter}`;
+      tsPlaybackAdapter.attach(video, item.file, {
+        onTiming: (label, elapsedMs) => {
+          console.log(`[TS TEST] ${diagnosticId} ${label}: ${elapsedMs.toFixed(1)}ms`);
+        },
+      });
+    } else {
+      video.src = item.url;
+    }
 
     // A fresh video is on screen — arm whatever the active Loop Rule
     // needs for it (e.g. start an "Until Timer" countdown), and capture
@@ -1378,6 +1682,7 @@ clearBtn.addEventListener("click", () => {
   bumpGalleryGeneration();
   runtime.clear();
   provider.dispose();
+  fsaProvider.dispose(); // [FSA] whichever source was active, release it
   allItems = [];
   clearViewerNode();
   exitFillMode();
@@ -2045,4 +2350,21 @@ runtime.subscribe(render);
 window.addEventListener("beforeunload", () => {
   runtime.stop();
   provider.dispose();
+  fsaProvider.dispose(); // [FSA]
 });
+
+// [LIBRARY-REGISTRY] Boot-time: render whatever libraries were previously
+// remembered so the user sees "Recent Libraries" immediately. This is a
+// pure metadata read — it does NOT check/request permission or load
+// anything on its own (requestPermission needs a user gesture, and
+// queryPermission-only would still mean silently touching folder access
+// on every page load without the user asking).
+(async function initFsaLibraries() {
+  if (!isFsaSupported()) {
+    fsaChooseFolderBtn.disabled = true;
+    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    return;
+  }
+
+  await renderRecentLibraries();
+})();
