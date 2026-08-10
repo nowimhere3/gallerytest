@@ -1,6 +1,6 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
-import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from "./storage/fsa-handle-store.js";
+import { listLibraries, addOrUpdateLibrary, touchLibrary, removeLibrary } from "./storage/library-registry.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
@@ -40,7 +40,7 @@ const layoutEl = document.querySelector(".layout");
 const fileInput = document.getElementById("file-input");
 const folderInput = document.getElementById("folder-input");
 const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
-const fsaStartHereBtn = document.getElementById("fsa-start-here-btn");
+const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
 const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
@@ -358,7 +358,7 @@ function isFsaSupported() {
   return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 }
 
-async function loadFromFsaHandle(dirHandle) {
+async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
   isLoadingFiles = true;
@@ -377,6 +377,13 @@ async function loadFromFsaHandle(dirHandle) {
 
   fsaStatusText.textContent = "";
 
+  // [LIBRARY-REGISTRY] Reliability requirement: given the diagnosed FSA
+  // traversal gap (see library-registry.js's header comment / the
+  // investigation this came out of), a resume must never silently trust
+  // whatever count a fresh walk returns. Compare against what this
+  // library's registry record last reported, if anything.
+  const previousCount = libraryRecord && typeof libraryRecord.itemCount === "number" ? libraryRecord.itemCount : null;
+
   try {
     const result = await fsaProvider.loadFromDirectoryHandle(dirHandle, {
       batchSize: BATCH_SIZE,
@@ -386,6 +393,10 @@ async function loadFromFsaHandle(dirHandle) {
     });
 
     const count = result.items.length;
+    const driftNote =
+      previousCount !== null && previousCount !== count
+        ? ` (previously ${previousCount} item${previousCount === 1 ? "" : "s"} on record — folder contents may have changed, or the scan may be incomplete; see console)`
+        : "";
 
     if (result.incomplete) {
       // Reliability requirement: an interrupted scan must never be
@@ -393,17 +404,28 @@ async function loadFromFsaHandle(dirHandle) {
       // the console (see FsaFileProvider); this surfaces it to the user
       // too, with whatever was actually found before the failure.
       fsaStatusText.textContent =
-        `Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded. ` +
+        `Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded.${driftNote} ` +
         "Check the browser console for details, then try again.";
     } else if (result.diagnostics.errors.length) {
       fsaStatusText.textContent =
         `Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
-        `${result.diagnostics.errors.length === 1 ? "" : "s"} could not be read (see console).`;
+        `${result.diagnostics.errors.length === 1 ? "" : "s"} could not be read (see console).${driftNote}`;
     } else {
-      fsaStatusText.textContent = `Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".`;
+      fsaStatusText.textContent = `Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
     }
 
     finishLoadingItems(result.items);
+
+    if (libraryRecord && libraryRecord.id) {
+      try {
+        await touchLibrary(libraryRecord.id, { itemCount: count });
+      } catch (error) {
+        // Doesn't affect this session's already-loaded library — only
+        // means the registry's remembered count/timestamp is stale.
+        console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
+      }
+      await renderRecentLibraries();
+    }
   } catch (error) {
     console.error("[FSA] Failed to load the selected folder.", error);
     fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
@@ -429,40 +451,36 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
     return;
   }
 
+  // [LIBRARY-REGISTRY] addOrUpdateLibrary() deduplicates via the real FSA
+  // isSameEntry() identity check, so re-picking a folder that's already
+  // registered updates that record instead of creating a duplicate entry.
+  let record;
   try {
-    await saveFolderHandle(dirHandle);
-    fsaStartHereBtn.classList.remove("hidden");
-    fsaStartHereBtn.disabled = false;
-    fsaStartHereBtn.querySelector("span").textContent = `Start Here (${dirHandle.name})`;
+    record = await addOrUpdateLibrary(dirHandle);
+    await renderRecentLibraries();
   } catch (error) {
     // Persistence failing doesn't block using the folder THIS session —
-    // "Start Here" next time just won't be available.
-    console.warn("[FSA] Could not save this folder for future sessions.", error);
+    // it just won't be resumable next time. Fall back to an in-memory-only
+    // record so the load below still has something to report drift against.
+    console.warn("[LIBRARY-REGISTRY] Could not save this folder for future sessions.", error);
+    record = { id: null, name: dirHandle.name, itemCount: null };
   }
 
-  await loadFromFsaHandle(dirHandle);
+  await loadFromFsaHandle(dirHandle, record);
 });
 
-fsaStartHereBtn.addEventListener("click", async () => {
+// [LIBRARY-REGISTRY] Resumes one specific remembered library (a click on a
+// "Recent Libraries" row) — checks/re-requests read permission for its
+// saved handle, same flow the old single-slot "Start Here" button used,
+// now parameterized by which record was clicked instead of a fixed key.
+async function resumeLibrary(record) {
   fsaStatusText.textContent = "Checking folder access…";
 
-  let saved;
-  try {
-    saved = await loadFolderHandle();
-  } catch (error) {
-    console.error("[FSA] Could not read the saved folder handle.", error);
-    fsaStatusText.textContent = "Could not read the saved folder. Choose a folder instead.";
-    fsaStartHereBtn.classList.add("hidden");
+  const dirHandle = record.handle;
+  if (!dirHandle) {
+    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Choose Folder (FSA)".`;
     return;
   }
-
-  if (!saved || !saved.handle) {
-    fsaStatusText.textContent = "No saved folder found. Choose a folder instead.";
-    fsaStartHereBtn.classList.add("hidden");
-    return;
-  }
-
-  const dirHandle = saved.handle;
 
   // Browsers do not guarantee stored permission survives a restart —
   // check first, and only prompt if actually needed. requestPermission()
@@ -473,26 +491,106 @@ fsaStartHereBtn.addEventListener("click", async () => {
       permission = await dirHandle.requestPermission({ mode: "read" });
     }
     if (permission !== "granted") {
-      fsaStatusText.textContent = "Access to the saved folder was not granted. Choose a folder instead.";
+      fsaStatusText.textContent = `Access to "${record.name}" was not granted.`;
       return;
     }
   } catch (error) {
     // A handle can become genuinely invalid (folder deleted/moved, browser
     // data cleared, etc.) — fail gracefully rather than throwing, and stop
-    // offering a broken "Start Here."
-    console.error("[FSA] The saved folder is no longer accessible.", error);
-    fsaStatusText.textContent = "The saved folder is no longer available. Choose a folder instead.";
-    fsaStartHereBtn.classList.add("hidden");
+    // offering a broken resume for it.
+    console.error("[FSA] A saved folder is no longer accessible.", error);
+    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Libraries.`;
     try {
-      await clearFolderHandle();
-    } catch (clearError) {
-      console.warn("[FSA] Could not clear the stale saved folder.", clearError);
+      await removeLibrary(record.id);
+    } catch (removeError) {
+      console.warn("[LIBRARY-REGISTRY] Could not remove the stale library record.", removeError);
     }
+    await renderRecentLibraries();
     return;
   }
 
-  await loadFromFsaHandle(dirHandle);
-});
+  await loadFromFsaHandle(dirHandle, record);
+}
+
+function formatLibraryMeta(record) {
+  const parts = [];
+  if (typeof record.itemCount === "number") {
+    parts.push(`${record.itemCount} item${record.itemCount === 1 ? "" : "s"}`);
+  }
+  if (record.lastOpenedAt) parts.push(`opened ${formatRelativeTime(record.lastOpenedAt)}`);
+  return parts.join(" · ");
+}
+
+function formatRelativeTime(timestamp) {
+  const diffMs = Date.now() - timestamp;
+  const minute = 60000;
+  const hour = 3600000;
+  const day = 86400000;
+  if (diffMs < minute) return "just now";
+  if (diffMs < hour) return `${Math.round(diffMs / minute)}m ago`;
+  if (diffMs < day) return `${Math.round(diffMs / hour)}h ago`;
+  const days = Math.round(diffMs / day);
+  return days === 1 ? "yesterday" : `${days}d ago`;
+}
+
+// [LIBRARY-REGISTRY] Re-renders the "Recent Libraries" list from IndexedDB.
+// Rebuilt from scratch each call (list is small — a handful of libraries
+// at most) rather than diffed, matching renderTagsGrid()'s existing
+// pattern elsewhere in this file. Does NOT touch permissions or load
+// anything on its own — purely a metadata read, safe to call at boot.
+async function renderRecentLibraries() {
+  let records;
+  try {
+    records = await listLibraries();
+  } catch (error) {
+    console.warn("[LIBRARY-REGISTRY] Could not read saved libraries.", error);
+    records = [];
+  }
+
+  fsaRecentLibrariesEl.innerHTML = "";
+  fsaRecentLibrariesEl.classList.toggle("hidden", records.length === 0);
+
+  for (const record of records) {
+    const row = document.createElement("div");
+    row.className = "fsa-recent-library-row";
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "fsa-recent-library-btn";
+    openBtn.addEventListener("click", () => resumeLibrary(record));
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "fsa-recent-library-name";
+    nameEl.textContent = record.name;
+
+    const metaEl = document.createElement("span");
+    metaEl.className = "fsa-recent-library-meta";
+    metaEl.textContent = formatLibraryMeta(record);
+
+    openBtn.appendChild(nameEl);
+    openBtn.appendChild(metaEl);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "fsa-recent-library-remove-btn";
+    removeBtn.title = `Forget "${record.name}"`;
+    removeBtn.setAttribute("aria-label", `Forget "${record.name}"`);
+    removeBtn.textContent = "✕";
+    removeBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        await removeLibrary(record.id);
+      } catch (error) {
+        console.warn("[LIBRARY-REGISTRY] Could not forget this library.", error);
+      }
+      await renderRecentLibraries();
+    });
+
+    row.appendChild(openBtn);
+    row.appendChild(removeBtn);
+    fsaRecentLibrariesEl.appendChild(row);
+  }
+}
 
 function setLoadingState(isLoading, total) {
   fileInput.disabled = isLoading;
@@ -502,9 +600,7 @@ function setLoadingState(isLoading, total) {
   // is already in progress — mirrors the existing fileInput/folderInput
   // disabling above.
   fsaChooseFolderBtn.disabled = isLoading;
-  if (!fsaStartHereBtn.classList.contains("hidden")) {
-    fsaStartHereBtn.disabled = isLoading;
-  }
+  fsaRecentLibrariesEl.classList.toggle("is-loading", isLoading);
 
   if (isLoading) {
     statusText.textContent = total ? `Loading media… 0 / ${total}` : "Loading media…";
@@ -2257,28 +2353,18 @@ window.addEventListener("beforeunload", () => {
   fsaProvider.dispose(); // [FSA]
 });
 
-// [FSA] Boot-time check: if a folder was saved in a previous session, show
-// "Start Here" so the user can attempt to reuse it — this does NOT load
-// anything or request permission on its own (requestPermission needs a
-// user gesture, and queryPermission-only would still mean silently
-// reading folder contents on every page load without the user asking).
-(async function checkForSavedFsaFolder() {
+// [LIBRARY-REGISTRY] Boot-time: render whatever libraries were previously
+// remembered so the user sees "Recent Libraries" immediately. This is a
+// pure metadata read — it does NOT check/request permission or load
+// anything on its own (requestPermission needs a user gesture, and
+// queryPermission-only would still mean silently touching folder access
+// on every page load without the user asking).
+(async function initFsaLibraries() {
   if (!isFsaSupported()) {
     fsaChooseFolderBtn.disabled = true;
     fsaStatusText.textContent = "This browser does not support the File System Access API.";
     return;
   }
 
-  try {
-    const saved = await loadFolderHandle();
-    if (saved && saved.handle) {
-      fsaStartHereBtn.classList.remove("hidden");
-      fsaStartHereBtn.disabled = false;
-      fsaStartHereBtn.querySelector("span").textContent = `Start Here (${saved.handle.name})`;
-    }
-  } catch (error) {
-    // No saved folder, or this browser can't store handles at all — either
-    // way, "Start Here" just stays hidden; Choose Folder (FSA) still works.
-    console.warn("[FSA] Could not check for a previously saved folder.", error);
-  }
+  await renderRecentLibraries();
 })();
