@@ -1,9 +1,17 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
+import { FsaFileProvider } from "./providers/fsa-file-provider.js";
+import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from "./storage/fsa-handle-store.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
+// [FSA] A second, independent provider for the File System Access folder
+// path. Only one of `provider`/`fsaProvider` ever has "live" object URLs
+// at a time — whichever load function runs disposes the OTHER one first
+// (see loadFiles/loadFromFsaHandle below), since only one media set is
+// ever actually loaded into the app at once.
+const fsaProvider = new FsaFileProvider();
 const profile = new ProfileStore();
 const runtime = new MediaRuntime({ profile });
 
@@ -31,6 +39,9 @@ const layoutEl = document.querySelector(".layout");
 
 const fileInput = document.getElementById("file-input");
 const folderInput = document.getElementById("folder-input");
+const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
+const fsaStartHereBtn = document.getElementById("fsa-start-here-btn");
+const fsaStatusText = document.getElementById("fsa-status-text");
 const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
@@ -281,6 +292,24 @@ function getVisibleItems() {
   return filtered;
 }
 
+// Shared tail of every "a folder/fileset finished loading" path (the
+// original webkitdirectory path AND the FSA path below). Stamps
+// favorite/hidden/tag status from the Profile immediately, before
+// getVisibleItems() (used by reloadRuntime) might filter down to Favorites
+// Only — otherwise that filter would run against items that don't know
+// their own favorite/hidden status yet.
+function finishLoadingItems(items) {
+  items.forEach((item) => {
+    item.isFavorite = profile.isFavorite(item.relativePath);
+    item.isHidden = profile.isHidden(item.relativePath);
+    item.favoritedAt = profile.getFavoritedAt(item.relativePath);
+    item.userTags = profile.getItemTags(item.relativePath);
+  });
+
+  allItems = items;
+  reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
+}
+
 async function loadFiles(fileList) {
   const total = (fileList || []).length;
   if (!total || isLoadingFiles) return;
@@ -297,6 +326,9 @@ async function loadFiles(fileList) {
   setLoadingState(true, total);
   lastHiddenRelativePath = null;
   syncUndoHideButton();
+  // [FSA] Switching TO the local-picker path — release whatever the FSA
+  // path had loaded, since only one media set is ever active at once.
+  fsaProvider.dispose();
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -306,29 +338,173 @@ async function loadFiles(fileList) {
       },
     });
 
-    // Stamp favorite/hidden status from the Profile immediately, before
-    // getVisibleItems() (used by reloadRuntime below) might filter down to
-    // Favorites Only — otherwise that filter would run against items that
-    // don't know their own favorite/hidden status yet.
-    items.forEach((item) => {
-      item.isFavorite = profile.isFavorite(item.relativePath);
-      item.isHidden = profile.isHidden(item.relativePath);
-      item.favoritedAt = profile.getFavoritedAt(item.relativePath);
-      item.userTags = profile.getItemTags(item.relativePath);
-    });
-
-    allItems = items;
-    reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
+    finishLoadingItems(items);
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
   }
 }
 
+// ---- File System Access API folder loading -------------------------------
+//
+// Mirrors loadFiles() above (same staging: clear, setLoadingState, dispose
+// the other provider, finishLoadingItems tail) but drives FsaFileProvider's
+// recursive directory walk instead of a FileList. Kept as its own function
+// rather than folded into loadFiles since the two inputs (a File[]-like
+// FileList vs. a directory handle) and their progress semantics ("N of
+// known total" vs. "N found so far") are different enough that forcing one
+// shared signature would obscure both.
+function isFsaSupported() {
+  return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
+}
+
+async function loadFromFsaHandle(dirHandle) {
+  if (isLoadingFiles) return;
+
+  isLoadingFiles = true;
+
+  bumpGalleryGeneration();
+  runtime.clear();
+  clearViewerNode();
+  exitFillMode();
+  setLoadingState(true);
+  statusText.textContent = "Scanning folder…";
+  lastHiddenRelativePath = null;
+  syncUndoHideButton();
+  // [FSA] Switching TO the FSA path — release whatever the local <input>
+  // picker had loaded.
+  provider.dispose();
+
+  fsaStatusText.textContent = "";
+
+  try {
+    const result = await fsaProvider.loadFromDirectoryHandle(dirHandle, {
+      batchSize: BATCH_SIZE,
+      onProgress: (loaded) => {
+        statusText.textContent = `Scanning folder… ${loaded} media file${loaded === 1 ? "" : "s"} found so far`;
+      },
+    });
+
+    const count = result.items.length;
+
+    if (result.incomplete) {
+      // Reliability requirement: an interrupted scan must never be
+      // reported as if it were a complete one. Diagnostics already went to
+      // the console (see FsaFileProvider); this surfaces it to the user
+      // too, with whatever was actually found before the failure.
+      fsaStatusText.textContent =
+        `Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded. ` +
+        "Check the browser console for details, then try again.";
+    } else if (result.diagnostics.errors.length) {
+      fsaStatusText.textContent =
+        `Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
+        `${result.diagnostics.errors.length === 1 ? "" : "s"} could not be read (see console).`;
+    } else {
+      fsaStatusText.textContent = `Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".`;
+    }
+
+    finishLoadingItems(result.items);
+  } catch (error) {
+    console.error("[FSA] Failed to load the selected folder.", error);
+    fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
+  } finally {
+    isLoadingFiles = false;
+    setLoadingState(false);
+  }
+}
+
+fsaChooseFolderBtn.addEventListener("click", async () => {
+  if (!isFsaSupported()) {
+    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    return;
+  }
+
+  let dirHandle;
+  try {
+    dirHandle = await window.showDirectoryPicker();
+  } catch (error) {
+    if (error && error.name === "AbortError") return; // user closed the picker — not an error
+    console.error("[FSA] Folder picker failed.", error);
+    fsaStatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    return;
+  }
+
+  try {
+    await saveFolderHandle(dirHandle);
+    fsaStartHereBtn.classList.remove("hidden");
+    fsaStartHereBtn.disabled = false;
+    fsaStartHereBtn.querySelector("span").textContent = `Start Here (${dirHandle.name})`;
+  } catch (error) {
+    // Persistence failing doesn't block using the folder THIS session —
+    // "Start Here" next time just won't be available.
+    console.warn("[FSA] Could not save this folder for future sessions.", error);
+  }
+
+  await loadFromFsaHandle(dirHandle);
+});
+
+fsaStartHereBtn.addEventListener("click", async () => {
+  fsaStatusText.textContent = "Checking folder access…";
+
+  let saved;
+  try {
+    saved = await loadFolderHandle();
+  } catch (error) {
+    console.error("[FSA] Could not read the saved folder handle.", error);
+    fsaStatusText.textContent = "Could not read the saved folder. Choose a folder instead.";
+    fsaStartHereBtn.classList.add("hidden");
+    return;
+  }
+
+  if (!saved || !saved.handle) {
+    fsaStatusText.textContent = "No saved folder found. Choose a folder instead.";
+    fsaStartHereBtn.classList.add("hidden");
+    return;
+  }
+
+  const dirHandle = saved.handle;
+
+  // Browsers do not guarantee stored permission survives a restart —
+  // check first, and only prompt if actually needed. requestPermission()
+  // must be called from a user gesture; this click handler is one.
+  try {
+    let permission = await dirHandle.queryPermission({ mode: "read" });
+    if (permission !== "granted") {
+      permission = await dirHandle.requestPermission({ mode: "read" });
+    }
+    if (permission !== "granted") {
+      fsaStatusText.textContent = "Access to the saved folder was not granted. Choose a folder instead.";
+      return;
+    }
+  } catch (error) {
+    // A handle can become genuinely invalid (folder deleted/moved, browser
+    // data cleared, etc.) — fail gracefully rather than throwing, and stop
+    // offering a broken "Start Here."
+    console.error("[FSA] The saved folder is no longer accessible.", error);
+    fsaStatusText.textContent = "The saved folder is no longer available. Choose a folder instead.";
+    fsaStartHereBtn.classList.add("hidden");
+    try {
+      await clearFolderHandle();
+    } catch (clearError) {
+      console.warn("[FSA] Could not clear the stale saved folder.", clearError);
+    }
+    return;
+  }
+
+  await loadFromFsaHandle(dirHandle);
+});
+
 function setLoadingState(isLoading, total) {
   fileInput.disabled = isLoading;
   folderInput.disabled = isLoading;
   clearBtn.disabled = isLoading || !allItems.length;
+  // [FSA] Prevent starting a second folder load (either source) while one
+  // is already in progress — mirrors the existing fileInput/folderInput
+  // disabling above.
+  fsaChooseFolderBtn.disabled = isLoading;
+  if (!fsaStartHereBtn.classList.contains("hidden")) {
+    fsaStartHereBtn.disabled = isLoading;
+  }
 
   if (isLoading) {
     statusText.textContent = total ? `Loading media… 0 / ${total}` : "Loading media…";
@@ -1410,6 +1586,7 @@ clearBtn.addEventListener("click", () => {
   bumpGalleryGeneration();
   runtime.clear();
   provider.dispose();
+  fsaProvider.dispose(); // [FSA] whichever source was active, release it
   allItems = [];
   clearViewerNode();
   exitFillMode();
@@ -2077,4 +2254,31 @@ runtime.subscribe(render);
 window.addEventListener("beforeunload", () => {
   runtime.stop();
   provider.dispose();
+  fsaProvider.dispose(); // [FSA]
 });
+
+// [FSA] Boot-time check: if a folder was saved in a previous session, show
+// "Start Here" so the user can attempt to reuse it — this does NOT load
+// anything or request permission on its own (requestPermission needs a
+// user gesture, and queryPermission-only would still mean silently
+// reading folder contents on every page load without the user asking).
+(async function checkForSavedFsaFolder() {
+  if (!isFsaSupported()) {
+    fsaChooseFolderBtn.disabled = true;
+    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    return;
+  }
+
+  try {
+    const saved = await loadFolderHandle();
+    if (saved && saved.handle) {
+      fsaStartHereBtn.classList.remove("hidden");
+      fsaStartHereBtn.disabled = false;
+      fsaStartHereBtn.querySelector("span").textContent = `Start Here (${saved.handle.name})`;
+    }
+  } catch (error) {
+    // No saved folder, or this browser can't store handles at all — either
+    // way, "Start Here" just stays hidden; Choose Folder (FSA) still works.
+    console.warn("[FSA] Could not check for a previously saved folder.", error);
+  }
+})();
