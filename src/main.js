@@ -1,10 +1,18 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { ProfileStore } from "./profile/profile-store.js";
+import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
 const profile = new ProfileStore();
 const runtime = new MediaRuntime({ profile });
+
+// [TS-POC] Single adapter instance reused across items — attach() always
+// tears down whatever it was previously doing first, so this is safe to
+// call repeatedly across NEXT/PREV without accumulating state. See
+// src/playback/ts-playback-adapter.js for the full explanation.
+const tsPlaybackAdapter = new TsPlaybackAdapter();
+let tsDiagnosticCounter = 0;
 
 // Files are processed in chunks of this size (with a yield to the browser
 // between chunks) so very large folder selections (1000+ files) don't
@@ -746,7 +754,19 @@ function togglePlay() {
 
 // ---- Rendering ---------------------------------------------------------
 
+// [TS-POC] Extension check only — kept local to main.js's routing
+// decision rather than added as a new MediaItem field, since this branch
+// exists to answer a feasibility question, not to grow the item schema.
+function isTsItem(item) {
+  return typeof item.name === "string" && item.name.toLowerCase().endsWith(".ts");
+}
+
 function clearViewerNode() {
+  // Unconditional and cheap even when the outgoing item wasn't .ts — see
+  // TsPlaybackAdapter#detach()'s own comment for why this is the simplest
+  // correct place to guarantee cleanup on every item change.
+  tsPlaybackAdapter.detach();
+
   if (currentViewerNode && currentViewerNode.tagName === "VIDEO") {
     currentViewerNode.pause();
     currentViewerNode.removeAttribute("src");
@@ -812,13 +832,25 @@ function buildViewer(state) {
 
   if (item.kind === "video") {
     const video = document.createElement("video");
-    video.src = item.url;
     video.controls = true;
     video.playsInline = true;
     video.preload = "metadata";
     video.muted = true;
     currentViewerNode = video;
     viewerStage.appendChild(video);
+
+    if (isTsItem(item)) {
+      // [TS-POC] Phase 5 diagnostic timing — counter-based ID only, never
+      // the filename/path, per the branch's logging requirement.
+      const diagnosticId = `ts-${++tsDiagnosticCounter}`;
+      tsPlaybackAdapter.attach(video, item.file, {
+        onTiming: (label, elapsedMs) => {
+          console.log(`[TS TEST] ${diagnosticId} ${label}: ${elapsedMs.toFixed(1)}ms`);
+        },
+      });
+    } else {
+      video.src = item.url;
+    }
 
     // A fresh video is on screen — arm whatever the active Loop Rule
     // needs for it (e.g. start an "Until Timer" countdown), and capture
