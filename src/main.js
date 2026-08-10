@@ -87,6 +87,7 @@ const tagActivityName = document.getElementById("tag-activity-name");
 const tagActivityPosition = document.getElementById("tag-activity-position");
 const tagActivityTime = document.getElementById("tag-activity-time");
 const tagActivityEmpty = document.getElementById("tag-activity-empty");
+const tagActivitySearchBtn = document.getElementById("tag-activity-search-btn");
 
 const prevBtn = document.getElementById("prev-btn");
 const nextBtn = document.getElementById("next-btn");
@@ -743,6 +744,29 @@ function toggleTagsFilterPanel() {
     "aria-expanded",
     tagsFilterPanel.classList.contains("hidden") ? "false" : "true"
   );
+}
+
+// [8.3] "Tag -> Search": reuses activeTagFilters/renderTagsFilterGrid —
+// the exact same state and pipeline toggleTagFilter() already drives —
+// rather than a parallel tag-search representation. Deliberately additive
+// (only turns the filter ON) instead of toggling: this is triggered from
+// the Status Update Center's "Find in Gallery" button, whose whole point
+// is "show me media with this tag", not "flip this tag's filter state
+// blind" — a second click here shouldn't silently remove the filter the
+// first click just added.
+function applyTagActivitySelectionAsFilter() {
+  if (!selectedTagActivityId) return;
+
+  if (!activeTagFilters.includes(selectedTagActivityId)) {
+    activeTagFilters = [...activeTagFilters, selectedTagActivityId];
+    renderTagsFilterGrid();
+    reloadRuntime({ keepPlaying: runtime.getState().isPlaying, randomizeInitial: shouldRandomizeInitialSelection() });
+  }
+
+  // Surface the result rather than filtering "invisibly" behind a closed
+  // panel — same aria-expanded sync toggleTagsFilterPanel() does.
+  tagsFilterPanel.classList.remove("hidden");
+  tagsFilterToggleBtn.setAttribute("aria-expanded", "true");
 }
 
 function syncVideoLoopControl() {
@@ -1412,9 +1436,14 @@ function makePresentationTagButton(tag, appliedTagIds, item) {
     const isApplying = !profile.hasItemTag(item.relativePath, tag.id);
     profile.toggleItemTag(item.relativePath, tag.id);
     if (isApplying) {
+      // [8.4] Shuffle context travels WITH the activity record it
+      // describes, not as separate global state — a later switch of the
+      // Shuffle toggle must never retroactively relabel what this specific
+      // tagging pass meant. See ProfileStore#recordTagActivity's own note.
       profile.recordTagActivity(tag.id, {
         position: state.currentIndex + 1,
         total: state.total,
+        shuffle: state.shuffle,
       });
     }
     // No re-render call needed here — profile.subscribe() below re-runs
@@ -1492,6 +1521,18 @@ function flashInvalidGalleryJumpInput() {
   window.setTimeout(() => galleryJumpInput.classList.remove("is-invalid"), 500);
 }
 
+// [8.5] "find"/"play" (galleryJumpMode) ARE the search-vs-direct jump
+// distinction the product spec asks for — not a separate mechanism to
+// build. Both already jump within whatever search/filter context is
+// currently active (state.total already reflects getVisibleItems(), see
+// the comment at this control's HTML). "find" = SEARCH jump: locate a
+// position in that context (scroll/highlight only, nothing loads).
+// "play" = DIRECT jump: unconditionally load that position into the
+// Viewer. Keeping these two names/behaviors distinct (rather than
+// collapsing to one "jump" now that 8.3 adds a real filter-apply action)
+// matters for the next phase too: once FSA master-folder auto-detection
+// exists, "direct jump" must keep meaning "load it, full stop" even if a
+// future profile/folder switch changes what's in the search context.
 function performGalleryJump() {
   const state = runtime.getState();
   const raw = galleryJumpInput.value.trim();
@@ -1659,6 +1700,7 @@ typeImagesBtn.addEventListener("click", () => setTypeFilter("image"));
 typeVideosBtn.addEventListener("click", () => setTypeFilter("video"));
 
 tagsFilterToggleBtn.addEventListener("click", () => toggleTagsFilterPanel());
+tagActivitySearchBtn.addEventListener("click", applyTagActivitySelectionAsFilter);
 
 prevBtn.addEventListener("click", () => {
   handleManualNavigationLoopReset();
@@ -1981,7 +2023,14 @@ function renderTagActivityCenter() {
   tagActivityEmpty.classList.toggle("hidden", hasActivity);
 
   if (hasActivity) {
-    tagActivityPosition.textContent = `${selectedTag.lastTagPosition} / ${selectedTag.totalAtTime}`;
+    // [8.4] Only appended when this activity record actually has a known
+    // shuffle context (see ProfileStore#recordTagActivity) — omitted
+    // entirely for older/pre-8.4 records rather than guessing "OFF".
+    const shuffleLabel =
+      typeof selectedTag.lastTagShuffle === "boolean"
+        ? ` · Shuffle ${selectedTag.lastTagShuffle ? "ON" : "OFF"}`
+        : "";
+    tagActivityPosition.textContent = `${selectedTag.lastTagPosition} / ${selectedTag.totalAtTime}${shuffleLabel}`;
     tagActivityTime.textContent = formatTagActivityTime(selectedTag.lastTaggedAt);
     tagActivityTime.dateTime = new Date(selectedTag.lastTaggedAt).toISOString();
   } else {

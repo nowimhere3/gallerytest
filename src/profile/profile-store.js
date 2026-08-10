@@ -572,7 +572,7 @@ export class ProfileStore {
     return this.#tags.map((tag) => ({ ...tag })).sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  recordTagActivity(tagId, { position, total, timestamp = Date.now() } = {}) {
+  recordTagActivity(tagId, { position, total, timestamp = Date.now(), shuffle } = {}) {
     const tag = this.#tags.find((candidate) => candidate.id === tagId);
     const normalizedPosition = Number(position);
     const normalizedTotal = Number(total);
@@ -592,6 +592,17 @@ export class ProfileStore {
     tag.lastTagPosition = normalizedPosition;
     tag.totalAtTime = normalizedTotal;
     tag.lastTaggedAt = normalizedTimestamp;
+    // [8.4] Recorded alongside position/total, not inferred separately —
+    // "555 / 1000" is ambiguous on its own once tagging happens in BOTH
+    // Shuffle ON and Shuffle OFF sessions (different runs, different
+    // orderings, same numbers could mean two different things). `shuffle`
+    // is optional/untyped-checked here (not required, not defaulted to
+    // false) so a caller that doesn't know about Shuffle at all — or an
+    // already-persisted tag from before this field existed — doesn't get
+    // a misleading "Shuffle OFF" it never actually claimed.
+    if (typeof shuffle === "boolean") {
+      tag.lastTagShuffle = shuffle;
+    }
     this.#tagIdsChangedBeforeLoad.add(tagId);
     this.#emit();
     this.#persist();

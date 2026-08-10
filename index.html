@@ -85,6 +85,16 @@ Index · HTML
               <time id="tag-activity-time" class="tag-activity-value"></time>
               <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
             </div>
+            <!-- [8.3] "Tag -> Search": applies whichever tag is selected
+                 above to the EXISTING Gallery Tag Filter (activeTagFilters
+                 / Phase 6.3) instead of the user re-opening that panel and
+                 re-clicking the same tag there. Deliberately its own
+                 button, not a side effect of selecting a tag to view its
+                 activity — viewing activity stays read-only; this is the
+                 one action that changes what the Gallery shows. -->
+            <button id="tag-activity-search-btn" class="tag-activity-search-btn secondary" type="button">
+              Find in Gallery
+            </button>
           </div>
         </div>
  
@@ -237,7 +247,14 @@ Index · HTML
         <!-- Phase 1 — Gallery Media Navigation. Human-readable 1-based
              numbering ("400" = the 400th item in the current
              Gallery-visible sequence), same set the runtime/filter
-             pipeline already produces — no second ordering system. -->
+             pipeline already produces — no second ordering system.
+             [8.5] That's exactly why BOTH buttons below are already
+             "search-context" jumps (the number means "in your current
+             filter/search results", e.g. Phase 8.3's "Find in Gallery"),
+             not "in the whole library" — they only differ in whether the
+             target also becomes the LOADED item (direct) or just gets
+             scrolled to (search/locate). Tooltips spell this out
+             explicitly; behavior is unchanged from before this phase. -->
         <div class="gallery-jump-group" role="group" aria-label="Select and navigate to media">
           <span class="toolbar-filter-label">Select</span>
           <input
@@ -254,7 +271,7 @@ Index · HTML
             class="filter-btn active"
             type="button"
             aria-pressed="true"
-            title="Find this media in the Gallery"
+            title="Search: scroll to this position in your current filtered Gallery view (does not load it)"
           >Find Below</button>
           <span class="gallery-jump-separator">or</span>
           <button
@@ -262,7 +279,7 @@ Index · HTML
             class="filter-btn"
             type="button"
             aria-pressed="false"
-            title="Load this media into the Viewer"
+            title="Direct jump: load this media into the Viewer immediately"
           >Load in Player</button>
         </div>
       </div>

@@ -360,6 +360,15 @@ button:not(:disabled):hover,
   font-size: 0.9rem;
 }
 
+/* [8.3] Compact — this sits inside the already-small Status Update Center
+   box, not a full-width action. */
+.tag-activity-search-btn {
+  margin-top: 9px;
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  min-height: 0;
+}
+
 .tag-create-row {
   display: flex;
   flex-wrap: wrap;
