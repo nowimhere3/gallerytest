@@ -1,3 +1,6 @@
+
+
+Index · HTML
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,47 +19,47 @@
         </p>
       </div>
     </header>
-
+ 
     <main class="layout">
       <section class="panel controls-panel">
         <h2>Load Media</h2>
-
+ 
         <div class="media-picker-row">
           <label class="button-like secondary">
             <span>Choose Files</span>
             <input id="file-input" type="file" accept="image/*,video/*" multiple hidden />
           </label>
-
+ 
           <label class="button-like">
             <span>Choose Folder</span>
             <input id="folder-input" type="file" accept="image/*,video/*" multiple webkitdirectory hidden />
           </label>
         </div>
-
+ 
         <p class="hint">
           Files stay local in your browser. Nothing is uploaded.
         </p>
-
+ 
         <hr />
-
+ 
         <section class="playback-section">
         <h2>Slideshow</h2>
-
+ 
         <div class="control-grid playback-grid">
           <button id="play-btn" disabled>Start</button>
           <button id="stop-btn" disabled>Stop</button>
           <button id="prev-btn" disabled>Previous</button>
           <button id="next-btn" disabled>Next</button>
         </div>
-
+ 
         <button id="clear-btn" class="danger clear-media-btn">Clear Media</button>
-
+ 
         <hr />
         </section>
-
+ 
         <details class="tags-section">
         <summary>Tags</summary>
-
+ 
         <div id="tag-activity-center" class="tag-activity-center" role="status" aria-live="polite" aria-label="Tag Status Update Center">
           <div id="tag-activity-neutral" class="tag-activity-neutral">Select a tag to view its latest activity.</div>
           <div id="tag-activity-content" class="hidden">
@@ -71,61 +74,61 @@
             </div>
           </div>
         </div>
-
+ 
         <div class="tag-create-row">
           <input id="tag-create-input" type="text" placeholder="New tag name" maxlength="40" />
           <button id="tag-create-btn" class="secondary" type="button">Add</button>
         </div>
-
+ 
         <p id="tags-status-text" class="hint" role="status"></p>
-
+ 
         <div id="tags-empty" class="hint">No tags yet.</div>
         <div id="tags-grid" class="tags-grid hidden"></div>
         </details>
-
+ 
         <hr />
-
+ 
         <details class="profile-section">
         <summary>Profile</summary>
-
+ 
         <p class="hint">
           Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
         </p>
-
+ 
         <div class="profile-current-row">
           <label for="profile-select" class="profile-select-label">Profile</label>
           <select id="profile-select"></select>
           <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete</button>
         </div>
-
+ 
         <div class="profile-create-row">
           <input id="profile-create-input" type="text" placeholder="New profile name" maxlength="60" />
           <button id="profile-create-btn" class="secondary" type="button">Save Profile</button>
         </div>
-
+ 
         <p id="profile-active-status-text" class="hint" role="status"></p>
-
+ 
         <hr class="profile-inline-hr" />
-
+ 
         <div class="control-stack">
           <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
           <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
           <button id="profile-import-replace-btn" class="secondary" type="button">Import Profile (Replace)</button>
           <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
         </div>
-
+ 
         <label class="compact-check wide-check">
           <input id="profile-skip-missing-input" type="checkbox" />
           <span>Only import entries for files currently loaded</span>
         </label>
-
+ 
         <p id="profile-status-text" class="hint" role="status"></p>
-
+ 
         <hr />
         </details>
-
+ 
         <section class="slideshow-settings-section">
-
+ 
         <div class="form-row interval-control">
           <label for="interval-input">Interval (seconds)</label>
           <div class="interval-stepper">
@@ -134,24 +137,24 @@
             <button id="interval-increase-btn" class="secondary" type="button" aria-label="Increase interval">+</button>
           </div>
         </div>
-
+ 
         <div class="checkbox-stack">
           <label class="compact-check wide-check">
             <input id="shuffle-input" type="checkbox" checked />
             <span>Shuffle</span>
           </label>
-
+ 
           <label class="compact-check wide-check">
             <input id="loop-input" type="checkbox" checked />
             <span>Loop Playlist</span>
           </label>
-
+ 
           <label class="compact-check wide-check">
             <input id="fill-input" type="checkbox" checked />
             <span>Fill Panel</span>
           </label>
         </div>
-
+ 
         <div class="status-box">
           <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
           <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
@@ -160,7 +163,7 @@
         <hr />
         </section>
       </section>
-
+ 
       <div class="media-content">
       <section id="viewer-panel" class="panel viewer-panel">
         <div class="viewer-header">
@@ -193,7 +196,7 @@
           </div>
           <span id="counter-text">0 / 0</span>
         </div>
-
+ 
         <!-- Phase 6.3 — Gallery Tag Filtering. Grows horizontally first
              (responsive multi-column grid), vertically only as a last
              resort, so the media grid below shifts down as little as
@@ -203,21 +206,21 @@
           <p id="tags-filter-empty" class="hint">No tags yet — create some in Gallery Settings.</p>
           <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
         </div>
-
+ 
         <div id="viewer-empty" class="viewer-empty">
           Choose files or a folder to begin.
         </div>
-
+ 
         <div id="viewer-stage" class="viewer-stage hidden"></div>
       </section>
-
+ 
       <section class="panel gallery-panel">
       <div class="viewer-header">
         <div class="viewer-header-main">
           <h2>Gallery</h2>
           <span id="gallery-count">0 items</span>
         </div>
-
+ 
         <!-- Phase 1 — Gallery Media Navigation. Human-readable 1-based
              numbering ("400" = the 400th item in the current
              Gallery-visible sequence), same set the runtime/filter
@@ -250,17 +253,17 @@
           >Load in Player</button>
         </div>
       </div>
-
+ 
       <div id="gallery-empty" class="gallery-empty">
         No media loaded yet.
       </div>
-
+ 
       <div id="gallery-grid" class="gallery-grid hidden"></div>
       </section>
       </div>
     </main>
   </div>
-
+ 
   <div id="presentation-controls" class="presentation-controls hidden" tabindex="0" aria-label="Presentation controls">
     <div class="presentation-controls-bar">
       <button id="overlay-favorite-btn" class="overlay-btn overlay-btn-favorite hidden" type="button" aria-label="Toggle favorite">♡</button>
@@ -277,7 +280,7 @@
       <button id="overlay-exit-btn" class="overlay-btn overlay-btn-danger" type="button">Exit</button>
       <button id="overlay-settings-btn" class="overlay-btn overlay-btn-gear" type="button">⚙</button>
     </div>
-
+ 
     <!-- Sits between the toolbar above and the ⚙ row below — a sibling of
          both — and only occupies layout space while open. One row, same
          height as the toolbar: "Ghost Opacity" label, slider, percentage,
@@ -289,7 +292,7 @@
         <span id="ghost-opacity-label">15%</span>
       </div>
     </div>
-
+ 
     <!-- The "⚙" row. Appears below the toolbar — same placement pattern
          as #automation-panel below. Same row height as the toolbar: 👻 on
          the far left, then the "Tags" label, then up to 4 tag chips, all
@@ -313,7 +316,7 @@
       </div>
       <div id="presentation-tags-overflow" class="presentation-tags-overflow hidden"></div>
     </div>
-
+ 
     <!-- Compact single-row step flow. Exactly one of the three .automation-step
          children is visible at a time (Step 1: choose type. Step 2: the chosen
          type's controls, replacing Step 1 in place, not appended below it). -->
@@ -323,7 +326,7 @@
         <button id="automation-choice-times-btn" class="automation-chip" type="button">X Times</button>
         <button id="automation-choice-timer-btn" class="automation-chip" type="button">Until Timer</button>
       </div>
-
+ 
       <div id="automation-step-times" class="automation-step automation-step-workflow hidden">
         <button id="automation-times-back-btn" class="automation-back-btn" type="button" aria-label="Back">‹</button>
         <div class="automation-config-group">
@@ -336,7 +339,7 @@
         </div>
         <button id="automation-times-apply-btn" class="automation-chip automation-apply-btn" type="button">Apply</button>
       </div>
-
+ 
       <div id="automation-step-timer" class="automation-step automation-step-workflow hidden">
         <button id="automation-timer-back-btn" class="automation-back-btn" type="button" aria-label="Back">‹</button>
         <div class="automation-config-group">
@@ -359,7 +362,13 @@
       </div>
     </div>
   </div>
-
+ 
+  <!-- [TS-POC] mux.js — established MPEG-TS -> fragmented MP4 transmuxer,
+       used only by src/playback/ts-playback-adapter.js for this
+       experimental .ts branch. UMD build, attaches window.muxjs; nothing
+       else in the app touches it. -->
+  <script src="https://cdn.jsdelivr.net/npm/mux.js@7/dist/mux.min.js"></script>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>
+ 
