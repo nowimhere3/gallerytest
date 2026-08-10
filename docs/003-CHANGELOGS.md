@@ -646,6 +646,67 @@ All four new rules are scoped to the same three existing classes exit already re
 
 `#presentation-controls`, `.automation-panel`, and `#ghost-popunder` are siblings of `.viewer-header`/`.layout`, not descendants targeted by any of these selectors — untouched.
 
+==================
+
+
+MAJOR UPDATE !!! .TS "Support" is LIVE !! 
+
+Now let's check the top of main.js for imports (to add the ts-playback-adapter import) and confirm current provider import path.Good, ESM imports work fine. Now let's implement Phase 1 — update the local file provider:Now let's create the isolated TS playback adapter:Let me fix a token-capture bug in the SourceBuffer's `updateend` listener:Now let's wire the adapter into `main.js`. First add the import and instantiate:Now add a small `isTsItem` helper near the other rendering helpers, and hook `clearViewerNode()`:Now update the `buildViewer` video-creation block to route `.ts` items through the adapter:Good — no dependency on `video.src` being set synchronously; it's purely timer/token bookkeeping. Now let's add the mux.js CDN script tag to `index.html`:Let's double-check the full `buildViewer` video block for correctness and inspect the final adapter file once more:This wires correctly. Let's do a final grep sanity pass across all touched files, then package and deliver.All wired end-to-end. Now let's package the deliverables — new file plus the three changed files.## `.ts` Playback Proof-of-Concept — Report
+
+**Files changed/added** (working from the fresh `gallerytest-sandboxTS.zip` you provided, not the earlier sandbox2 lineage):
+- `src/providers/local-file-input-provider.js` — edited (Phase 1)
+- `src/playback/ts-playback-adapter.js` — **new** (Phase 2/4/5)
+- `src/main.js` — edited (Phase 3/4 integration)
+- `index.html` — edited (mux.js CDN script tag)
+
+### Phase 1 — Discovery
+Added a narrow fallback: a file is accepted if its MIME prefix matches `image/`/`video/` **or** if `file.type === ""` (Chrome's actual behavior for local `.ts`) **and** its extension is `.ts`. `getKind()` maps that case to `"video"`. Nothing else about the extension-detection logic is generalized — nothing else with an empty `file.type` gets waved through. Identity (`id`), `relativePath`, `file`, batching, and everything downstream (profiles/tags/favorites/hidden) are untouched — `.ts` items flow through the exact same pipeline as any other video.
+
+### Phase 2 — TS playback adapter
+New, fully isolated module (`TsPlaybackAdapter`). Flow: reads the whole `File` via `arrayBuffer()`, pushes it to `mux.js`'s `Transmuxer` in 1MB chunks (yielding between chunks), and appends the resulting fragmented-MP4 segments to a `MediaSource`/`SourceBuffer` feeding the existing `<video>` element. mux.js (`window.muxjs`) is loaded via a CDN `<script>` tag in `index.html` — no new build tooling. **Known simplification**: the SourceBuffer's codec string (`avc1.64001f, mp4a.40.2`) is a broadly-compatible default rather than derived from the actual SPS — fine for the PoC's H.264 Main/High + AAC-LC test files, but worth revisiting if real files hit `unsupported-codec`.
+
+### Phase 3 — Viewer integration
+`buildViewer()`'s existing video branch is unchanged except for one branch point: `.ts` items call `tsPlaybackAdapter.attach(video, item.file, {...})` instead of `video.src = item.url`. Everything downstream — loop rules, the `"ended"` listener, PM toolbar, Gallery/Presentation navigation, favorites, tags, hidden state — operates on the same `<video>` element exactly as before and required zero changes. Gallery **thumbnails** (`mountThumbMedia`) were deliberately left on native `<video src>` — out of this phase's scope per the spec's PM-focused wording; `.ts` thumbnails will likely just show a blank frame rather than error.
+
+### Phase 4 — Cleanup
+`clearViewerNode()` now unconditionally calls `tsPlaybackAdapter.detach()` before doing anything else — cheap no-op for non-`.ts` items. `detach()` bumps an internal token (invalidating any in-flight transmux/append callbacks from a superseded item), aborts a mid-update `SourceBuffer`, releases the `MediaSource`, and revokes the object URL. Every async callback in the adapter (transmuxer `data`/`done`, `SourceBuffer` `updateend`) is guarded by a captured (not live-read) token comparison, so rapid NEXT/PREV can't leak stale segments into a new video.
+
+### Phase 5 — Diagnostic timing
+`onTiming(label, elapsedMs)` fires at `adapter-start` (0ms baseline), `mediasource-open`, `first-media-appended`, `canplay`, and `playing`, plus a couple of best-effort error labels (`read-error`, `append-error`, `unsupported-codec`, `unsupported-fallback-native-src`). `main.js` logs these as `[TS TEST] ts-<n> <label>: <ms>ms` — a per-attach incrementing counter, never the filename/path.
+
+### What I could not verify
+This sandbox has no browser and no network access (`npm`/CDN fetches both fail here), so **none of this has been run against real `.ts` files** — only inspected and syntax-checked (`node --check` passes on all three JS files). Before trusting the Phase 6 NEXT-switching numbers, I'd want to confirm in an actual browser: mux.js loads from the CDN URL, the default codec string matches your sample files' actual H.264 profile, and the `MediaSource`/`SourceBuffer` sequencing behaves as expected under rapid NEXT/PREV.
+
+Here is the updated file tree reflecting the full repository layout:
+
+```text
+gallerytest-sandboxTS/
+├── README.md
+├── docs/
+│   ├── 000-PHILOSOPHY.md
+│   ├── 001-ARCHITECTURE.md
+│   ├── 002-ROADMAP.md
+│   ├── 003-CHANGELOGS.md
+│   └── UPDATE.txt
+├── index.html                                 [MODIFIED] Added mux.js CDN script tag
+├── styles.css
+└── src/
+    ├── main.js                                [MODIFIED] Added adapter import, isTsItem helper, clearViewerNode() & buildViewer() wiring
+    ├── playback/                              [NEW DIRECTORY]
+    │   └── ts-playback-adapter.js             [NEW FILE] MediaSource/mux.js adapter implementation
+    ├── profile/
+    │   ├── indexeddb.js
+    │   └── profile-store.js
+    ├── providers/
+    │   └── local-file-input-provider.js       [MODIFIED] Added .ts extension fallback for empty MIME types
+    └── runtime/
+        └── media-runtime.js
+
+```
+
+==================
+
+
 
 
 
