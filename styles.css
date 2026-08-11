@@ -156,17 +156,78 @@ input {
   gap: 10px;
 }
 
-/* [FSA] Its own row/grid — deliberately NOT sharing .media-picker-row's
-   1fr/3fr split above (that ratio is specific to Choose Files/Choose
-   Folder). These two buttons are equally weighted. */
+/* [FSA] Its own row — now a single "Choose Folder (FSA)" button; resuming
+   a remembered library happens via the .fsa-recent-libraries list below
+   instead of a second button here. */
 .fsa-picker-row {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   margin-top: 10px;
 }
 
-.fsa-start-here-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+/* [LIBRARY-REGISTRY] "Recent Libraries" list — one row per remembered FSA
+   folder. Mirrors .tag-chip-row's row/remove-button pattern elsewhere in
+   this file rather than inventing a new visual language. */
+.fsa-recent-libraries {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.fsa-recent-libraries.is-loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* [LIBRARY-PROFILE-ASSOCIATION] Deliberately understated — this is an
+   occasional, easy-to-miss-on-purpose affordance, not a primary action. */
+.fsa-associate-btn {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 0.9em;
+}
+
+.fsa-recent-library-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.fsa-recent-library-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+}
+
+.fsa-recent-library-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.fsa-recent-library-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.fsa-recent-library-remove-btn {
+  flex: 0 0 auto;
+  min-width: 36px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
 }
 
 .button-like,
@@ -305,6 +366,30 @@ button:not(:disabled):hover,
 .tag-activity-neutral {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+/* [8.3] Compact — this sits inside the already-small Status Update Center
+   box, not a full-width action. */
+.tag-activity-search-btn {
+  margin-top: 9px;
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  min-height: 0;
+}
+
+/* [Phase 8.3-2] Container for the (up to three) per-mode progress rows —
+   Shuffle OFF / Shuffle ON / legacy — built dynamically in main.js. Each
+   row reuses .tag-activity-row.tag-activity-details for its own internal
+   layout; this just stacks them with breathing room between. */
+.tag-activity-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.tag-activity-rows .tag-activity-search-btn {
+  margin-top: 0;
 }
 
 .tag-create-row {
@@ -457,7 +542,13 @@ button:not(:disabled):hover,
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(9, 16, 29, 0.65);
-  color: var(--muted);
+  /* [Phase 8.4-2] This box communicates live/current file state, same as
+     the Status Update Center — shares its exact green/monospace treatment
+     for that reason. Styled on the container so both the <strong> labels
+     and the dynamic <span> values inherit it, rather than styling the
+     three value spans individually. */
+  color: #00ff00;
+  font-family: "Courier New", ui-monospace, monospace;
   display: grid;
   gap: 8px;
 }

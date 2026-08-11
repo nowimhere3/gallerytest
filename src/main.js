@@ -1,6 +1,12 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
-import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from "./storage/fsa-handle-store.js";
+import {
+  listLibraries,
+  addOrUpdateLibrary,
+  touchLibrary,
+  removeFromRecents,
+  setLibraryProfile,
+} from "./storage/library-registry.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
@@ -40,8 +46,9 @@ const layoutEl = document.querySelector(".layout");
 const fileInput = document.getElementById("file-input");
 const folderInput = document.getElementById("folder-input");
 const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
-const fsaStartHereBtn = document.getElementById("fsa-start-here-btn");
+const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
+const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
 const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
@@ -84,8 +91,7 @@ const tagsGrid = document.getElementById("tags-grid");
 const tagActivityNeutral = document.getElementById("tag-activity-neutral");
 const tagActivityContent = document.getElementById("tag-activity-content");
 const tagActivityName = document.getElementById("tag-activity-name");
-const tagActivityPosition = document.getElementById("tag-activity-position");
-const tagActivityTime = document.getElementById("tag-activity-time");
+const tagActivityRows = document.getElementById("tag-activity-rows");
 const tagActivityEmpty = document.getElementById("tag-activity-empty");
 
 const prevBtn = document.getElementById("prev-btn");
@@ -167,6 +173,57 @@ let fillModeActive = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
 let isLoadingFiles = false;
+// [LIBRARY-PROFILE-ASSOCIATION / Phase 8.4-2] The library-registry record
+// for whichever FSA library is currently loaded, if any — null when the
+// current source is the webkitdirectory picker (see legacySessionAssociated
+// below) or nothing is loaded. Tracked here purely so the "Associate this
+// Library with Current Profile" button knows what it's associating; not a
+// second source of truth for the association itself, which — for FSA —
+// always lives in IndexedDB via library-registry.js.
+let activeLibraryRecord = null;
+
+// [Phase 8.4-2] Which picker produced the currently loaded media, if any.
+// This — not "FSA vs legacy" scattered across call sites — is the one
+// thing association-button visibility is computed from. See
+// currentLoadIsAssociated()/syncAssociateButtonVisibility() below.
+let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
+
+// [Phase 8.4-2] webkitdirectory carries no durable physical-folder
+// identity — no isSameEntry()-equivalent exists for it, and inventing one
+// (folder-name matching, etc.) would be a false promise of persistence
+// this picker cannot actually back up. So a legacy folder's association is
+// intentionally SESSION-ONLY: it lives purely in this in-memory flag,
+// resets to false on every fresh legacy load (a reload or re-pick of even
+// the exact same folder is, correctly, a brand-new unassociated load), and
+// is never written to library-registry.js or any other persistence layer.
+// Clicking "Associate" for a legacy load just flips this flag so the
+// button hides for the REST of this load/session — nothing more.
+let legacySessionAssociated = false;
+
+// [Phase 8.4-2] Single visibility rule for the "Associate this Library
+// with Current Profile" button, independent of which picker produced the
+// currently loaded media — see the Core Visibility Rule this phase
+// introduced: visible whenever something is loaded and NOT associated;
+// hidden when nothing is loaded, or it already is associated.
+function currentLoadIsAssociated() {
+  if (currentSourceKind === "fsa") {
+    // No persisted library.id (e.g. addOrUpdateLibrary() failed to save
+    // this folder — see fsaChooseFolderBtn's catch) means there is
+    // nothing a click could actually persist an association against;
+    // treat that as "can't participate" rather than dangling a button
+    // that would silently no-op when clicked.
+    if (!activeLibraryRecord || !activeLibraryRecord.id) return true;
+    return Boolean(activeLibraryRecord.profileId);
+  }
+  if (currentSourceKind === "legacy") return legacySessionAssociated;
+  return true; // "none" — nothing loaded, never show the button
+}
+
+function syncAssociateButtonVisibility() {
+  const shouldShow = currentSourceKind !== "none" && !currentLoadIsAssociated();
+  fsaAssociateBtn.classList.toggle("hidden", !shouldShow);
+  fsaAssociateBtn.disabled = !shouldShow;
+}
 
 // ---- Undo Last Hide ---------------------------------------------------
 //
@@ -329,6 +386,16 @@ async function loadFiles(fileList) {
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
+  // [Phase 8.4-2] A fresh legacy load — unassociated by definition (see
+  // legacySessionAssociated's own comment: no fake persistent identity),
+  // regardless of whether an earlier legacy session in this same tab was
+  // associated. Hidden immediately; syncAssociateButtonVisibility() below
+  // reveals it once the load actually succeeds.
+  activeLibraryRecord = null;
+  currentSourceKind = "legacy";
+  legacySessionAssociated = false;
+  fsaAssociateBtn.classList.add("hidden");
+  fsaAssociateBtn.disabled = true;
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -339,6 +406,9 @@ async function loadFiles(fileList) {
     });
 
     finishLoadingItems(items);
+    // [Phase 8.4-2] Legacy loads participate in the same Associate-button
+    // UI as FSA during the current session — see the Core Visibility Rule.
+    syncAssociateButtonVisibility();
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
@@ -358,10 +428,65 @@ function isFsaSupported() {
   return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 }
 
-async function loadFromFsaHandle(dirHandle) {
+async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
   isLoadingFiles = true;
+
+  // [LIBRARY-PROFILE-ASSOCIATION] Resolved BEFORE any of the staging/UI
+  // reset below, so a profile switch (if this library is associated with
+  // one) happens once, cleanly — the rest of this function's UI reset
+  // (tags grid, profile selector, etc., via profile.subscribe()
+  // elsewhere) already reflects the CORRECT profile while "Scanning
+  // folder…" is showing, rather than briefly showing the outgoing
+  // profile's state. See the breadcrumb at the top of
+  // library-registry.js for where this association is stored and why.
+  //
+  // NOTE: profile.listProfiles()/getProfileId() read ProfileStore's
+  // already-resolved in-memory state; switchProfile() itself internally
+  // awaits ProfileStore's own readiness, so this is safe even if called
+  // very early. The one path not fully covered is listProfiles() being
+  // read before that initial resolution completes (returns an empty
+  // list) — in practice unreachable here, since reaching this function
+  // at all requires either the FSA folder-picker round trip or a Recent
+  // Libraries click, both far slower than one IndexedDB open.
+  activeLibraryRecord = libraryRecord || null;
+  currentSourceKind = "fsa";
+  fsaAssociateBtn.classList.add("hidden");
+  fsaAssociateBtn.disabled = true;
+
+  // [Phase 8.4-2] Captured only when a switch actually happens, so the
+  // "Recognized this library" note appears exactly for Test B/C's
+  // scenario — not for a library that was already on the active profile,
+  // and not for an unassociated one.
+  let recognizedProfileName = null;
+
+  if (activeLibraryRecord && activeLibraryRecord.id && activeLibraryRecord.profileId) {
+    const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
+
+    if (knownProfileIds.has(activeLibraryRecord.profileId)) {
+      if (activeLibraryRecord.profileId !== profile.getProfileId()) {
+        await profile.switchProfile(activeLibraryRecord.profileId);
+        recognizedProfileName = profile.getProfileName();
+      }
+    } else {
+      // [LIBRARY-PROFILE-ASSOCIATION] Test F — the Profile this library
+      // was associated with no longer exists. Never guess a replacement
+      // (no name-matching, no falling back to whatever's active): clear
+      // the stale pointer and fall through to the "unassociated" path
+      // below, which offers re-association once the library has loaded.
+      console.warn(
+        `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" was associated with a profile that no longer exists. Clearing the stale association.`
+      );
+      try {
+        const updated = await setLibraryProfile(activeLibraryRecord.id, null);
+        if (updated) activeLibraryRecord = updated;
+      } catch (error) {
+        console.warn("[LIBRARY-REGISTRY] Could not clear the stale profile association.", error);
+        activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
+      }
+    }
+  }
 
   bumpGalleryGeneration();
   runtime.clear();
@@ -377,6 +502,14 @@ async function loadFromFsaHandle(dirHandle) {
 
   fsaStatusText.textContent = "";
 
+  // [LIBRARY-REGISTRY] Reliability requirement: given the diagnosed FSA
+  // traversal gap (see library-registry.js's header comment / the
+  // investigation this came out of), a resume must never silently trust
+  // whatever count a fresh walk returns. Compare against what this
+  // library's registry record last reported, if anything.
+  const previousCount =
+    activeLibraryRecord && typeof activeLibraryRecord.itemCount === "number" ? activeLibraryRecord.itemCount : null;
+
   try {
     const result = await fsaProvider.loadFromDirectoryHandle(dirHandle, {
       batchSize: BATCH_SIZE,
@@ -386,6 +519,14 @@ async function loadFromFsaHandle(dirHandle) {
     });
 
     const count = result.items.length;
+    const driftNote =
+      previousCount !== null && previousCount !== count
+        ? ` (previously ${previousCount} item${previousCount === 1 ? "" : "s"} on record — folder contents may have changed, or the scan may be incomplete; see console)`
+        : "";
+    // [Phase 8.4-2] Optional, brief recognition note — not a separate
+    // notification system, just a prefix on the same status line that
+    // already reports the load result.
+    const recognizedNote = recognizedProfileName ? `✓ Recognized this library — Profile: ${recognizedProfileName}. ` : "";
 
     if (result.incomplete) {
       // Reliability requirement: an interrupted scan must never be
@@ -393,17 +534,34 @@ async function loadFromFsaHandle(dirHandle) {
       // the console (see FsaFileProvider); this surfaces it to the user
       // too, with whatever was actually found before the failure.
       fsaStatusText.textContent =
-        `Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded. ` +
+        `${recognizedNote}Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded.${driftNote} ` +
         "Check the browser console for details, then try again.";
     } else if (result.diagnostics.errors.length) {
       fsaStatusText.textContent =
-        `Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
-        `${result.diagnostics.errors.length === 1 ? "" : "s"} could not be read (see console).`;
+        `${recognizedNote}Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
+        `${result.diagnostics.errors.length === 1 ? "" : "s"} could not be read (see console).${driftNote}`;
     } else {
-      fsaStatusText.textContent = `Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".`;
+      fsaStatusText.textContent = `${recognizedNote}Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
     }
 
     finishLoadingItems(result.items);
+
+    if (activeLibraryRecord && activeLibraryRecord.id) {
+      try {
+        await touchLibrary(activeLibraryRecord.id, { itemCount: count });
+      } catch (error) {
+        // Doesn't affect this session's already-loaded library — only
+        // means the registry's remembered count/timestamp is stale.
+        console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
+      }
+      await renderRecentLibraries();
+    }
+
+    // [Phase 8.4-2] Single visibility rule, same one loadFiles() uses for
+    // the legacy path — see currentLoadIsAssociated() for the id-less
+    // edge case (a library that failed to persist never shows the
+    // button, since a click would have nothing to associate).
+    syncAssociateButtonVisibility();
   } catch (error) {
     console.error("[FSA] Failed to load the selected folder.", error);
     fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
@@ -429,40 +587,36 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
     return;
   }
 
+  // [LIBRARY-REGISTRY] addOrUpdateLibrary() deduplicates via the real FSA
+  // isSameEntry() identity check, so re-picking a folder that's already
+  // registered updates that record instead of creating a duplicate entry.
+  let record;
   try {
-    await saveFolderHandle(dirHandle);
-    fsaStartHereBtn.classList.remove("hidden");
-    fsaStartHereBtn.disabled = false;
-    fsaStartHereBtn.querySelector("span").textContent = `Start Here (${dirHandle.name})`;
+    record = await addOrUpdateLibrary(dirHandle);
+    await renderRecentLibraries();
   } catch (error) {
     // Persistence failing doesn't block using the folder THIS session —
-    // "Start Here" next time just won't be available.
-    console.warn("[FSA] Could not save this folder for future sessions.", error);
+    // it just won't be resumable next time. Fall back to an in-memory-only
+    // record so the load below still has something to report drift against.
+    console.warn("[LIBRARY-REGISTRY] Could not save this folder for future sessions.", error);
+    record = { id: null, name: dirHandle.name, itemCount: null };
   }
 
-  await loadFromFsaHandle(dirHandle);
+  await loadFromFsaHandle(dirHandle, record);
 });
 
-fsaStartHereBtn.addEventListener("click", async () => {
+// [LIBRARY-REGISTRY] Resumes one specific remembered library (a click on a
+// "Recent Libraries" row) — checks/re-requests read permission for its
+// saved handle, same flow the old single-slot "Start Here" button used,
+// now parameterized by which record was clicked instead of a fixed key.
+async function resumeLibrary(record) {
   fsaStatusText.textContent = "Checking folder access…";
 
-  let saved;
-  try {
-    saved = await loadFolderHandle();
-  } catch (error) {
-    console.error("[FSA] Could not read the saved folder handle.", error);
-    fsaStatusText.textContent = "Could not read the saved folder. Choose a folder instead.";
-    fsaStartHereBtn.classList.add("hidden");
+  const dirHandle = record.handle;
+  if (!dirHandle) {
+    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Choose Folder (FSA)".`;
     return;
   }
-
-  if (!saved || !saved.handle) {
-    fsaStatusText.textContent = "No saved folder found. Choose a folder instead.";
-    fsaStartHereBtn.classList.add("hidden");
-    return;
-  }
-
-  const dirHandle = saved.handle;
 
   // Browsers do not guarantee stored permission survives a restart —
   // check first, and only prompt if actually needed. requestPermission()
@@ -473,25 +627,163 @@ fsaStartHereBtn.addEventListener("click", async () => {
       permission = await dirHandle.requestPermission({ mode: "read" });
     }
     if (permission !== "granted") {
-      fsaStatusText.textContent = "Access to the saved folder was not granted. Choose a folder instead.";
+      fsaStatusText.textContent = `Access to "${record.name}" was not granted.`;
       return;
     }
   } catch (error) {
     // A handle can become genuinely invalid (folder deleted/moved, browser
     // data cleared, etc.) — fail gracefully rather than throwing, and stop
-    // offering a broken "Start Here."
-    console.error("[FSA] The saved folder is no longer accessible.", error);
-    fsaStatusText.textContent = "The saved folder is no longer available. Choose a folder instead.";
-    fsaStartHereBtn.classList.add("hidden");
+    // offering a broken resume for it.
+    console.error("[FSA] A saved folder is no longer accessible.", error);
+    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Libraries.`;
+    // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove, not removeLibrary() — a
+    // permission failure doesn't mean the physical folder is gone for
+    // good (it may just be a revoked permission on an otherwise-fine
+    // folder). Keeping the record means re-picking the same folder later
+    // can still recognize it via isSameEntry() and recover this library's
+    // profile association, same as an explicit "X" — see
+    // library-registry.js.
     try {
-      await clearFolderHandle();
-    } catch (clearError) {
-      console.warn("[FSA] Could not clear the stale saved folder.", clearError);
+      await removeFromRecents(record.id);
+    } catch (removeError) {
+      console.warn("[LIBRARY-REGISTRY] Could not remove the stale library record.", removeError);
     }
+    await renderRecentLibraries();
     return;
   }
 
-  await loadFromFsaHandle(dirHandle);
+  await loadFromFsaHandle(dirHandle, record);
+}
+
+// [LIBRARY-PROFILE-ASSOCIATION] Shows which Profile (if any) this library
+// is associated with — the "Main Library / 2151 items · Profile: Main"
+// row the phase spec described as optional. Reads profile.listProfiles()
+// fresh each render rather than caching a name, so a profile rename is
+// reflected here immediately without this module needing its own
+// invalidation logic.
+function formatLibraryMeta(record) {
+  const parts = [];
+  if (typeof record.itemCount === "number") {
+    parts.push(`${record.itemCount} item${record.itemCount === 1 ? "" : "s"}`);
+  }
+  if (record.lastOpenedAt) parts.push(`opened ${formatRelativeTime(record.lastOpenedAt)}`);
+  if (record.profileId) {
+    const associated = profile.listProfiles().find((entry) => entry.id === record.profileId);
+    parts.push(`Profile: ${associated ? associated.name : "unknown"}`);
+  }
+  return parts.join(" · ");
+}
+
+function formatRelativeTime(timestamp) {
+  const diffMs = Date.now() - timestamp;
+  const minute = 60000;
+  const hour = 3600000;
+  const day = 86400000;
+  if (diffMs < minute) return "just now";
+  if (diffMs < hour) return `${Math.round(diffMs / minute)}m ago`;
+  if (diffMs < day) return `${Math.round(diffMs / hour)}h ago`;
+  const days = Math.round(diffMs / day);
+  return days === 1 ? "yesterday" : `${days}d ago`;
+}
+
+// [LIBRARY-REGISTRY] Re-renders the "Recent Libraries" list from IndexedDB.
+// Rebuilt from scratch each call (list is small — a handful of libraries
+// at most) rather than diffed, matching renderTagsGrid()'s existing
+// pattern elsewhere in this file. Does NOT touch permissions or load
+// anything on its own — purely a metadata read, safe to call at boot.
+async function renderRecentLibraries() {
+  let records;
+  try {
+    records = await listLibraries();
+  } catch (error) {
+    console.warn("[LIBRARY-REGISTRY] Could not read saved libraries.", error);
+    records = [];
+  }
+
+  fsaRecentLibrariesEl.innerHTML = "";
+  fsaRecentLibrariesEl.classList.toggle("hidden", records.length === 0);
+
+  for (const record of records) {
+    const row = document.createElement("div");
+    row.className = "fsa-recent-library-row";
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "fsa-recent-library-btn";
+    openBtn.addEventListener("click", () => resumeLibrary(record));
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "fsa-recent-library-name";
+    nameEl.textContent = record.name;
+
+    const metaEl = document.createElement("span");
+    metaEl.className = "fsa-recent-library-meta";
+    metaEl.textContent = formatLibraryMeta(record);
+
+    openBtn.appendChild(nameEl);
+    openBtn.appendChild(metaEl);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "fsa-recent-library-remove-btn";
+    removeBtn.title = `Remove "${record.name}" from Recent Libraries`;
+    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Libraries`);
+    removeBtn.textContent = "✕";
+    removeBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove — takes this row out of
+      // Recent Libraries but deliberately does NOT touch its Profile
+      // association or identity (handle). Re-picking this same physical
+      // folder later still recognizes it and recovers the association.
+      // See library-registry.js.
+      try {
+        await removeFromRecents(record.id);
+      } catch (error) {
+        console.warn("[LIBRARY-REGISTRY] Could not remove this library from Recent Libraries.", error);
+      }
+      await renderRecentLibraries();
+    });
+
+    row.appendChild(openBtn);
+    row.appendChild(removeBtn);
+    fsaRecentLibrariesEl.appendChild(row);
+  }
+}
+
+// [Phase 8.4-2] Shared "Associate this Library with Current Profile"
+// action — one button, one handler, branching on which source is
+// currently loaded (see the Core Visibility Rule / currentSourceKind).
+// Visibility is entirely driven by syncAssociateButtonVisibility(); this
+// handler doesn't need to re-check it, only act correctly for whichever
+// source is active when it's clicked.
+fsaAssociateBtn.addEventListener("click", async () => {
+  if (currentSourceKind === "legacy") {
+    // Session-only — see legacySessionAssociated's own comment. Nothing
+    // is persisted; re-loading (even the exact same folder again) starts
+    // unassociated again, by design.
+    legacySessionAssociated = true;
+    syncAssociateButtonVisibility();
+    fsaStatusText.textContent = `Associated the current folder with "${profile.getProfileName()}" for this session.`;
+    return;
+  }
+
+  if (currentSourceKind !== "fsa" || !activeLibraryRecord || !activeLibraryRecord.id) return;
+
+  const targetProfileId = profile.getProfileId();
+  if (!targetProfileId) return;
+
+  fsaAssociateBtn.disabled = true;
+  try {
+    const updated = await setLibraryProfile(activeLibraryRecord.id, targetProfileId);
+    if (updated) activeLibraryRecord = updated;
+    syncAssociateButtonVisibility();
+    fsaStatusText.textContent = `Associated "${activeLibraryRecord.name}" with "${profile.getProfileName()}".`;
+    await renderRecentLibraries();
+  } catch (error) {
+    console.warn("[LIBRARY-REGISTRY] Could not associate this library with the current profile.", error);
+    fsaStatusText.textContent = "Could not save the association. Try again.";
+    fsaAssociateBtn.disabled = false;
+  }
 });
 
 function setLoadingState(isLoading, total) {
@@ -502,9 +794,7 @@ function setLoadingState(isLoading, total) {
   // is already in progress — mirrors the existing fileInput/folderInput
   // disabling above.
   fsaChooseFolderBtn.disabled = isLoading;
-  if (!fsaStartHereBtn.classList.contains("hidden")) {
-    fsaStartHereBtn.disabled = isLoading;
-  }
+  fsaRecentLibrariesEl.classList.toggle("is-loading", isLoading);
 
   if (isLoading) {
     statusText.textContent = total ? `Loading media… 0 / ${total}` : "Loading media…";
@@ -1316,9 +1606,14 @@ function makePresentationTagButton(tag, appliedTagIds, item) {
     const isApplying = !profile.hasItemTag(item.relativePath, tag.id);
     profile.toggleItemTag(item.relativePath, tag.id);
     if (isApplying) {
+      // [8.4] Shuffle context travels WITH the activity record it
+      // describes, not as separate global state — a later switch of the
+      // Shuffle toggle must never retroactively relabel what this specific
+      // tagging pass meant. See ProfileStore#recordTagActivity's own note.
       profile.recordTagActivity(tag.id, {
         position: state.currentIndex + 1,
         total: state.total,
+        shuffle: state.shuffle,
       });
     }
     // No re-render call needed here — profile.subscribe() below re-runs
@@ -1396,6 +1691,18 @@ function flashInvalidGalleryJumpInput() {
   window.setTimeout(() => galleryJumpInput.classList.remove("is-invalid"), 500);
 }
 
+// [8.5] "find"/"play" (galleryJumpMode) ARE the search-vs-direct jump
+// distinction the product spec asks for — not a separate mechanism to
+// build. Both already jump within whatever search/filter context is
+// currently active (state.total already reflects getVisibleItems(), see
+// the comment at this control's HTML). "find" = SEARCH jump: locate a
+// position in that context (scroll/highlight only, nothing loads).
+// "play" = DIRECT jump: unconditionally load that position into the
+// Viewer. Keeping these two names/behaviors distinct (rather than
+// collapsing to one "jump" now that 8.3 adds a real filter-apply action)
+// matters for the next phase too: once FSA master-folder auto-detection
+// exists, "direct jump" must keep meaning "load it, full stop" even if a
+// future profile/folder switch changes what's in the search context.
 function performGalleryJump() {
   const state = runtime.getState();
   const raw = galleryJumpInput.value.trim();
@@ -1592,6 +1899,12 @@ clearBtn.addEventListener("click", () => {
   exitFillMode();
   lastHiddenRelativePath = null;
   syncUndoHideButton();
+  // [Phase 8.4-2] Nothing is loaded anymore — an "Associate this
+  // Library…" click after this point would have nothing to associate.
+  activeLibraryRecord = null;
+  currentSourceKind = "none";
+  legacySessionAssociated = false;
+  syncAssociateButtonVisibility();
 });
 
 favoriteBtn.addEventListener("click", () => {
@@ -1867,6 +2180,51 @@ function formatTagActivityTime(timestamp) {
   return `${dateText} · ${timeText}`;
 }
 
+// [Phase 8.3-2] Replaces the old "Find in Gallery" tag-filter shortcut.
+// This is a RESUME action, not a filter action: it hands the stored
+// tagging position straight to the existing Gallery Jump input, the same
+// as if the user had read the number off this card and typed it in
+// themselves. No new navigation system, no tag filter applied. Whether
+// that number still lands on the same item depends on the current visible
+// set matching the one that existed at tag time — performGalleryJump's
+// existing range check already guards against a now-invalid number
+// (smaller current total, etc.) exactly as it would for any manually
+// typed value, so nothing extra is needed here for that case.
+function resumeTagActivityToJump(slot) {
+  if (!slot) return;
+
+  galleryJumpInput.value = String(slot.position);
+  galleryJumpInput.scrollIntoView({ behavior: "smooth", block: "center" });
+  galleryJumpInput.focus();
+  galleryJumpInput.select();
+}
+
+function buildTagActivityRow(label, slot) {
+  const row = document.createElement("div");
+  row.className = "tag-activity-row tag-activity-details";
+
+  const value = document.createElement("span");
+  value.className = "tag-activity-value";
+  value.textContent = label ? `${label} · ${slot.position} / ${slot.total}` : `${slot.position} / ${slot.total}`;
+  row.appendChild(value);
+
+  const time = document.createElement("time");
+  time.className = "tag-activity-value";
+  time.textContent = formatTagActivityTime(slot.timestamp);
+  time.dateTime = new Date(slot.timestamp).toISOString();
+  row.appendChild(time);
+
+  const findBtn = document.createElement("button");
+  findBtn.type = "button";
+  findBtn.className = "tag-activity-search-btn secondary";
+  findBtn.textContent = "Find";
+  findBtn.setAttribute("aria-label", label ? `Resume from ${label} position` : "Resume from this position");
+  findBtn.addEventListener("click", () => resumeTagActivityToJump(slot));
+  row.appendChild(findBtn);
+
+  return row;
+}
+
 function renderTagActivityCenter() {
   const selectedTag = profile.getTags().find((tag) => tag.id === selectedTagActivityId);
 
@@ -1875,25 +2233,22 @@ function renderTagActivityCenter() {
   if (!selectedTag) return;
 
   tagActivityName.textContent = selectedTag.name;
-  const hasActivity =
-    Number.isInteger(selectedTag.lastTagPosition) &&
-    Number.isInteger(selectedTag.totalAtTime) &&
-    Number.isFinite(selectedTag.lastTaggedAt);
 
-  tagActivityPosition.classList.toggle("hidden", !hasActivity);
-  tagActivityTime.classList.toggle("hidden", !hasActivity);
+  const { shuffleOff, shuffleOn, legacy } = profile.getTagActivity(selectedTagActivityId);
+  const hasActivity = Boolean(shuffleOff || shuffleOn || legacy);
+
+  tagActivityRows.classList.toggle("hidden", !hasActivity);
   tagActivityEmpty.classList.toggle("hidden", hasActivity);
+  tagActivityRows.innerHTML = "";
 
-  if (hasActivity) {
-    tagActivityPosition.textContent = `${selectedTag.lastTagPosition} / ${selectedTag.totalAtTime}`;
-    tagActivityTime.textContent = formatTagActivityTime(selectedTag.lastTaggedAt);
-    tagActivityTime.dateTime = new Date(selectedTag.lastTaggedAt).toISOString();
-  } else {
-    tagActivityPosition.textContent = "";
-    tagActivityTime.textContent = "";
-    tagActivityTime.removeAttribute("datetime");
-  }
+  if (shuffleOff) tagActivityRows.appendChild(buildTagActivityRow("Shuffle OFF", shuffleOff));
+  if (shuffleOn) tagActivityRows.appendChild(buildTagActivityRow("Shuffle ON", shuffleOn));
+  // `legacy` = a record from before Shuffle context was ever tracked — no
+  // label, since labeling it either way would be a guess (see
+  // ProfileStore#getTagActivity). Still fully usable to resume from.
+  if (legacy) tagActivityRows.appendChild(buildTagActivityRow(null, legacy));
 }
+
 
 function renderTagsGrid() {
   const tags = profile.getTags();
@@ -2257,28 +2612,18 @@ window.addEventListener("beforeunload", () => {
   fsaProvider.dispose(); // [FSA]
 });
 
-// [FSA] Boot-time check: if a folder was saved in a previous session, show
-// "Start Here" so the user can attempt to reuse it — this does NOT load
-// anything or request permission on its own (requestPermission needs a
-// user gesture, and queryPermission-only would still mean silently
-// reading folder contents on every page load without the user asking).
-(async function checkForSavedFsaFolder() {
+// [LIBRARY-REGISTRY] Boot-time: render whatever libraries were previously
+// remembered so the user sees "Recent Libraries" immediately. This is a
+// pure metadata read — it does NOT check/request permission or load
+// anything on its own (requestPermission needs a user gesture, and
+// queryPermission-only would still mean silently touching folder access
+// on every page load without the user asking).
+(async function initFsaLibraries() {
   if (!isFsaSupported()) {
     fsaChooseFolderBtn.disabled = true;
     fsaStatusText.textContent = "This browser does not support the File System Access API.";
     return;
   }
 
-  try {
-    const saved = await loadFolderHandle();
-    if (saved && saved.handle) {
-      fsaStartHereBtn.classList.remove("hidden");
-      fsaStartHereBtn.disabled = false;
-      fsaStartHereBtn.querySelector("span").textContent = `Start Here (${saved.handle.name})`;
-    }
-  } catch (error) {
-    // No saved folder, or this browser can't store handles at all — either
-    // way, "Start Here" just stays hidden; Choose Folder (FSA) still works.
-    console.warn("[FSA] Could not check for a previously saved folder.", error);
-  }
+  await renderRecentLibraries();
 })();
