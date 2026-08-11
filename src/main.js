@@ -1,6 +1,12 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
-import { listLibraries, addOrUpdateLibrary, touchLibrary, removeLibrary } from "./storage/library-registry.js";
+import {
+  listLibraries,
+  addOrUpdateLibrary,
+  touchLibrary,
+  removeFromRecents,
+  setLibraryProfile,
+} from "./storage/library-registry.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
@@ -42,6 +48,7 @@ const folderInput = document.getElementById("folder-input");
 const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
 const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
+const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
 const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
@@ -166,6 +173,14 @@ let fillModeActive = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
 let isLoadingFiles = false;
+// [LIBRARY-PROFILE-ASSOCIATION] The library-registry record for whichever
+// FSA library is currently loaded, if any — null for the webkitdirectory
+// path (that picker has no durable physical-folder identity to associate;
+// see the phase breadcrumb in library-registry.js). Tracked here purely
+// so the "Associate this Library with Current Profile" button knows what
+// it's associating; not a second source of truth for the association
+// itself, which always lives in IndexedDB via library-registry.js.
+let activeLibraryRecord = null;
 
 // ---- Undo Last Hide ---------------------------------------------------
 //
@@ -328,6 +343,13 @@ async function loadFiles(fileList) {
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
+  // [LIBRARY-PROFILE-ASSOCIATION] webkitdirectory carries no durable
+  // physical-folder identity (no isSameEntry()-equivalent), so it never
+  // gets the association affordance — clear it explicitly rather than
+  // leaving a stale FSA library's "Associate" button pointing at media
+  // that isn't loaded anymore.
+  activeLibraryRecord = null;
+  fsaAssociateBtn.classList.add("hidden");
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -362,6 +384,53 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
 
   isLoadingFiles = true;
 
+  // [LIBRARY-PROFILE-ASSOCIATION] Resolved BEFORE any of the staging/UI
+  // reset below, so a profile switch (if this library is associated with
+  // one) happens once, cleanly — the rest of this function's UI reset
+  // (tags grid, profile selector, etc., via profile.subscribe()
+  // elsewhere) already reflects the CORRECT profile while "Scanning
+  // folder…" is showing, rather than briefly showing the outgoing
+  // profile's state. See the breadcrumb at the top of
+  // library-registry.js for where this association is stored and why.
+  //
+  // NOTE: profile.listProfiles()/getProfileId() read ProfileStore's
+  // already-resolved in-memory state; switchProfile() itself internally
+  // awaits ProfileStore's own readiness, so this is safe even if called
+  // very early. The one path not fully covered is listProfiles() being
+  // read before that initial resolution completes (returns an empty
+  // list) — in practice unreachable here, since reaching this function
+  // at all requires either the FSA folder-picker round trip or a Recent
+  // Libraries click, both far slower than one IndexedDB open.
+  activeLibraryRecord = libraryRecord || null;
+  fsaAssociateBtn.classList.add("hidden");
+  fsaAssociateBtn.disabled = true;
+
+  if (activeLibraryRecord && activeLibraryRecord.id && activeLibraryRecord.profileId) {
+    const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
+
+    if (knownProfileIds.has(activeLibraryRecord.profileId)) {
+      if (activeLibraryRecord.profileId !== profile.getProfileId()) {
+        await profile.switchProfile(activeLibraryRecord.profileId);
+      }
+    } else {
+      // [LIBRARY-PROFILE-ASSOCIATION] Test F — the Profile this library
+      // was associated with no longer exists. Never guess a replacement
+      // (no name-matching, no falling back to whatever's active): clear
+      // the stale pointer and fall through to the "unassociated" path
+      // below, which offers re-association once the library has loaded.
+      console.warn(
+        `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" was associated with a profile that no longer exists. Clearing the stale association.`
+      );
+      try {
+        const updated = await setLibraryProfile(activeLibraryRecord.id, null);
+        if (updated) activeLibraryRecord = updated;
+      } catch (error) {
+        console.warn("[LIBRARY-REGISTRY] Could not clear the stale profile association.", error);
+        activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
+      }
+    }
+  }
+
   bumpGalleryGeneration();
   runtime.clear();
   clearViewerNode();
@@ -381,7 +450,8 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // investigation this came out of), a resume must never silently trust
   // whatever count a fresh walk returns. Compare against what this
   // library's registry record last reported, if anything.
-  const previousCount = libraryRecord && typeof libraryRecord.itemCount === "number" ? libraryRecord.itemCount : null;
+  const previousCount =
+    activeLibraryRecord && typeof activeLibraryRecord.itemCount === "number" ? activeLibraryRecord.itemCount : null;
 
   try {
     const result = await fsaProvider.loadFromDirectoryHandle(dirHandle, {
@@ -415,15 +485,25 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
 
     finishLoadingItems(result.items);
 
-    if (libraryRecord && libraryRecord.id) {
+    if (activeLibraryRecord && activeLibraryRecord.id) {
       try {
-        await touchLibrary(libraryRecord.id, { itemCount: count });
+        await touchLibrary(activeLibraryRecord.id, { itemCount: count });
       } catch (error) {
         // Doesn't affect this session's already-loaded library — only
         // means the registry's remembered count/timestamp is stale.
         console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
       }
       await renderRecentLibraries();
+
+      // [LIBRARY-PROFILE-ASSOCIATION] Only offer this for a library that
+      // still has no association after the resolution step above — a
+      // genuinely first-time library, or one whose profile was just found
+      // stale and cleared. A library that already resolved to a valid
+      // profile doesn't need it asked again.
+      if (!activeLibraryRecord.profileId) {
+        fsaAssociateBtn.classList.remove("hidden");
+        fsaAssociateBtn.disabled = false;
+      }
     }
   } catch (error) {
     console.error("[FSA] Failed to load the selected folder.", error);
@@ -499,8 +579,15 @@ async function resumeLibrary(record) {
     // offering a broken resume for it.
     console.error("[FSA] A saved folder is no longer accessible.", error);
     fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Libraries.`;
+    // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove, not removeLibrary() — a
+    // permission failure doesn't mean the physical folder is gone for
+    // good (it may just be a revoked permission on an otherwise-fine
+    // folder). Keeping the record means re-picking the same folder later
+    // can still recognize it via isSameEntry() and recover this library's
+    // profile association, same as an explicit "X" — see
+    // library-registry.js.
     try {
-      await removeLibrary(record.id);
+      await removeFromRecents(record.id);
     } catch (removeError) {
       console.warn("[LIBRARY-REGISTRY] Could not remove the stale library record.", removeError);
     }
@@ -511,12 +598,22 @@ async function resumeLibrary(record) {
   await loadFromFsaHandle(dirHandle, record);
 }
 
+// [LIBRARY-PROFILE-ASSOCIATION] Shows which Profile (if any) this library
+// is associated with — the "Main Library / 2151 items · Profile: Main"
+// row the phase spec described as optional. Reads profile.listProfiles()
+// fresh each render rather than caching a name, so a profile rename is
+// reflected here immediately without this module needing its own
+// invalidation logic.
 function formatLibraryMeta(record) {
   const parts = [];
   if (typeof record.itemCount === "number") {
     parts.push(`${record.itemCount} item${record.itemCount === 1 ? "" : "s"}`);
   }
   if (record.lastOpenedAt) parts.push(`opened ${formatRelativeTime(record.lastOpenedAt)}`);
+  if (record.profileId) {
+    const associated = profile.listProfiles().find((entry) => entry.id === record.profileId);
+    parts.push(`Profile: ${associated ? associated.name : "unknown"}`);
+  }
   return parts.join(" · ");
 }
 
@@ -572,15 +669,20 @@ async function renderRecentLibraries() {
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "fsa-recent-library-remove-btn";
-    removeBtn.title = `Forget "${record.name}"`;
-    removeBtn.setAttribute("aria-label", `Forget "${record.name}"`);
+    removeBtn.title = `Remove "${record.name}" from Recent Libraries`;
+    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Libraries`);
     removeBtn.textContent = "✕";
     removeBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
+      // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove — takes this row out of
+      // Recent Libraries but deliberately does NOT touch its Profile
+      // association or identity (handle). Re-picking this same physical
+      // folder later still recognizes it and recovers the association.
+      // See library-registry.js.
       try {
-        await removeLibrary(record.id);
+        await removeFromRecents(record.id);
       } catch (error) {
-        console.warn("[LIBRARY-REGISTRY] Could not forget this library.", error);
+        console.warn("[LIBRARY-REGISTRY] Could not remove this library from Recent Libraries.", error);
       }
       await renderRecentLibraries();
     });
@@ -590,6 +692,30 @@ async function renderRecentLibraries() {
     fsaRecentLibrariesEl.appendChild(row);
   }
 }
+
+// [LIBRARY-PROFILE-ASSOCIATION] First-time / stale-association MVP
+// action: "Associate this Library with Current Profile". Only visible
+// when activeLibraryRecord is set AND has no profileId — see
+// loadFromFsaHandle, which is the only place that shows it.
+fsaAssociateBtn.addEventListener("click", async () => {
+  if (!activeLibraryRecord || !activeLibraryRecord.id) return;
+
+  const targetProfileId = profile.getProfileId();
+  if (!targetProfileId) return;
+
+  fsaAssociateBtn.disabled = true;
+  try {
+    const updated = await setLibraryProfile(activeLibraryRecord.id, targetProfileId);
+    if (updated) activeLibraryRecord = updated;
+    fsaAssociateBtn.classList.add("hidden");
+    fsaStatusText.textContent = `Associated "${activeLibraryRecord.name}" with "${profile.getProfileName()}".`;
+    await renderRecentLibraries();
+  } catch (error) {
+    console.warn("[LIBRARY-REGISTRY] Could not associate this library with the current profile.", error);
+    fsaStatusText.textContent = "Could not save the association. Try again.";
+    fsaAssociateBtn.disabled = false;
+  }
+});
 
 function setLoadingState(isLoading, total) {
   fileInput.disabled = isLoading;
@@ -1704,6 +1830,11 @@ clearBtn.addEventListener("click", () => {
   exitFillMode();
   lastHiddenRelativePath = null;
   syncUndoHideButton();
+  // [LIBRARY-PROFILE-ASSOCIATION] Nothing is loaded anymore — an
+  // "Associate this Library…" click after this point would have nothing
+  // correct to associate.
+  activeLibraryRecord = null;
+  fsaAssociateBtn.classList.add("hidden");
 });
 
 favoriteBtn.addEventListener("click", () => {

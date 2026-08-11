@@ -52,6 +52,13 @@ Index · HTML
              empty. -->
         <div id="fsa-recent-libraries" class="fsa-recent-libraries hidden"></div>
         <p id="fsa-status-text" class="hint" role="status"></p>
+        <!-- [LIBRARY-PROFILE-ASSOCIATION] Only shown after an FSA library
+             loads with no Profile association yet (a genuinely new
+             library, or a stale one whose associated Profile was
+             deleted). Minimal MVP interaction: one button, one action. -->
+        <button id="fsa-associate-btn" class="button-like secondary fsa-associate-btn hidden" type="button" disabled>
+          <span>Associate this Library with Current Profile</span>
+        </button>
  
         <hr />
  

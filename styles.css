@@ -179,6 +179,14 @@ input {
   pointer-events: none;
 }
 
+/* [LIBRARY-PROFILE-ASSOCIATION] Deliberately understated — this is an
+   occasional, easy-to-miss-on-purpose affordance, not a primary action. */
+.fsa-associate-btn {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 0.9em;
+}
+
 .fsa-recent-library-row {
   display: flex;
   align-items: stretch;

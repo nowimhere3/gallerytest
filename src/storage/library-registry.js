@@ -7,19 +7,38 @@
 // session) into the list exactly once.
 //
 // This module ONLY persists identity/metadata (handle, name, counts,
-// timestamps). It knows nothing about scanning, MediaItems, or the FSA
-// traversal itself — that stays FsaFileProvider's job. Deliberately kept
-// out of ProfileStore's database too, same reasoning as the file it
-// replaces: a library record is a different kind of data than
-// profile items/tags, and mixing them would make every future
-// profile-schema migration also have to reason about this.
+// timestamps, and — as of Phase 8.4 — an associated profileId). It knows
+// nothing about scanning, MediaItems, or the FSA traversal itself — that
+// stays FsaFileProvider's job. Deliberately kept out of ProfileStore's
+// database too, same reasoning as the file it replaces: a library record
+// is a different kind of data than profile items/tags, and mixing them
+// would make every future profile-schema migration also have to reason
+// about this.
 //
 // Deliberately NOT tracking webkitdirectory-picked folders: a File List
 // from <input webkitdirectory> carries no reusable handle or permission,
 // so there is nothing here that could actually "resume" one without a
 // full manual re-pick — the same friction as today. Listing it as a fake
 // "recent library" would be a misleading affordance, not a shortcut.
-
+//
+// ---- Phase 8.4 — Library <-> Profile association --------------------
+//
+// [LIBRARY-PROFILE-ASSOCIATION] This is the SINGLE authoritative place
+// "this physical folder belongs with this profileId" is stored — a
+// `profileId` field directly on the SAME record `isSameEntry()` already
+// uses to recognize a physical folder (see addOrUpdateLibrary below). No
+// separate association table was introduced: the library record already
+// IS keyed by physical folder identity, so a second registry mapping
+// identity -> profileId would just be a second source of truth for the
+// same fact, with its own copy of the same isSameEntry() dedup logic to
+// keep in sync. One record, one place a stale/duplicate association could
+// live: nowhere.
+//
+// A "Recent Library" shortcut and the historical folder<->profile
+// association are still conceptually different things (see
+// `removedFromRecents` below) — they just happen to be safely
+// representable on the same row, which is what the phase spec asked for
+// when one registry can do it.
 const DATABASE_NAME = "loop-browser-gallery-fsa";
 const DATABASE_VERSION = 2; // v1: `handles` only. v2: adds `libraries`.
 const LEGACY_STORE_NAME = "handles";
@@ -98,9 +117,21 @@ async function migrateLegacyHandleIfNeeded(database) {
 }
 
 /**
- * Returns all remembered libraries, most-recently-opened first. Runs the
- * one-time legacy migration first (see above) so a folder saved before
- * this module existed still shows up.
+ * Returns remembered libraries meant for the "Recent Libraries" shortcut
+ * list — most-recently-opened first, EXCLUDING any that were removed from
+ * that list via removeFromRecents() (see below). Runs the one-time legacy
+ * migration first (see above) so a folder saved before this module
+ * existed still shows up.
+ *
+ * [LIBRARY-PROFILE-ASSOCIATION] This filtering is exactly why "remove
+ * from Recent Libraries" and "forget everything about this folder" are
+ * different operations on this record rather than one delete: this
+ * function is the ONLY thing that needs to stop seeing a
+ * removed-from-recents record. addOrUpdateLibrary()'s identity matching
+ * below deliberately does NOT use this function — it reads the raw store
+ * directly — so a folder removed from Recent Libraries can still be
+ * recognized (and its profile association recovered) the next time it's
+ * FSA-picked again.
  */
 export async function listLibraries() {
   const database = await openDatabase();
@@ -113,7 +144,7 @@ export async function listLibraries() {
     await completeTransaction(transaction);
 
     return records
-      .slice()
+      .filter((record) => !record.removedFromRecents)
       .sort((a, b) => (b.lastOpenedAt || 0) - (a.lastOpenedAt || 0));
   } finally {
     database.close();
@@ -128,6 +159,14 @@ export async function listLibraries() {
  * share a name) — updates that existing record instead of creating a
  * duplicate every time "Choose Folder (FSA)" is used on a folder that's
  * already registered.
+ *
+ * [LIBRARY-PROFILE-ASSOCIATION] Matching is deliberately performed
+ * against EVERY stored record, including ones removedFromRecents — see
+ * listLibraries() above. If a match IS found, `removedFromRecents` is
+ * explicitly cleared (Test D: re-picking a folder that was "X"'d re-adds
+ * it to Recent Libraries) while `profileId` is preserved by the `{
+ * ...match }` spread below (re-picking recovers the historical
+ * association, it doesn't reset it).
  *
  * Returns the resulting library record (existing or newly created).
  */
@@ -155,7 +194,7 @@ export async function addOrUpdateLibrary(handle) {
 
     const now = Date.now();
     const record = match
-      ? { ...match, name: handle.name, handle }
+      ? { ...match, name: handle.name, handle, removedFromRecents: false }
       : {
           id: generateLibraryId(),
           name: handle.name,
@@ -164,6 +203,8 @@ export async function addOrUpdateLibrary(handle) {
           lastOpenedAt: now,
           lastScannedAt: null,
           createdAt: now,
+          profileId: null,
+          removedFromRecents: false,
         };
 
     const writeTx = database.transaction(STORE_NAME, "readwrite");
@@ -207,7 +248,69 @@ export async function touchLibrary(id, { itemCount, scannedAt = Date.now(), open
   }
 }
 
-/** Forgets one library — used both for explicit "Remove" and for a handle that turns out to be stale/invalid. */
+/**
+ * Sets (or, with profileId = null, clears) which Profile this physical
+ * library is associated with. This is the one function that writes the
+ * durable Library <-> Profile relationship described at the top of this
+ * file. No-op (returns null) if the library id isn't known.
+ */
+export async function setLibraryProfile(id, profileId) {
+  const database = await openDatabase();
+
+  try {
+    const readTx = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(readTx.objectStore(STORE_NAME).get(id));
+    await completeTransaction(readTx);
+    if (!record) return null;
+
+    const updated = { ...record, profileId: profileId || null };
+
+    const writeTx = database.transaction(STORE_NAME, "readwrite");
+    writeTx.objectStore(STORE_NAME).put(updated);
+    await completeTransaction(writeTx);
+
+    return updated;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Removes one library from the "Recent Libraries" shortcut list ("X" in
+ * the UI) WITHOUT erasing what this module knows about the physical
+ * folder — its identity (handle, for isSameEntry() matching) and its
+ * profileId association both survive. See listLibraries() and
+ * addOrUpdateLibrary() above for the two places that reflects: the record
+ * stops appearing in Recent Libraries, but re-picking the same physical
+ * folder later still recognizes it and recovers the association.
+ *
+ * No-op if the library id isn't known.
+ */
+export async function removeFromRecents(id) {
+  const database = await openDatabase();
+
+  try {
+    const readTx = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(readTx.objectStore(STORE_NAME).get(id));
+    await completeTransaction(readTx);
+    if (!record) return;
+
+    const writeTx = database.transaction(STORE_NAME, "readwrite");
+    writeTx.objectStore(STORE_NAME).put({ ...record, removedFromRecents: true });
+    await completeTransaction(writeTx);
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Permanently forgets a library — identity, handle, AND its profile
+ * association. This is the "erase everything" operation the phase spec
+ * explicitly deferred a dedicated UI for ("Forget Association" / "Forget
+ * Library Identity"); nothing in this app's UI currently calls this. Kept
+ * available for that future feature and for genuinely broken records that
+ * should never resurface.
+ */
 export async function removeLibrary(id) {
   const database = await openDatabase();
 
