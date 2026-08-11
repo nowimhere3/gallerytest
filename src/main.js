@@ -6,7 +6,11 @@ import {
   touchLibrary,
   removeFromRecents,
   setLibraryProfile,
+  listLegacyLibraries,
+  addLegacyLibrary,
+  updateLegacyLibrarySignature,
 } from "./storage/library-registry.js";
+import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
@@ -189,16 +193,33 @@ let activeLibraryRecord = null;
 let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
 
 // [Phase 8.4-2] webkitdirectory carries no durable physical-folder
-// identity — no isSameEntry()-equivalent exists for it, and inventing one
-// (folder-name matching, etc.) would be a false promise of persistence
-// this picker cannot actually back up. So a legacy folder's association is
-// intentionally SESSION-ONLY: it lives purely in this in-memory flag,
-// resets to false on every fresh legacy load (a reload or re-pick of even
-// the exact same folder is, correctly, a brand-new unassociated load), and
-// is never written to library-registry.js or any other persistence layer.
-// Clicking "Associate" for a legacy load just flips this flag so the
-// button hides for the REST of this load/session — nothing more.
+// identity on its own — no isSameEntry()-equivalent exists for it. As of
+// Phase 8.4-3, a FOLDER pick (not a bare "Choose Files" multi-select) CAN
+// still be recognized on a later re-pick, via a metadata fingerprint — see
+// legacyHasDurableIdentity below and legacy-library-signature.js. This
+// flag remains the fallback for the case that genuinely has no folder
+// context at all: it lives purely in memory, resets to false on every
+// fresh legacy load, and is never persisted. Clicking "Associate" while
+// this is the active mechanism just flips it so the button hides for the
+// REST of this load/session — nothing more.
 let legacySessionAssociated = false;
+
+// [Phase 8.4-3] True for the current load only when it came through the
+// webkitdirectory FOLDER picker (has a root folder context to fingerprint)
+// — as opposed to the plain multi-file "Choose Files" input, which has no
+// meaningful folder identity to build a durable association from (see
+// loadFiles()). When true, currentLoadIsAssociated() and the Associate
+// click handler use activeLibraryRecord + the persisted legacy registry
+// instead of the ephemeral legacySessionAssociated flag above.
+let legacyHasDurableIdentity = false;
+
+// [Phase 8.4-3] The signature computed for the CURRENTLY loaded legacy
+// folder, kept only for the case where no stored record matched it yet —
+// so that if the user then clicks "Associate", a new legacy library record
+// can be created from the signature already computed at load time instead
+// of recomputing it. Cleared once a record exists (matched OR newly
+// created) for the current load.
+let pendingLegacySignature = null;
 
 // [Phase 8.4-2] Single visibility rule for the "Associate this Library
 // with Current Profile" button, independent of which picker produced the
@@ -215,14 +236,34 @@ function currentLoadIsAssociated() {
     if (!activeLibraryRecord || !activeLibraryRecord.id) return true;
     return Boolean(activeLibraryRecord.profileId);
   }
-  if (currentSourceKind === "legacy") return legacySessionAssociated;
+  if (currentSourceKind === "legacy") {
+    // [Phase 8.4-3] A folder pick with durable identity behaves exactly
+    // like FSA here — same activeLibraryRecord.profileId check — it's
+    // just persisted via a signature instead of a handle. Only the
+    // handle-less "Choose Files" case falls back to the ephemeral flag.
+    if (legacyHasDurableIdentity) {
+      return Boolean(activeLibraryRecord && activeLibraryRecord.profileId);
+    }
+    return legacySessionAssociated;
+  }
   return true; // "none" — nothing loaded, never show the button
 }
+
 
 function syncAssociateButtonVisibility() {
   const shouldShow = currentSourceKind !== "none" && !currentLoadIsAssociated();
   fsaAssociateBtn.classList.toggle("hidden", !shouldShow);
   fsaAssociateBtn.disabled = !shouldShow;
+}
+
+// [Phase 8.4-3] Debug breadcrumbs for legacy folder matching, privacy-safe
+// by construction — every call site below only ever passes counts, short
+// hashes, or internally-generated record ids, never filenames/paths/root
+// names themselves. See legacy-library-signature.js's header comment for
+// why raw rootName is fine to STORE (it's just local IndexedDB data, same
+// as an FSA handle's name already is) but not fine to LOG.
+function logLegacyIdentity(event, details) {
+  console.debug(`[LEGACY-IDENTITY] ${event}`, details || "");
 }
 
 // ---- Undo Last Hide ---------------------------------------------------
@@ -367,7 +408,7 @@ function finishLoadingItems(items) {
   reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
 }
 
-async function loadFiles(fileList) {
+async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {}) {
   const total = (fileList || []).length;
   if (!total || isLoadingFiles) return;
 
@@ -386,16 +427,23 @@ async function loadFiles(fileList) {
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
-  // [Phase 8.4-2] A fresh legacy load — unassociated by definition (see
-  // legacySessionAssociated's own comment: no fake persistent identity),
-  // regardless of whether an earlier legacy session in this same tab was
-  // associated. Hidden immediately; syncAssociateButtonVisibility() below
-  // reveals it once the load actually succeeds.
   activeLibraryRecord = null;
   currentSourceKind = "legacy";
+  // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
+  // fingerprint) participates in durable identity — "Choose Files" keeps
+  // the old ephemeral, ununrecognizable-on-reload behavior unchanged (see
+  // currentLoadIsAssociated()). Recomputed on every load rather than
+  // trusted from a previous one.
+  legacyHasDurableIdentity = Boolean(isFolderPick && rootName);
   legacySessionAssociated = false;
+  pendingLegacySignature = null;
   fsaAssociateBtn.classList.add("hidden");
   fsaAssociateBtn.disabled = true;
+
+  // [Phase 8.4-3] Mirrors loadFromFsaHandle's own recognizedProfileName —
+  // only set when a legacy re-pick actually causes a Profile switch, so
+  // the note below appears exactly for that case.
+  let recognizedProfileName = null;
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -405,10 +453,87 @@ async function loadFiles(fileList) {
       },
     });
 
+    // [Phase 8.4-3] Resolve legacy identity BEFORE finishLoadingItems()
+    // stamps favorite/hidden/tag state — mirrors the FSA flow's ordering
+    // exactly, so a recognized folder's Profile is active by the time
+    // items get stamped, not after.
+    if (legacyHasDurableIdentity) {
+      try {
+        const signature = await computeLegacySignature(items, rootName);
+        const storedRecords = await listLegacyLibraries();
+        logLegacyIdentity("signature generated", {
+          rootNameHash: signature.rootNameHash,
+          itemCount: signature.itemCount,
+          sampleSize: signature.sampleEntries.length,
+        });
+        logLegacyIdentity("candidates checked", { count: storedRecords.length });
+
+        const matchResult = matchLegacySignature(signature, storedRecords);
+
+        if (matchResult.status === "match") {
+          logLegacyIdentity("match found", { matchedId: matchResult.record.id, score: Number(matchResult.score.toFixed(2)) });
+          // Refresh the stored signature to what was just seen (drift
+          // tracking — see updateLegacyLibrarySignature's own comment),
+          // preserving id/profileId.
+          const refreshed = await updateLegacyLibrarySignature(matchResult.record.id, signature);
+          activeLibraryRecord = refreshed || matchResult.record;
+          pendingLegacySignature = null;
+
+          if (activeLibraryRecord.profileId) {
+            const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
+            if (knownProfileIds.has(activeLibraryRecord.profileId)) {
+              if (activeLibraryRecord.profileId !== profile.getProfileId()) {
+                await profile.switchProfile(activeLibraryRecord.profileId);
+                recognizedProfileName = profile.getProfileName();
+              }
+              logLegacyIdentity("associated profile id", { profileId: activeLibraryRecord.profileId });
+            } else {
+              // [Phase 8.4-3] Same stale-association handling as the FSA
+              // path: the profile this library pointed at no longer
+              // exists (deleted since). Clear it rather than switching to
+              // nothing or leaving a dangling reference.
+              console.warn("[LEGACY-IDENTITY] Recognized library's associated profile no longer exists — clearing the stale association.");
+              try {
+                const cleared = await setLibraryProfile(activeLibraryRecord.id, null);
+                activeLibraryRecord = cleared || { ...activeLibraryRecord, profileId: null };
+              } catch (error) {
+                activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
+              }
+            }
+          }
+        } else if (matchResult.status === "ambiguous") {
+          // Per spec: false negatives are preferable to guessing. Treated
+          // identically to "no match" from here on — unassociated, no
+          // profile switch, Associate button will offer to create a new
+          // record if the user proceeds.
+          logLegacyIdentity("ambiguous — refusing to guess", { candidateIds: matchResult.candidateIds });
+          activeLibraryRecord = null;
+          pendingLegacySignature = signature;
+        } else {
+          logLegacyIdentity("no match — new/unrecognized library");
+          activeLibraryRecord = null;
+          pendingLegacySignature = signature;
+        }
+      } catch (error) {
+        // Identity resolution must never block the actual media load —
+        // worst case, this folder just isn't recognized this time.
+        console.warn("[LEGACY-IDENTITY] Could not resolve legacy folder identity.", error);
+        activeLibraryRecord = null;
+        pendingLegacySignature = null;
+      }
+    }
+
     finishLoadingItems(items);
     // [Phase 8.4-2] Legacy loads participate in the same Associate-button
     // UI as FSA during the current session — see the Core Visibility Rule.
     syncAssociateButtonVisibility();
+    // [Phase 8.4-3] Same "brief recognition note" treatment as the FSA
+    // path — fsaStatusText survives the reactive statusText re-render
+    // finishLoadingItems() just triggered, so it's the right element for
+    // a message that should stick around, not the generic status line.
+    if (recognizedProfileName) {
+      fsaStatusText.textContent = `✓ Recognized this library — Profile: ${recognizedProfileName}.`;
+    }
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
@@ -758,9 +883,45 @@ async function renderRecentLibraries() {
 // source is active when it's clicked.
 fsaAssociateBtn.addEventListener("click", async () => {
   if (currentSourceKind === "legacy") {
-    // Session-only — see legacySessionAssociated's own comment. Nothing
-    // is persisted; re-loading (even the exact same folder again) starts
-    // unassociated again, by design.
+    const targetProfileId = profile.getProfileId();
+
+    // [Phase 8.4-3] Durable path — same persistence primitive
+    // (setLibraryProfile) the FSA branch below uses, just against a
+    // legacy-sourceKind record instead of one keyed by a handle. If
+    // nothing matched at load time, activeLibraryRecord is still null
+    // here — create the record now, from the signature already computed
+    // during the load (pendingLegacySignature), rather than re-scanning.
+    if (legacyHasDurableIdentity) {
+      if (!targetProfileId) return;
+
+      fsaAssociateBtn.disabled = true;
+      try {
+        let record = activeLibraryRecord;
+        if (!record) {
+          if (!pendingLegacySignature) return; // nothing to create a record from
+          record = await addLegacyLibrary(pendingLegacySignature);
+        }
+
+        const updated = await setLibraryProfile(record.id, targetProfileId);
+        activeLibraryRecord = updated || { ...record, profileId: targetProfileId };
+        pendingLegacySignature = null;
+        logLegacyIdentity("associated profile id", { profileId: targetProfileId, libraryId: activeLibraryRecord.id });
+        syncAssociateButtonVisibility();
+        fsaStatusText.textContent =
+          `Associated this folder with "${profile.getProfileName()}". ` +
+          "It should be recognized next time you pick the same folder here.";
+      } catch (error) {
+        console.warn("[LEGACY-IDENTITY] Could not save this legacy library association.", error);
+        fsaStatusText.textContent = "Could not save the association. Try again.";
+        fsaAssociateBtn.disabled = false;
+      }
+      return;
+    }
+
+    // Ephemeral fallback ("Choose Files", no folder context) — see
+    // legacySessionAssociated's own comment. Nothing is persisted;
+    // re-loading (even the exact same files again) starts unassociated
+    // again, by design.
     legacySessionAssociated = true;
     syncAssociateButtonVisibility();
     fsaStatusText.textContent = `Associated the current folder with "${profile.getProfileName()}" for this session.`;
@@ -1816,12 +1977,14 @@ folderInput.addEventListener("change", (event) => {
   // metadata — the folder's own name, nothing more. No matching/detection
   // happens here or anywhere yet; that's deferred to a later phase.
   const firstFile = files && files[0];
-  if (firstFile && firstFile.webkitRelativePath) {
-    const topFolderName = firstFile.webkitRelativePath.split("/")[0];
-    if (topFolderName) profile.setMasterFolder({ name: topFolderName });
-  }
+  const topFolderName = firstFile && firstFile.webkitRelativePath ? firstFile.webkitRelativePath.split("/")[0] : null;
+  if (topFolderName) profile.setMasterFolder({ name: topFolderName });
 
-  loadFiles(files);
+  // [Phase 8.4-3] isFolderPick=true is what unlocks durable legacy
+  // identity in loadFiles() — the plain "Choose Files" input below never
+  // sets this, since a set of individually-picked files has no folder
+  // root to fingerprint against.
+  loadFiles(files, { isFolderPick: true, rootName: topFolderName });
   folderInput.value = "";
 });
 
@@ -1899,11 +2062,13 @@ clearBtn.addEventListener("click", () => {
   exitFillMode();
   lastHiddenRelativePath = null;
   syncUndoHideButton();
-  // [Phase 8.4-2] Nothing is loaded anymore — an "Associate this
+  // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
   currentSourceKind = "none";
   legacySessionAssociated = false;
+  legacyHasDurableIdentity = false;
+  pendingLegacySignature = null;
   syncAssociateButtonVisibility();
 });
 

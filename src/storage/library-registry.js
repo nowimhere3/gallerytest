@@ -15,11 +15,20 @@
 // would make every future profile-schema migration also have to reason
 // about this.
 //
-// Deliberately NOT tracking webkitdirectory-picked folders: a File List
-// from <input webkitdirectory> carries no reusable handle or permission,
-// so there is nothing here that could actually "resume" one without a
-// full manual re-pick — the same friction as today. Listing it as a fake
-// "recent library" would be a misleading affordance, not a shortcut.
+// Deliberately NOT offering webkitdirectory-picked folders as a "Recent
+// Libraries" shortcut: a File List from <input webkitdirectory> carries no
+// reusable handle or permission, so there is nothing here that could
+// actually "resume" one without a full manual re-pick — the same friction
+// as before this module existed. Listing it as a fake "recent library"
+// would be a misleading affordance, not a shortcut.
+//
+// As of Phase 8.4-3, legacy folders ARE still tracked in this same store
+// for a narrower purpose — recognizing a RE-PICKED folder well enough to
+// restore its Profile association — via a fingerprint/signature instead of
+// a handle. See the "Legacy (webkitdirectory) library identity" section
+// near the bottom of this file, and legacy-library-signature.js for how
+// that signature is built and matched. listLibraries() below still
+// excludes these from Recent Libraries for the reason above.
 //
 // ---- Phase 8.4 — Library <-> Profile association --------------------
 //
@@ -144,7 +153,13 @@ export async function listLibraries() {
     await completeTransaction(transaction);
 
     return records
-      .filter((record) => !record.removedFromRecents)
+      // [Phase 8.4-3] Legacy (webkitdirectory) records live in this SAME
+      // store now (see the header comment on sourceKind), but still have
+      // no reusable handle — nothing here could "resume" one the way an
+      // FSA entry can. Keeping them out of Recent Libraries is unchanged
+      // from before this phase; only WHERE their identity data lives is
+      // new.
+      .filter((record) => !record.removedFromRecents && record.sourceKind !== "legacy")
       .sort((a, b) => (b.lastOpenedAt || 0) - (a.lastOpenedAt || 0));
   } finally {
     database.close();
@@ -194,9 +209,10 @@ export async function addOrUpdateLibrary(handle) {
 
     const now = Date.now();
     const record = match
-      ? { ...match, name: handle.name, handle, removedFromRecents: false }
+      ? { ...match, name: handle.name, handle, removedFromRecents: false, sourceKind: "fsa" }
       : {
           id: generateLibraryId(),
+          sourceKind: "fsa",
           name: handle.name,
           handle,
           itemCount: null,
@@ -318,6 +334,117 @@ export async function removeLibrary(id) {
     const transaction = database.transaction(STORE_NAME, "readwrite");
     transaction.objectStore(STORE_NAME).delete(id);
     await completeTransaction(transaction);
+  } finally {
+    database.close();
+  }
+}
+
+// ---- Phase 8.4-3 — Legacy (webkitdirectory) library identity ----------
+//
+// Lives in the SAME `libraries` store as FSA records (see the header
+// comment: one registry, `sourceKind` distinguishes them), because it's
+// the same underlying fact — "this folder belongs with this profile" —
+// just resolved through a different identity mechanism:
+//   FSA record:    { sourceKind: "fsa",    handle, ... }   — isSameEntry()
+//   legacy record: { sourceKind: "legacy", signature, ... } — see
+//                  legacy-library-signature.js for what `signature` is
+//                  and how two of them get compared.
+//
+// No new object store, no DATABASE_VERSION bump — IndexedDB rows are
+// schema-less per-record, so existing FSA rows (no `sourceKind` field at
+// all, from before this phase) simply keep being treated as FSA by every
+// `sourceKind !== "legacy"` check elsewhere in this file.
+//
+// Deliberately created LAZILY — see addLegacyLibrary below — only once
+// the user actually clicks "Associate", not on every folder pick. An
+// unassociated legacy folder the user never associates leaves no trace
+// here, same as before this phase.
+
+/**
+ * All stored legacy library records, unfiltered (including any without a
+ * current profileId, e.g. one whose profile was later deleted — see
+ * main.js's stale-profile handling, mirrored from the FSA path). This is
+ * the candidate set matchLegacySignature() compares a freshly-picked
+ * folder against; unlike listLibraries(), there is no "Recent Libraries"
+ * concept for these, so nothing is filtered out here.
+ */
+export async function listLegacyLibraries() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const records = await requestToPromise(transaction.objectStore(STORE_NAME).getAll());
+    await completeTransaction(transaction);
+    return records.filter((record) => record.sourceKind === "legacy");
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Creates a brand-new legacy library record from a signature computed at
+ * load time (see legacy-library-signature.js), with no profile association
+ * yet — setLibraryProfile() (shared with the FSA path) is what actually
+ * attaches a profileId, immediately after this in the "Associate" click
+ * handler. Always creates; matching against existing records to decide
+ * whether a NEW record is even needed happens earlier, in main.js.
+ */
+export async function addLegacyLibrary(signature) {
+  const database = await openDatabase();
+
+  try {
+    const now = Date.now();
+    const record = {
+      id: generateLibraryId(),
+      sourceKind: "legacy",
+      name: signature.rootName || "Folder",
+      signature,
+      itemCount: signature.itemCount,
+      profileId: null,
+      createdAt: now,
+      lastSeenAt: now,
+    };
+
+    const writeTx = database.transaction(STORE_NAME, "readwrite");
+    writeTx.objectStore(STORE_NAME).put(record);
+    await completeTransaction(writeTx);
+
+    return record;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Refreshes a legacy library record's stored signature (and itemCount /
+ * lastSeenAt) to match what was JUST seen on a recognized re-pick, while
+ * preserving its id and profileId. Called after every strong match (see
+ * main.js), not only when the folder is unchanged — this is what lets the
+ * matcher track gradual drift over time instead of only ever comparing
+ * against a single frozen snapshot from the day the folder was first
+ * associated. No-op (returns null) if the id isn't known.
+ */
+export async function updateLegacyLibrarySignature(id, signature) {
+  const database = await openDatabase();
+
+  try {
+    const readTx = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(readTx.objectStore(STORE_NAME).get(id));
+    await completeTransaction(readTx);
+    if (!record) return null;
+
+    const updated = {
+      ...record,
+      signature,
+      itemCount: signature.itemCount,
+      lastSeenAt: Date.now(),
+    };
+
+    const writeTx = database.transaction(STORE_NAME, "readwrite");
+    writeTx.objectStore(STORE_NAME).put(updated);
+    await completeTransaction(writeTx);
+
+    return updated;
   } finally {
     database.close();
   }
