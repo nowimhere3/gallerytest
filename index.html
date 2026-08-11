@@ -80,21 +80,13 @@ Index · HTML
               <span id="tag-activity-name" class="tag-activity-value"></span>
               <span class="tag-activity-description">(last tagged)</span>
             </div>
-            <div class="tag-activity-row tag-activity-details">
-              <span id="tag-activity-position" class="tag-activity-value"></span>
-              <time id="tag-activity-time" class="tag-activity-value"></time>
-              <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
-            </div>
-            <!-- [8.3] "Tag -> Search": applies whichever tag is selected
-                 above to the EXISTING Gallery Tag Filter (activeTagFilters
-                 / Phase 6.3) instead of the user re-opening that panel and
-                 re-clicking the same tag there. Deliberately its own
-                 button, not a side effect of selecting a tag to view its
-                 activity — viewing activity stays read-only; this is the
-                 one action that changes what the Gallery shows. -->
-            <button id="tag-activity-search-btn" class="tag-activity-search-btn secondary" type="button">
-              Find in Gallery
-            </button>
+            <!-- [Phase 8.3-2] Built dynamically in main.js — up to three
+                 rows (Shuffle OFF / Shuffle ON / legacy-unknown), each with
+                 its own "Find" action that populates the existing Gallery
+                 Jump input rather than applying a tag filter. See
+                 renderTagActivityCenter() / resumeTagActivityToJump(). -->
+            <div id="tag-activity-rows" class="tag-activity-rows"></div>
+            <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
           </div>
         </div>
  
@@ -250,11 +242,16 @@ Index · HTML
              pipeline already produces — no second ordering system.
              [8.5] That's exactly why BOTH buttons below are already
              "search-context" jumps (the number means "in your current
-             filter/search results", e.g. Phase 8.3's "Find in Gallery"),
-             not "in the whole library" — they only differ in whether the
-             target also becomes the LOADED item (direct) or just gets
-             scrolled to (search/locate). Tooltips spell this out
-             explicitly; behavior is unchanged from before this phase. -->
+             filter/search results", e.g. the Tags filter panel), not "in
+             the whole library" — they only differ in whether the target
+             also becomes the LOADED item (direct) or just gets scrolled to
+             (search/locate). Tooltips spell this out explicitly.
+             [Phase 8.3-2] The Status Update Center's "Find" actions feed
+             this same input for the same reason: a stored tagging position
+             is only meaningful against the visible-item total that existed
+             at tag time, which is exactly what this control already
+             validates against (an out-of-range number is rejected, same as
+             any manually-typed one) — no separate resume mechanism. -->
         <div class="gallery-jump-group" role="group" aria-label="Select and navigate to media">
           <span class="toolbar-filter-label">Select</span>
           <input

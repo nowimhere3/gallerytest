@@ -369,6 +369,21 @@ button:not(:disabled):hover,
   min-height: 0;
 }
 
+/* [Phase 8.3-2] Container for the (up to three) per-mode progress rows —
+   Shuffle OFF / Shuffle ON / legacy — built dynamically in main.js. Each
+   row reuses .tag-activity-row.tag-activity-details for its own internal
+   layout; this just stacks them with breathing room between. */
+.tag-activity-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.tag-activity-rows .tag-activity-search-btn {
+  margin-top: 0;
+}
+
 .tag-create-row {
   display: flex;
   flex-wrap: wrap;

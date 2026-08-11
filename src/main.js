@@ -84,10 +84,8 @@ const tagsGrid = document.getElementById("tags-grid");
 const tagActivityNeutral = document.getElementById("tag-activity-neutral");
 const tagActivityContent = document.getElementById("tag-activity-content");
 const tagActivityName = document.getElementById("tag-activity-name");
-const tagActivityPosition = document.getElementById("tag-activity-position");
-const tagActivityTime = document.getElementById("tag-activity-time");
+const tagActivityRows = document.getElementById("tag-activity-rows");
 const tagActivityEmpty = document.getElementById("tag-activity-empty");
-const tagActivitySearchBtn = document.getElementById("tag-activity-search-btn");
 
 const prevBtn = document.getElementById("prev-btn");
 const nextBtn = document.getElementById("next-btn");
@@ -744,29 +742,6 @@ function toggleTagsFilterPanel() {
     "aria-expanded",
     tagsFilterPanel.classList.contains("hidden") ? "false" : "true"
   );
-}
-
-// [8.3] "Tag -> Search": reuses activeTagFilters/renderTagsFilterGrid —
-// the exact same state and pipeline toggleTagFilter() already drives —
-// rather than a parallel tag-search representation. Deliberately additive
-// (only turns the filter ON) instead of toggling: this is triggered from
-// the Status Update Center's "Find in Gallery" button, whose whole point
-// is "show me media with this tag", not "flip this tag's filter state
-// blind" — a second click here shouldn't silently remove the filter the
-// first click just added.
-function applyTagActivitySelectionAsFilter() {
-  if (!selectedTagActivityId) return;
-
-  if (!activeTagFilters.includes(selectedTagActivityId)) {
-    activeTagFilters = [...activeTagFilters, selectedTagActivityId];
-    renderTagsFilterGrid();
-    reloadRuntime({ keepPlaying: runtime.getState().isPlaying, randomizeInitial: shouldRandomizeInitialSelection() });
-  }
-
-  // Surface the result rather than filtering "invisibly" behind a closed
-  // panel — same aria-expanded sync toggleTagsFilterPanel() does.
-  tagsFilterPanel.classList.remove("hidden");
-  tagsFilterToggleBtn.setAttribute("aria-expanded", "true");
 }
 
 function syncVideoLoopControl() {
@@ -1700,7 +1675,6 @@ typeImagesBtn.addEventListener("click", () => setTypeFilter("image"));
 typeVideosBtn.addEventListener("click", () => setTypeFilter("video"));
 
 tagsFilterToggleBtn.addEventListener("click", () => toggleTagsFilterPanel());
-tagActivitySearchBtn.addEventListener("click", applyTagActivitySelectionAsFilter);
 
 prevBtn.addEventListener("click", () => {
   handleManualNavigationLoopReset();
@@ -2005,6 +1979,51 @@ function formatTagActivityTime(timestamp) {
   return `${dateText} · ${timeText}`;
 }
 
+// [Phase 8.3-2] Replaces the old "Find in Gallery" tag-filter shortcut.
+// This is a RESUME action, not a filter action: it hands the stored
+// tagging position straight to the existing Gallery Jump input, the same
+// as if the user had read the number off this card and typed it in
+// themselves. No new navigation system, no tag filter applied. Whether
+// that number still lands on the same item depends on the current visible
+// set matching the one that existed at tag time — performGalleryJump's
+// existing range check already guards against a now-invalid number
+// (smaller current total, etc.) exactly as it would for any manually
+// typed value, so nothing extra is needed here for that case.
+function resumeTagActivityToJump(slot) {
+  if (!slot) return;
+
+  galleryJumpInput.value = String(slot.position);
+  galleryJumpInput.scrollIntoView({ behavior: "smooth", block: "center" });
+  galleryJumpInput.focus();
+  galleryJumpInput.select();
+}
+
+function buildTagActivityRow(label, slot) {
+  const row = document.createElement("div");
+  row.className = "tag-activity-row tag-activity-details";
+
+  const value = document.createElement("span");
+  value.className = "tag-activity-value";
+  value.textContent = label ? `${label} · ${slot.position} / ${slot.total}` : `${slot.position} / ${slot.total}`;
+  row.appendChild(value);
+
+  const time = document.createElement("time");
+  time.className = "tag-activity-value";
+  time.textContent = formatTagActivityTime(slot.timestamp);
+  time.dateTime = new Date(slot.timestamp).toISOString();
+  row.appendChild(time);
+
+  const findBtn = document.createElement("button");
+  findBtn.type = "button";
+  findBtn.className = "tag-activity-search-btn secondary";
+  findBtn.textContent = "Find";
+  findBtn.setAttribute("aria-label", label ? `Resume from ${label} position` : "Resume from this position");
+  findBtn.addEventListener("click", () => resumeTagActivityToJump(slot));
+  row.appendChild(findBtn);
+
+  return row;
+}
+
 function renderTagActivityCenter() {
   const selectedTag = profile.getTags().find((tag) => tag.id === selectedTagActivityId);
 
@@ -2013,32 +2032,22 @@ function renderTagActivityCenter() {
   if (!selectedTag) return;
 
   tagActivityName.textContent = selectedTag.name;
-  const hasActivity =
-    Number.isInteger(selectedTag.lastTagPosition) &&
-    Number.isInteger(selectedTag.totalAtTime) &&
-    Number.isFinite(selectedTag.lastTaggedAt);
 
-  tagActivityPosition.classList.toggle("hidden", !hasActivity);
-  tagActivityTime.classList.toggle("hidden", !hasActivity);
+  const { shuffleOff, shuffleOn, legacy } = profile.getTagActivity(selectedTagActivityId);
+  const hasActivity = Boolean(shuffleOff || shuffleOn || legacy);
+
+  tagActivityRows.classList.toggle("hidden", !hasActivity);
   tagActivityEmpty.classList.toggle("hidden", hasActivity);
+  tagActivityRows.innerHTML = "";
 
-  if (hasActivity) {
-    // [8.4] Only appended when this activity record actually has a known
-    // shuffle context (see ProfileStore#recordTagActivity) — omitted
-    // entirely for older/pre-8.4 records rather than guessing "OFF".
-    const shuffleLabel =
-      typeof selectedTag.lastTagShuffle === "boolean"
-        ? ` · Shuffle ${selectedTag.lastTagShuffle ? "ON" : "OFF"}`
-        : "";
-    tagActivityPosition.textContent = `${selectedTag.lastTagPosition} / ${selectedTag.totalAtTime}${shuffleLabel}`;
-    tagActivityTime.textContent = formatTagActivityTime(selectedTag.lastTaggedAt);
-    tagActivityTime.dateTime = new Date(selectedTag.lastTaggedAt).toISOString();
-  } else {
-    tagActivityPosition.textContent = "";
-    tagActivityTime.textContent = "";
-    tagActivityTime.removeAttribute("datetime");
-  }
+  if (shuffleOff) tagActivityRows.appendChild(buildTagActivityRow("Shuffle OFF", shuffleOff));
+  if (shuffleOn) tagActivityRows.appendChild(buildTagActivityRow("Shuffle ON", shuffleOn));
+  // `legacy` = a record from before Shuffle context was ever tracked — no
+  // label, since labeling it either way would be a guess (see
+  // ProfileStore#getTagActivity). Still fully usable to resume from.
+  if (legacy) tagActivityRows.appendChild(buildTagActivityRow(null, legacy));
 }
+
 
 function renderTagsGrid() {
   const tags = profile.getTags();
