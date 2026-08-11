@@ -173,14 +173,57 @@ let fillModeActive = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
 let isLoadingFiles = false;
-// [LIBRARY-PROFILE-ASSOCIATION] The library-registry record for whichever
-// FSA library is currently loaded, if any — null for the webkitdirectory
-// path (that picker has no durable physical-folder identity to associate;
-// see the phase breadcrumb in library-registry.js). Tracked here purely
-// so the "Associate this Library with Current Profile" button knows what
-// it's associating; not a second source of truth for the association
-// itself, which always lives in IndexedDB via library-registry.js.
+// [LIBRARY-PROFILE-ASSOCIATION / Phase 8.4-2] The library-registry record
+// for whichever FSA library is currently loaded, if any — null when the
+// current source is the webkitdirectory picker (see legacySessionAssociated
+// below) or nothing is loaded. Tracked here purely so the "Associate this
+// Library with Current Profile" button knows what it's associating; not a
+// second source of truth for the association itself, which — for FSA —
+// always lives in IndexedDB via library-registry.js.
 let activeLibraryRecord = null;
+
+// [Phase 8.4-2] Which picker produced the currently loaded media, if any.
+// This — not "FSA vs legacy" scattered across call sites — is the one
+// thing association-button visibility is computed from. See
+// currentLoadIsAssociated()/syncAssociateButtonVisibility() below.
+let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
+
+// [Phase 8.4-2] webkitdirectory carries no durable physical-folder
+// identity — no isSameEntry()-equivalent exists for it, and inventing one
+// (folder-name matching, etc.) would be a false promise of persistence
+// this picker cannot actually back up. So a legacy folder's association is
+// intentionally SESSION-ONLY: it lives purely in this in-memory flag,
+// resets to false on every fresh legacy load (a reload or re-pick of even
+// the exact same folder is, correctly, a brand-new unassociated load), and
+// is never written to library-registry.js or any other persistence layer.
+// Clicking "Associate" for a legacy load just flips this flag so the
+// button hides for the REST of this load/session — nothing more.
+let legacySessionAssociated = false;
+
+// [Phase 8.4-2] Single visibility rule for the "Associate this Library
+// with Current Profile" button, independent of which picker produced the
+// currently loaded media — see the Core Visibility Rule this phase
+// introduced: visible whenever something is loaded and NOT associated;
+// hidden when nothing is loaded, or it already is associated.
+function currentLoadIsAssociated() {
+  if (currentSourceKind === "fsa") {
+    // No persisted library.id (e.g. addOrUpdateLibrary() failed to save
+    // this folder — see fsaChooseFolderBtn's catch) means there is
+    // nothing a click could actually persist an association against;
+    // treat that as "can't participate" rather than dangling a button
+    // that would silently no-op when clicked.
+    if (!activeLibraryRecord || !activeLibraryRecord.id) return true;
+    return Boolean(activeLibraryRecord.profileId);
+  }
+  if (currentSourceKind === "legacy") return legacySessionAssociated;
+  return true; // "none" — nothing loaded, never show the button
+}
+
+function syncAssociateButtonVisibility() {
+  const shouldShow = currentSourceKind !== "none" && !currentLoadIsAssociated();
+  fsaAssociateBtn.classList.toggle("hidden", !shouldShow);
+  fsaAssociateBtn.disabled = !shouldShow;
+}
 
 // ---- Undo Last Hide ---------------------------------------------------
 //
@@ -343,13 +386,16 @@ async function loadFiles(fileList) {
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
-  // [LIBRARY-PROFILE-ASSOCIATION] webkitdirectory carries no durable
-  // physical-folder identity (no isSameEntry()-equivalent), so it never
-  // gets the association affordance — clear it explicitly rather than
-  // leaving a stale FSA library's "Associate" button pointing at media
-  // that isn't loaded anymore.
+  // [Phase 8.4-2] A fresh legacy load — unassociated by definition (see
+  // legacySessionAssociated's own comment: no fake persistent identity),
+  // regardless of whether an earlier legacy session in this same tab was
+  // associated. Hidden immediately; syncAssociateButtonVisibility() below
+  // reveals it once the load actually succeeds.
   activeLibraryRecord = null;
+  currentSourceKind = "legacy";
+  legacySessionAssociated = false;
   fsaAssociateBtn.classList.add("hidden");
+  fsaAssociateBtn.disabled = true;
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -360,6 +406,9 @@ async function loadFiles(fileList) {
     });
 
     finishLoadingItems(items);
+    // [Phase 8.4-2] Legacy loads participate in the same Associate-button
+    // UI as FSA during the current session — see the Core Visibility Rule.
+    syncAssociateButtonVisibility();
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
@@ -402,8 +451,15 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // at all requires either the FSA folder-picker round trip or a Recent
   // Libraries click, both far slower than one IndexedDB open.
   activeLibraryRecord = libraryRecord || null;
+  currentSourceKind = "fsa";
   fsaAssociateBtn.classList.add("hidden");
   fsaAssociateBtn.disabled = true;
+
+  // [Phase 8.4-2] Captured only when a switch actually happens, so the
+  // "Recognized this library" note appears exactly for Test B/C's
+  // scenario — not for a library that was already on the active profile,
+  // and not for an unassociated one.
+  let recognizedProfileName = null;
 
   if (activeLibraryRecord && activeLibraryRecord.id && activeLibraryRecord.profileId) {
     const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
@@ -411,6 +467,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     if (knownProfileIds.has(activeLibraryRecord.profileId)) {
       if (activeLibraryRecord.profileId !== profile.getProfileId()) {
         await profile.switchProfile(activeLibraryRecord.profileId);
+        recognizedProfileName = profile.getProfileName();
       }
     } else {
       // [LIBRARY-PROFILE-ASSOCIATION] Test F — the Profile this library
@@ -466,6 +523,10 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       previousCount !== null && previousCount !== count
         ? ` (previously ${previousCount} item${previousCount === 1 ? "" : "s"} on record — folder contents may have changed, or the scan may be incomplete; see console)`
         : "";
+    // [Phase 8.4-2] Optional, brief recognition note — not a separate
+    // notification system, just a prefix on the same status line that
+    // already reports the load result.
+    const recognizedNote = recognizedProfileName ? `✓ Recognized this library — Profile: ${recognizedProfileName}. ` : "";
 
     if (result.incomplete) {
       // Reliability requirement: an interrupted scan must never be
@@ -473,14 +534,14 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       // the console (see FsaFileProvider); this surfaces it to the user
       // too, with whatever was actually found before the failure.
       fsaStatusText.textContent =
-        `Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded.${driftNote} ` +
+        `${recognizedNote}Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded.${driftNote} ` +
         "Check the browser console for details, then try again.";
     } else if (result.diagnostics.errors.length) {
       fsaStatusText.textContent =
-        `Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
+        `${recognizedNote}Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
         `${result.diagnostics.errors.length === 1 ? "" : "s"} could not be read (see console).${driftNote}`;
     } else {
-      fsaStatusText.textContent = `Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
+      fsaStatusText.textContent = `${recognizedNote}Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
     }
 
     finishLoadingItems(result.items);
@@ -494,17 +555,13 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
         console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
       }
       await renderRecentLibraries();
-
-      // [LIBRARY-PROFILE-ASSOCIATION] Only offer this for a library that
-      // still has no association after the resolution step above — a
-      // genuinely first-time library, or one whose profile was just found
-      // stale and cleared. A library that already resolved to a valid
-      // profile doesn't need it asked again.
-      if (!activeLibraryRecord.profileId) {
-        fsaAssociateBtn.classList.remove("hidden");
-        fsaAssociateBtn.disabled = false;
-      }
     }
+
+    // [Phase 8.4-2] Single visibility rule, same one loadFiles() uses for
+    // the legacy path — see currentLoadIsAssociated() for the id-less
+    // edge case (a library that failed to persist never shows the
+    // button, since a click would have nothing to associate).
+    syncAssociateButtonVisibility();
   } catch (error) {
     console.error("[FSA] Failed to load the selected folder.", error);
     fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
@@ -693,12 +750,24 @@ async function renderRecentLibraries() {
   }
 }
 
-// [LIBRARY-PROFILE-ASSOCIATION] First-time / stale-association MVP
-// action: "Associate this Library with Current Profile". Only visible
-// when activeLibraryRecord is set AND has no profileId — see
-// loadFromFsaHandle, which is the only place that shows it.
+// [Phase 8.4-2] Shared "Associate this Library with Current Profile"
+// action — one button, one handler, branching on which source is
+// currently loaded (see the Core Visibility Rule / currentSourceKind).
+// Visibility is entirely driven by syncAssociateButtonVisibility(); this
+// handler doesn't need to re-check it, only act correctly for whichever
+// source is active when it's clicked.
 fsaAssociateBtn.addEventListener("click", async () => {
-  if (!activeLibraryRecord || !activeLibraryRecord.id) return;
+  if (currentSourceKind === "legacy") {
+    // Session-only — see legacySessionAssociated's own comment. Nothing
+    // is persisted; re-loading (even the exact same folder again) starts
+    // unassociated again, by design.
+    legacySessionAssociated = true;
+    syncAssociateButtonVisibility();
+    fsaStatusText.textContent = `Associated the current folder with "${profile.getProfileName()}" for this session.`;
+    return;
+  }
+
+  if (currentSourceKind !== "fsa" || !activeLibraryRecord || !activeLibraryRecord.id) return;
 
   const targetProfileId = profile.getProfileId();
   if (!targetProfileId) return;
@@ -707,7 +776,7 @@ fsaAssociateBtn.addEventListener("click", async () => {
   try {
     const updated = await setLibraryProfile(activeLibraryRecord.id, targetProfileId);
     if (updated) activeLibraryRecord = updated;
-    fsaAssociateBtn.classList.add("hidden");
+    syncAssociateButtonVisibility();
     fsaStatusText.textContent = `Associated "${activeLibraryRecord.name}" with "${profile.getProfileName()}".`;
     await renderRecentLibraries();
   } catch (error) {
@@ -1830,11 +1899,12 @@ clearBtn.addEventListener("click", () => {
   exitFillMode();
   lastHiddenRelativePath = null;
   syncUndoHideButton();
-  // [LIBRARY-PROFILE-ASSOCIATION] Nothing is loaded anymore — an
-  // "Associate this Library…" click after this point would have nothing
-  // correct to associate.
+  // [Phase 8.4-2] Nothing is loaded anymore — an "Associate this
+  // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
-  fsaAssociateBtn.classList.add("hidden");
+  currentSourceKind = "none";
+  legacySessionAssociated = false;
+  syncAssociateButtonVisibility();
 });
 
 favoriteBtn.addEventListener("click", () => {
