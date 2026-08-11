@@ -137,6 +137,23 @@ input {
   margin-bottom: 16px;
 }
 
+/* [LIBRARY-PROFILE-UX / Phase 8.5] Deliberately smaller/lighter than
+   .tags-section/.profile-section's 1.5em summaries — this is a minor,
+   collapsed-by-default subsection of Load Media, not a top-level panel
+   section, so it shouldn't visually compete with those. */
+.legacy-picker-details summary {
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.legacy-picker-details[open] summary {
+  margin-bottom: 10px;
+  color: var(--text);
+}
+
 .media-content {
   display: flex;
   flex-direction: column;
