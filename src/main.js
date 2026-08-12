@@ -78,6 +78,7 @@ const tagsFilterGrid = document.getElementById("tags-filter-grid");
 
 const profileSelect = document.getElementById("profile-select");
 const profileSectionDetails = document.querySelector(".profile-section");
+const profileAssociateBtn = document.getElementById("profile-associate-btn");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
@@ -228,18 +229,13 @@ let legacyHasDurableIdentity = false;
 let pendingLegacySignature = null;
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
-// WHAT: True only in the window between the user clicking "Associate with
-// Profile" / "Change Profile" (which navigates to the Profile section —
-// see expandAndScrollToProfileSection()) and their NEXT profile action
-// there (switch/create/import-as-new).
-// WHY: Selecting a different profile in that dropdown normally must NOT
-// silently reassign whatever library happens to be loaded — that would be
-// a dangerous surprise for someone just browsing profiles. This flag is
-// the explicit, one-shot "yes, actually persist this one" signal,
-// consumed and cleared by whichever profile action happens next.
-// FUTURE: Always reset this to false after consuming it (success OR
-// failure) — a stuck `true` would silently associate an unrelated later
-// profile switch. Also reset it on Clear Media / any source change.
+// WHAT: A short-lived, navigation-only hint set while the Load Media
+// Associate/Change shortcut opens the Profile section.
+// WHY: It lets expandAndScrollToProfileSection() put focus on the explicit
+// Profile-side association button. It never authorizes or triggers a
+// persisted association; only clicking that button does.
+// FUTURE: Keep this flag purely presentational. Profile switching,
+// creation, and import must remain ordinary profile actions.
 let pendingLibraryAssociationIntent = false;
 
 // [Phase 8.4-2] Single visibility rule for whether the current load is
@@ -343,6 +339,8 @@ function syncAssociateButtonVisibility() {
   const associated = currentLoadIsAssociated();
   fsaAssociateBtn.classList.toggle("hidden", !shouldShow);
   fsaAssociateBtn.disabled = !shouldShow;
+  profileAssociateBtn.classList.toggle("hidden", !shouldShow);
+  profileAssociateBtn.disabled = !shouldShow;
   if (shouldShow) {
     fsaAssociateBtnLabel.textContent = associated ? "Change Profile" : "Associate with Profile";
   }
@@ -363,7 +361,13 @@ function expandAndScrollToProfileSection() {
     profileSectionDetails.open = true;
   }
   profileSectionDetails?.scrollIntoView({ behavior: "smooth", block: "start" });
-  profileSelect?.focus();
+  syncAssociateButtonVisibility();
+  if (pendingLibraryAssociationIntent) {
+    pendingLibraryAssociationIntent = false;
+    profileAssociateBtn?.focus();
+  } else {
+    profileSelect?.focus();
+  }
 }
 
 // [Phase 8.4-3] Debug breadcrumbs for legacy folder matching, privacy-safe
@@ -599,8 +603,8 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
             if (knownProfileIds.has(activeLibraryRecord.profileId)) {
               if (activeLibraryRecord.profileId !== profile.getProfileId()) {
                 await profile.switchProfile(activeLibraryRecord.profileId);
-                recognizedProfileName = profile.getProfileName();
               }
+              recognizedProfileName = profile.getProfileName();
               logLegacyIdentity("associated profile id", { profileId: activeLibraryRecord.profileId });
             } else {
               // [Phase 8.4-3] Same stale-association handling as the FSA
@@ -707,18 +711,21 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   fsaAssociateBtn.classList.add("hidden");
   fsaAssociateBtn.disabled = true;
 
-  // [Phase 8.4-2] Captured only when a switch actually happens, so the
-  // "Recognized this library" note appears exactly for Test B/C's
-  // scenario — not for a library that was already on the active profile,
-  // and not for an unassociated one.
+  // [Phase 8.5-2] Set for an associated library that was genuinely
+  // recognized: either an existing folder was re-picked, or a Recent
+  // Library resumed and switched profiles. A newly registered folder is
+  // not described as recognized merely because it has a record now.
   let recognizedProfileName = null;
 
   if (activeLibraryRecord && activeLibraryRecord.id && activeLibraryRecord.profileId) {
     const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
 
     if (knownProfileIds.has(activeLibraryRecord.profileId)) {
-      if (activeLibraryRecord.profileId !== profile.getProfileId()) {
+      const switchedProfiles = activeLibraryRecord.profileId !== profile.getProfileId();
+      if (switchedProfiles) {
         await profile.switchProfile(activeLibraryRecord.profileId);
+      }
+      if (activeLibraryRecord.wasExisting || switchedProfiles) {
         recognizedProfileName = profile.getProfileName();
       }
     } else {
@@ -1005,12 +1012,10 @@ async function renderRecentLibraries() {
 // [LIBRARY-PROFILE-UX / Phase 8.5]
 // WHAT: The actual persistence step — associates whatever is CURRENTLY
 // loaded with targetProfileId, branching on source kind exactly as the
-// old direct click handler used to. Returns true/false so callers can
-// react (status text, clearing pendingLibraryAssociationIntent).
-// WHY: Extracted so it can be triggered from wherever the user actually
-// completes a profile choice (the dropdown, Create, or Import-as-New) —
-// see pendingLibraryAssociationIntent's own comment for why it's no
-// longer the button's own click handler that does this.
+// old direct click handler used to. Returns true/false so the explicit
+// Profile-side association action can report whether it succeeded.
+// WHY: Keeps the persistence logic separate from the Load Media shortcut,
+// which is navigation-only.
 // FUTURE: This is the ONE place that writes a library<->profile
 // association. Do not duplicate this logic at a new call site — call this
 // function instead.
@@ -1020,6 +1025,7 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
   if (currentSourceKind === "legacy") {
     if (legacyHasDurableIdentity) {
       fsaAssociateBtn.disabled = true;
+      profileAssociateBtn.disabled = true;
       try {
         let record = activeLibraryRecord;
         if (!record) {
@@ -1042,6 +1048,7 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
         return false;
       } finally {
         fsaAssociateBtn.disabled = false;
+        profileAssociateBtn.disabled = false;
       }
     }
 
@@ -1058,6 +1065,7 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
   if (currentSourceKind !== "fsa" || !activeLibraryRecord || !activeLibraryRecord.id) return false;
 
   fsaAssociateBtn.disabled = true;
+  profileAssociateBtn.disabled = true;
   try {
     const updated = await setLibraryProfile(activeLibraryRecord.id, targetProfileId);
     if (updated) activeLibraryRecord = updated;
@@ -1071,6 +1079,7 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
     return false;
   } finally {
     fsaAssociateBtn.disabled = false;
+    profileAssociateBtn.disabled = false;
   }
 }
 
@@ -1078,9 +1087,8 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
 // WHAT: "Associate with Profile" / "Change Profile" — navigation only. No
 // longer persists anything itself.
 // WHY: Section 4/5 — clicking this must never write a profile association
-// directly; it hands off to the Profile section, and the association is
-// only actually written once the user completes a real choice there (see
-// pendingLibraryAssociationIntent and associateCurrentLibraryWithProfile).
+// directly; it hands off to the Profile section, where the user can choose
+// a profile and then click the explicit association button.
 // FUTURE: If this ever needs to do more than "set intent + navigate", that
 // is itself a sign the design boundary from section 4/6 is being crossed —
 // reconsider before adding logic here.
@@ -1088,6 +1096,11 @@ fsaAssociateBtn.addEventListener("click", () => {
   if (currentSourceKind === "none") return;
   pendingLibraryAssociationIntent = true;
   expandAndScrollToProfileSection();
+});
+
+profileAssociateBtn.addEventListener("click", async () => {
+  if (currentSourceKind === "none") return;
+  await associateCurrentLibraryWithProfile(profile.getProfileId());
 });
 
 function setLoadingState(isLoading, total) {
@@ -2752,27 +2765,7 @@ profileSelect.addEventListener("change", async () => {
     renderProfileSelector(); // revert the <select> to the still-active profile
     return;
   }
-  // [LIBRARY-PROFILE-UX / Phase 8.5] Only actually associates the
-  // currently loaded library if the user got here via "Associate with
-  // Profile"/"Change Profile" — see pendingLibraryAssociationIntent.
-  // Picking a profile here on its own, with no library-association intent
-  // pending, is just an ordinary profile switch, exactly as before.
-  await consumePendingLibraryAssociationIntent(targetId);
 });
-
-// [LIBRARY-PROFILE-UX / Phase 8.5]
-// WHAT: One-shot consumer of pendingLibraryAssociationIntent — if set,
-// persists the association to targetProfileId and always clears the flag
-// afterward (success or failure), so a later unrelated profile switch is
-// never silently treated as another association attempt.
-// WHY: Shared by every profile action that can complete an
-// Associate/Change-Profile navigation (switch, create, import-as-new) so
-// they don't each reimplement the check.
-async function consumePendingLibraryAssociationIntent(targetProfileId) {
-  if (!pendingLibraryAssociationIntent) return;
-  pendingLibraryAssociationIntent = false;
-  await associateCurrentLibraryWithProfile(targetProfileId);
-}
 
 async function createProfileFromInput() {
   const name = profileCreateInput.value.trim();
@@ -2792,10 +2785,6 @@ async function createProfileFromInput() {
 
     profileCreateInput.value = "";
     profileActiveStatusText.textContent = `Created and switched to "${created.name}".`;
-    // [LIBRARY-PROFILE-UX / Phase 8.5] Section 8 — "do not associate the
-    // library before Profile creation succeeds": this line only runs once
-    // createProfile+switchProfile above have both already succeeded.
-    await consumePendingLibraryAssociationIntent(created.id);
   } catch (error) {
     profileActiveStatusText.textContent = `Could not create profile: ${error.message}`;
   } finally {
@@ -2977,9 +2966,6 @@ profileImportCopyInput.addEventListener("change", async (event) => {
     const result = profile.importJSON(parsed, { mode: "replace" });
 
     profileActiveStatusText.textContent = `Created "${created.name}" from import (${result.applied} applied).`;
-    // Same navigation-shortcut consumption as switch/create — see
-    // consumePendingLibraryAssociationIntent's own comment.
-    await consumePendingLibraryAssociationIntent(created.id);
   } catch (error) {
     profileActiveStatusText.textContent = `Could not import as a new profile: ${error.message}`;
   }
