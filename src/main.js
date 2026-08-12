@@ -12,6 +12,7 @@ import {
 } from "./storage/library-registry.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
+import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
@@ -59,6 +60,7 @@ const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
 const shuffleInput = document.getElementById("shuffle-input");
+const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
 const videoLoopControl = document.getElementById("video-loop-control");
@@ -179,6 +181,10 @@ let allItems = [];
 let viewMode = "all"; // "all" | "favorites"
 let typeFilter = "all"; // "all" | "image" | "video" — Media Type filter (Filtering Phase 1)
 let activeTagFilters = []; // tag ids — Gallery Tag Filtering (Phase 6.3), AND-combined via filterMedia
+// WHAT: Session-global viewing preference applied while deriving the runtime list.
+// WHY: Duplicate suppression must be reversible and must not become Profile or library-registry data.
+// FUTURE / DO-NOT-BREAK: Preferences may supply its initial value later; keep loaded media ownership in allItems.
+let skipDuplicates = false;
 let galleryJumpMode = "find"; // "find" | "play" — Gallery Media Navigation (Phase 2)
 let fillModeActive = false;
 let currentViewerNode = null;
@@ -487,11 +493,15 @@ function filterMedia(items, { favourites = false, mediaType = "all", tags = [] }
 }
 
 function getVisibleItems() {
-  const filtered = filterMedia(allItems, {
+  let filtered = filterMedia(allItems, {
     favourites: viewMode === "favorites",
     mediaType: typeFilter,
     tags: activeTagFilters,
   });
+
+  if (skipDuplicates) {
+    filtered = skipDuplicateMedia(filtered);
+  }
 
   if (viewMode === "favorites") {
     // Newest favorite first (Favourite Ordering). Items favorited under an
@@ -2165,6 +2175,22 @@ intervalIncreaseBtn.addEventListener("click", () => adjustInterval(1));
 
 shuffleInput.addEventListener("change", () => {
   runtime.setShuffle(shuffleInput.checked);
+});
+
+skipDuplicatesInput.addEventListener("change", () => {
+  const currentItem = runtime.getState().currentItem;
+  skipDuplicates = skipDuplicatesInput.checked;
+
+  // WHAT: A suppressed current copy resolves to the retained equivalent before rebuilding the runtime list.
+  // WHY: Live toggling must not strand the viewer or jump arbitrarily when an exact duplicate remains playable.
+  // FUTURE / DO-NOT-BREAK: Reconciliation is by view-only duplicate key; never rewrite either item's id or Profile metadata.
+  const retainedEquivalent = skipDuplicates
+    ? getVisibleItems().find((item) => haveSameDuplicateKey(item, currentItem))
+    : null;
+  reloadRuntime({
+    preserveId: retainedEquivalent?.id || currentItem?.id,
+    keepPlaying: runtime.getState().isPlaying,
+  });
 });
 
 loopInput.addEventListener("change", () => {
