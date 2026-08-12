@@ -183,7 +183,10 @@ export async function listLibraries() {
  * ...match }` spread below (re-picking recovers the historical
  * association, it doesn't reset it).
  *
- * Returns the resulting library record (existing or newly created).
+ * Returns the resulting library record (existing or newly created), plus
+ * a transient `wasExisting` hint for the caller. That hint is deliberately
+ * added only after the clean record is persisted, so it never becomes
+ * registry data.
  */
 export async function addOrUpdateLibrary(handle) {
   const database = await openDatabase();
@@ -227,7 +230,7 @@ export async function addOrUpdateLibrary(handle) {
     writeTx.objectStore(STORE_NAME).put(record);
     await completeTransaction(writeTx);
 
-    return record;
+    return { ...record, wasExisting: Boolean(match) };
   } finally {
     database.close();
   }

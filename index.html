@@ -24,15 +24,15 @@ Index · HTML
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
              WHAT: Collapses the legacy Choose Files/Choose Folder controls
-             behind a <details> disclosure, collapsed by default.
-             WHY: FSA is the primary path now that both identity systems
-             work; keeping legacy controls permanently expanded was pure
-             vertical clutter for the common case.
-             FUTURE: Whether this defaults collapsed, and whether it stays
+             behind a <details> disclosure, expanded by default.
+             WHY: The legacy controls remain immediately discoverable on a
+             fresh load, then collapse after a successful legacy selection
+             to reclaim vertical space.
+             FUTURE: Whether this defaults expanded, and whether it stays
              collapsed, may become a user Preference later (see Gallery
              Control Settings Preferences, not built yet) — this hardcoded
              default is a placeholder for that, not a permanent decision. -->
-        <details id="legacy-picker-details" class="legacy-picker-details">
+        <details id="legacy-picker-details" class="legacy-picker-details" open>
         <summary>Legacy Picker</summary>
 
         <div class="media-picker-row">
@@ -144,7 +144,7 @@ Index · HTML
         <div class="profile-current-row">
           <label for="profile-select" class="profile-select-label">Profile</label>
           <select id="profile-select"></select>
-          <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete</button>
+          <button id="profile-associate-btn" class="secondary hidden" type="button" disabled>Associate Current Library</button>
         </div>
  
         <div class="profile-create-row">
@@ -176,6 +176,8 @@ Index · HTML
           <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Profile</button>
           <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
         </div>
+
+        <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
  
         <label class="compact-check wide-check">
           <input id="profile-skip-missing-input" type="checkbox" />
