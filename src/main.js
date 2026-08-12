@@ -211,6 +211,14 @@ let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
 // code paths reads these. Safe to delete alongside that block.
 let __p1DiagnosticRootHandle = null;
 let __p1DiagnosticRootName = null;
+// [P1-DIAGNOSTIC / TEMPORARY] Independent snapshots, NOT read from
+// provider.getItems()/fsaProvider.getItems() live — loadFiles() and
+// loadFromFsaHandle() each dispose() the OTHER provider at the start of
+// every load (by design: only one live source at a time), which would
+// otherwise make it impossible to have both sides' data available to
+// compare at once. These snapshots persist across that disposal.
+let __p1LegacySnapshot = [];
+let __p1FsaSnapshot = [];
 
 // [Phase 8.4-2] webkitdirectory carries no durable physical-folder
 // identity on its own — no isSameEntry()-equivalent exists for it. As of
@@ -660,6 +668,9 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     }
 
     finishLoadingItems(items);
+    // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
+    // session can dispose() the legacy provider out from under it.
+    __p1LegacySnapshot = [...items];
     // [Phase 8.4-2] Legacy loads participate in the same Associate-button
     // UI as FSA during the current session — see the Core Visibility Rule.
     syncAssociateButtonVisibility();
@@ -828,6 +839,9 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     }
 
     finishLoadingItems(result.items);
+    // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
+    // session can dispose() the FSA provider out from under it.
+    __p1FsaSnapshot = [...result.items];
 
     if (activeLibraryRecord && activeLibraryRecord.id) {
       try {
@@ -3087,11 +3101,19 @@ window.addEventListener("beforeunload", () => {
 // addressable — the fork in the road between an FSA-only recovery
 // strategy and needing Legacy-assisted orchestration.
 // FUTURE / DO-NOT-BREAK: This entire block is temporary and additive —
-// nothing in it is called by any production path. Delete this block
-// (and the two __p1Diagnostic* variables / the two lines setting them in
-// loadFromFsaHandle) once P1 concludes. Never trim/normalize/reconstruct
-// the real relativePath strings this reads from provider.getItems(); they
-// are read once into __p1RealPathsById and never logged.
+// nothing in it is called by any production path. Delete this block, the
+// four __p1* variables, and the two snapshot lines (in loadFiles() and
+// loadFromFsaHandle()) once P1 concludes. Never trim/normalize/reconstruct
+// the real relativePath strings this reads from the __p1*Snapshot arrays
+// (not the providers' own .getItems() — see those snapshot vars' own
+// comment for why); they are read once into __p1RealPathsById and never
+// logged.
+//
+// NOTE: loadFiles()/loadFromFsaHandle() each dispose() the OTHER provider
+// at the start of every load, so only ONE of provider/fsaProvider ever has
+// live items at a time — you must load BOTH pickers (either order) before
+// calling __fsaP1FindCandidates(), even though only the most-recently-
+// loaded one's items are visible via .getItems() at any given moment.
 //
 // USAGE (run in the DevTools console, on this app, after loading the SAME
 // folder via BOTH pickers — the Legacy Picker's <input webkitdirectory>,
@@ -3133,8 +3155,8 @@ function __p1DirPrefixesOf(relativePath) {
 }
 
 window.__fsaP1FindCandidates = function () {
-  const legacyItems = provider.getItems();
-  const fsaItems = fsaProvider.getItems();
+  const legacyItems = __p1LegacySnapshot;
+  const fsaItems = __p1FsaSnapshot;
 
   if (!legacyItems.length || !fsaItems.length) {
     console.warn(
@@ -3280,7 +3302,16 @@ window.__fsaP1Probe = async function (candidateId) {
     const handle = await parentHandle.getDirectoryHandle(exactLegacyName, { create: false });
     directLookupResult = { success: true, kind: handle.kind, handle };
   } catch (error) {
-    directLookupResult = { success: false, errorName: error?.name ?? "Unknown" };
+    // WHAT: Captures error.message alongside error.name.
+    // WHY: error.name alone (e.g. "TypeError") doesn't distinguish "the
+    // API rejected this name before touching the filesystem" from other
+    // failure modes — the message text does.
+    // FUTURE / DO-NOT-BREAK: n/a — read-only diagnostic output.
+    directLookupResult = {
+      success: false,
+      errorName: error?.name ?? "Unknown",
+      errorMessage: error?.message ?? "(no message)",
+    };
   }
 
   report.completed = true;
@@ -3299,6 +3330,10 @@ window.__fsaP1Probe = async function (candidateId) {
   }
 
   console.log(`[P1] ${candidateId}: enumeration=${report.enumeration}, directLookup=${report.directLookup} -> RESULT ${report.result}`);
+  if (!directLookupResult.success) {
+    console.log(`[P1] ${candidateId} error detail: ${directLookupResult.errorName} — "${directLookupResult.errorMessage}"`);
+    report.errorMessage = directLookupResult.errorMessage;
+  }
 
   if (directLookupResult.success) {
     try {
@@ -3307,10 +3342,8 @@ window.__fsaP1Probe = async function (candidateId) {
       const recursive = await __p1CountRecursive(directLookupResult.handle);
 
       const legacyPrefix = `${realPath}/`;
-      const legacyFilesUnderPath = provider.getItems().filter((it) => it.relativePath.startsWith(legacyPrefix)).length;
-      const fsaFilesUnderPathBefore = fsaProvider
-        .getItems()
-        .filter((it) => it.relativePath.startsWith(legacyPrefix)).length;
+      const legacyFilesUnderPath = __p1LegacySnapshot.filter((it) => it.relativePath.startsWith(legacyPrefix)).length;
+      const fsaFilesUnderPathBefore = __p1FsaSnapshot.filter((it) => it.relativePath.startsWith(legacyPrefix)).length;
 
       report.recoveredImmediateChildren = immediate.length;
       report.recoveredRecursiveFiles = recursive.files;
