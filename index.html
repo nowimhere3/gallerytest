@@ -153,9 +153,55 @@ Index · HTML
         </div>
  
         <p id="profile-active-status-text" class="hint" role="status"></p>
- 
+
         <hr class="profile-inline-hr" />
- 
+
+        <!-- [PROFILE-SYNC]
+             WHAT: Compact status + controls for the Profile Sync Folder POC
+             — an optional cross-device mirror of the FULL Profile
+             collection into a user-chosen folder (ideally inside Google
+             Drive), layered on top of the IndexedDB persistence above.
+             WHY: "Choose the sync folder once, then mostly forget it
+             exists" — every element here is driven by ProfileSync's own
+             status (see renderProfileSync() in main.js), never hand-set,
+             so this can't drift out of sync with the real connection state.
+             FUTURE / DO-NOT-BREAK: This block must stay independent of the
+             media-source controls (FSA/legacy pickers) elsewhere in this
+             page — loading a different library must never show, hide, or
+             otherwise touch anything here. See profile-sync.js's header. -->
+        <div class="profile-sync-section" id="profile-sync-section">
+          <h3 class="profile-sync-heading">Profile Sync</h3>
+
+          <p id="profile-sync-status-text" class="hint" role="status">Status: Not configured</p>
+
+          <div class="control-stack">
+            <button id="profile-sync-choose-btn" class="secondary" type="button">Choose Google Drive Folder</button>
+            <button id="profile-sync-reconnect-btn" class="secondary hidden" type="button">Reconnect</button>
+            <div class="profile-sync-connected-row hidden" id="profile-sync-connected-row">
+              <button id="profile-sync-now-btn" class="secondary" type="button">Sync Now</button>
+              <button id="profile-sync-manage-toggle-btn" class="secondary" type="button" aria-expanded="false">Manage</button>
+            </div>
+          </div>
+
+          <div id="profile-sync-manage-panel" class="profile-sync-manage-panel hidden">
+            <button id="profile-sync-change-btn" class="secondary" type="button">Change Sync Folder</button>
+            <button id="profile-sync-disconnect-btn" class="danger" type="button">Disconnect Sync</button>
+          </div>
+
+          <div id="profile-sync-conflict-panel" class="profile-sync-conflict-panel hidden">
+            <p class="hint">Profile changed on another device.</p>
+            <div class="control-stack">
+              <button id="profile-sync-use-synced-btn" class="secondary" type="button">Use Synced Version</button>
+              <button id="profile-sync-keep-local-btn" class="secondary" type="button">Keep Local Version</button>
+            </div>
+          </div>
+        </div>
+
+        <hr class="profile-inline-hr" />
+
+        <details class="profile-import-export-section">
+        <summary>Import / Export</summary>
+
         <div class="control-stack">
           <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
           <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
@@ -177,15 +223,16 @@ Index · HTML
           <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
         </div>
 
-        <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
- 
         <label class="compact-check wide-check">
           <input id="profile-skip-missing-input" type="checkbox" />
           <span>Only import entries for files currently loaded</span>
         </label>
- 
+
         <p id="profile-status-text" class="hint" role="status"></p>
- 
+        </details>
+
+        <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
+
         <hr />
         </details>
  
@@ -459,6 +506,44 @@ Index · HTML
     </div>
   </div>
  
+  <!-- [PROFILE-SYNC-SETUP]
+       WHAT: First-time setup modal shown BEFORE the native folder picker,
+       only when the user is choosing/changing the sync folder (see
+       openSyncSetupModal() in main.js) — never on silent startup reconnect
+       or the Reconnect button, which reuse the remembered handle.
+       WHY: A native <dialog> gives focus-trapping, Escape-to-close, a
+       backdrop, and inert-underlying-page for free — no modal framework —
+       while explaining the shared Google Drive folder before the OS picker
+       (which cannot itself convey any of this) opens.
+       FUTURE / DO-NOT-BREAK: The primary "Open Google Drive Picker" button
+       must keep calling the picker within its OWN click gesture (main.js
+       closes the dialog synchronously, then calls showDirectoryPicker()) —
+       showDirectoryPicker() requires transient user activation, so this
+       must never be deferred behind an await/timer. The folder name lives
+       ONLY in the inset field below; the Copy button reads its textContent
+       so the two can never drift. -->
+  <dialog id="profile-sync-setup-dialog" class="app-dialog profile-sync-setup-dialog" aria-labelledby="profile-sync-setup-title">
+    <div class="app-dialog-inner">
+      <h2 id="profile-sync-setup-title" class="app-dialog-title">Set Up Profile Sync</h2>
+      <p class="app-dialog-body">Choose a dedicated folder inside Google Drive so your Profiles can sync between devices.</p>
+
+      <p class="profile-sync-setup-step"><strong>First device:</strong> Create a folder named:</p>
+      <div class="profile-sync-setup-foldername" id="profile-sync-setup-foldername">Browser Gallery Profiles</div>
+
+      <p class="profile-sync-setup-step"><strong>Additional devices:</strong> Select that same existing folder.</p>
+
+      <p class="profile-sync-setup-once"><strong>You only need to do this once on each device.</strong></p>
+
+      <p class="hint">Browser Gallery will create and manage the files inside this folder automatically. Do not select your media folder.</p>
+
+      <div class="app-dialog-actions">
+        <button id="profile-sync-setup-copy-btn" class="secondary" type="button">Copy Folder Name</button>
+        <button id="profile-sync-setup-cancel-btn" class="secondary" type="button">Cancel</button>
+        <button id="profile-sync-setup-open-btn" class="app-dialog-primary" type="button" autofocus>Open Google Drive Picker</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- [TS-POC] mux.js — established MPEG-TS -> fragmented MP4 transmuxer,
        used only by src/playback/ts-playback-adapter.js for this
        experimental .ts branch. UMD build, attaches window.muxjs; nothing

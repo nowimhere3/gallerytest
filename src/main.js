@@ -20,6 +20,7 @@ import {
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
+import { ProfileSync } from "./profile/profile-sync.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
@@ -30,6 +31,18 @@ const provider = new LocalFileInputProvider();
 // ever actually loaded into the app at once.
 const fsaProvider = new FsaFileProvider();
 const profile = new ProfileStore();
+// [PROFILE-SYNC]
+// WHAT: The Profile Sync engine — watches `profile` for changes and mirrors
+// the full Profile collection into a separately-chosen sync folder.
+// WHY: Constructed once, here, alongside `profile` itself, and NEVER
+// referenced from loadFiles()/loadFromFsaHandle() or any other
+// media-source code below — that absence is deliberate. See
+// profile-sync.js's header for the architectural boundary this protects:
+// Profile Sync must survive every media-library change untouched.
+// FUTURE / DO-NOT-BREAK: If a future change ever needs these two to
+// interact, that almost certainly means the boundary is being crossed by
+// mistake — re-read profile-sync.js's header first.
+const profileSync = new ProfileSync(profile);
 const runtime = new MediaRuntime({ profile });
 
 // [TS-POC] Single adapter instance reused across items — attach() always
@@ -100,6 +113,29 @@ const profileImportCopyBtn = document.getElementById("profile-import-copy-btn");
 const profileImportCopyInput = document.getElementById("profile-import-copy-input");
 const profileSkipMissingInput = document.getElementById("profile-skip-missing-input");
 const profileStatusText = document.getElementById("profile-status-text");
+
+// [PROFILE-SYNC] DOM refs for the compact Profile Sync block — see
+// index.html's own [PROFILE-SYNC] comment on `.profile-sync-section`.
+const profileSyncStatusText = document.getElementById("profile-sync-status-text");
+const profileSyncChooseBtn = document.getElementById("profile-sync-choose-btn");
+const profileSyncReconnectBtn = document.getElementById("profile-sync-reconnect-btn");
+const profileSyncConnectedRow = document.getElementById("profile-sync-connected-row");
+const profileSyncNowBtn = document.getElementById("profile-sync-now-btn");
+const profileSyncManageToggleBtn = document.getElementById("profile-sync-manage-toggle-btn");
+const profileSyncManagePanel = document.getElementById("profile-sync-manage-panel");
+const profileSyncChangeBtn = document.getElementById("profile-sync-change-btn");
+const profileSyncDisconnectBtn = document.getElementById("profile-sync-disconnect-btn");
+const profileSyncConflictPanel = document.getElementById("profile-sync-conflict-panel");
+const profileSyncUseSyncedBtn = document.getElementById("profile-sync-use-synced-btn");
+const profileSyncKeepLocalBtn = document.getElementById("profile-sync-keep-local-btn");
+
+// [PROFILE-SYNC-SETUP] Refs for the first-time setup modal — see the
+// [PROFILE-SYNC-SETUP] comment on the <dialog> in index.html.
+const profileSyncSetupDialog = document.getElementById("profile-sync-setup-dialog");
+const profileSyncSetupFolderName = document.getElementById("profile-sync-setup-foldername");
+const profileSyncSetupCopyBtn = document.getElementById("profile-sync-setup-copy-btn");
+const profileSyncSetupCancelBtn = document.getElementById("profile-sync-setup-cancel-btn");
+const profileSyncSetupOpenBtn = document.getElementById("profile-sync-setup-open-btn");
 
 const tagCreateInput = document.getElementById("tag-create-input");
 const tagCreateBtn = document.getElementById("tag-create-btn");
@@ -3084,6 +3120,193 @@ profile.subscribe(() => {
   renderPresentationTagsPanel(runtime.getState().currentItem);
 });
 
+// ---- Profile Sync UI (Profile Sync Folder POC) ---------------------------
+//
+// [PROFILE-SYNC] Purely a thin UI layer over ProfileSync's own state
+// machine (getStatus/subscribe) — no connection/sync state is held or
+// duplicated here, same relationship renderProfileSelector() above has to
+// ProfileStore. profileSync.subscribe(renderProfileSync) below keeps every
+// element in sync with the engine automatically.
+
+function renderProfileSync() {
+  const status = profileSync.getStatus();
+
+  profileSyncChooseBtn.classList.toggle("hidden", status.configured);
+  profileSyncReconnectBtn.classList.toggle("hidden", status.status !== "permission-needed");
+  profileSyncConnectedRow.classList.toggle(
+    "hidden",
+    !status.configured || status.status === "permission-needed"
+  );
+  profileSyncNowBtn.disabled = status.status === "syncing" || status.status === "conflict";
+  profileSyncConflictPanel.classList.toggle("hidden", status.status !== "conflict");
+
+  if (!status.configured) {
+    profileSyncManagePanel.classList.add("hidden");
+  }
+
+  let line;
+  switch (status.status) {
+    case "not-configured":
+      line = "Status: Not configured";
+      break;
+    case "checking":
+      line = "Status: Checking folder access…";
+      break;
+    case "permission-needed":
+      line = `Status: Permission needed for "${status.folderName}".`;
+      break;
+    case "syncing":
+      line = "Status: Syncing…";
+      break;
+    case "conflict":
+      line = "Profile changed on another device. Choose a version below.";
+      break;
+    case "offline":
+      line = `Offline — saved locally. Changes will sync when available.${status.message ? ` (${status.message})` : ""}`;
+      break;
+    case "connected":
+    default:
+      line = `✓ Connected — "${status.folderName}" · Auto Sync: ON · Last sync: ${
+        status.lastSyncAt ? formatRelativeTime(status.lastSyncAt) : "just now"
+      }`;
+  }
+  profileSyncStatusText.textContent = line;
+}
+
+// [PROFILE-SYNC-SETUP]
+// WHAT: Opens the first-time setup modal. Shown for BOTH entry points that
+// deliberately start a fresh folder selection — "Choose Google Drive
+// Folder" (unconfigured) and "Change Sync Folder" (already configured).
+// WHY: The native OS folder picker can't explain the shared-Drive-folder
+// convention itself, so this modal does, once, right before it.
+// FUTURE / DO-NOT-BREAK: This must NOT be reachable from the Reconnect
+// button or startup silent reconnect — those reuse the remembered handle
+// via profileSync.reconnect()/init() and must never re-open a picker or
+// this modal (see profile-sync.js). If a new "start a fresh folder"
+// affordance is ever added, route it here too rather than calling the
+// picker directly.
+function openSyncSetupModal() {
+  if (!isFsaSupported()) {
+    profileSyncStatusText.textContent = "This browser does not support the File System Access API.";
+    return;
+  }
+
+  // Reached from "Change Sync Folder" leaves the Manage panel open behind
+  // the dimmed backdrop otherwise — collapse it as the modal takes over.
+  profileSyncManagePanel.classList.add("hidden");
+
+  if (typeof profileSyncSetupDialog.showModal === "function") {
+    profileSyncSetupCopyBtn.textContent = "Copy Folder Name"; // reset any leftover "Copied!" from a prior open
+    profileSyncSetupDialog.showModal();
+  } else {
+    // <dialog> unsupported but FSA present is not a real browser
+    // combination; rather than dead-end, fall straight through to the
+    // picker so setup still works.
+    runSyncFolderPicker();
+  }
+}
+
+// [PROFILE-SYNC-SETUP] The actual folder-selection path — the SAME setup
+// logic as before this modal existed (picker -> connectNewFolder). Invoked
+// only from the modal's primary button so showDirectoryPicker() keeps its
+// own direct user gesture; never duplicated anywhere else.
+async function runSyncFolderPicker() {
+  let dirHandle;
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+  } catch (error) {
+    if (error && error.name === "AbortError") return; // user closed the picker — not an error
+    profileSyncStatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    return;
+  }
+
+  await profileSync.connectNewFolder(dirHandle);
+}
+
+// Copies the recommended folder name. The name's single source of truth is
+// the modal's inset field (textContent) — never a second literal here — so
+// it can't drift from what the user sees. Failure stays inside the modal:
+// briefly show "Copy failed" and leave the (user-select:all) inset field so
+// the name can still be selected and copied by hand.
+let syncSetupCopyResetTimer = null;
+async function copySyncFolderName() {
+  const name = profileSyncSetupFolderName.textContent.trim();
+
+  let ok = false;
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(name);
+      ok = true;
+    }
+  } catch {
+    ok = false;
+  }
+
+  if (!ok) {
+    // Fallback for a blocked/absent async clipboard. Appended INSIDE the
+    // dialog (not document.body) since a modal dialog makes the rest of the
+    // page inert, and an inert textarea can't be selected/copied.
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = name;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      profileSyncSetupDialog.appendChild(textarea);
+      textarea.select();
+      ok = document.execCommand("copy");
+      textarea.remove();
+    } catch {
+      ok = false;
+    }
+  }
+
+  if (syncSetupCopyResetTimer) clearTimeout(syncSetupCopyResetTimer);
+  profileSyncSetupCopyBtn.textContent = ok ? "Copied!" : "Copy failed";
+  syncSetupCopyResetTimer = setTimeout(() => {
+    profileSyncSetupCopyBtn.textContent = "Copy Folder Name";
+  }, 1800);
+}
+
+profileSyncChooseBtn.addEventListener("click", openSyncSetupModal);
+profileSyncChangeBtn.addEventListener("click", openSyncSetupModal);
+
+profileSyncSetupCopyBtn.addEventListener("click", copySyncFolderName);
+
+// Cancel (and Escape, which fires the dialog's own cancel/close) simply
+// closes — never opens the picker, never touches the current sync
+// relationship.
+profileSyncSetupCancelBtn.addEventListener("click", () => profileSyncSetupDialog.close());
+
+// Close synchronously FIRST, then open the picker in the same task — the
+// click's transient user activation survives a synchronous close(), so
+// showDirectoryPicker()'s user-gesture requirement is still met.
+profileSyncSetupOpenBtn.addEventListener("click", () => {
+  profileSyncSetupDialog.close();
+  runSyncFolderPicker();
+});
+
+profileSyncDisconnectBtn.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Disconnect Profile Sync? Your Profiles remain saved locally — they will just stop syncing to this folder."
+  );
+  if (!confirmed) return;
+  await profileSync.disconnect();
+  profileSyncManagePanel.classList.add("hidden");
+});
+
+profileSyncReconnectBtn.addEventListener("click", () => profileSync.reconnect());
+profileSyncNowBtn.addEventListener("click", () => profileSync.syncNow());
+profileSyncManageToggleBtn.addEventListener("click", () => {
+  const nowOpen = profileSyncManagePanel.classList.toggle("hidden") === false;
+  profileSyncManageToggleBtn.setAttribute("aria-expanded", String(nowOpen));
+});
+profileSyncUseSyncedBtn.addEventListener("click", () => profileSync.resolveConflict("use-synced"));
+profileSyncKeepLocalBtn.addEventListener("click", () => profileSync.resolveConflict("keep-local"));
+
+profileSync.subscribe(renderProfileSync);
+renderProfileSync();
+
 // ---- Boot ---------------------------------------------------------------
 
 // [APP-PREFERENCES] Applies a loaded (already validated/defaulted —
@@ -3155,6 +3378,13 @@ window.addEventListener("beforeunload", () => {
 
   await renderRecentLibraries();
 })();
+
+// [PROFILE-SYNC] Boot-time: silently reconnect to a remembered sync folder
+// if permission is still usable — see ProfileSync#init(). Not awaited here
+// (same pattern as initFsaLibraries above) so a slow permission check never
+// blocks the rest of boot; renderProfileSync() (already subscribed above)
+// picks up whatever state this settles into.
+profileSync.init();
 
 // =============================================================================
 // [P1-DIAGNOSTIC / TEMPORARY] FSA direct-lookup recovery test.

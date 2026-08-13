@@ -387,6 +387,157 @@ export class ProfileStore {
     return true;
   }
 
+  // ---- Profile Sync support (Profile Sync Folder POC) --------------------
+  //
+  // [PROFILE-SYNC] Two methods, both built entirely from primitives
+  // ProfileStore already uses for itself (this.#profiles/#recordsByPath/
+  // #tags in memory for the active profile, loadProfileData/saveProfileData
+  // /saveRegistry/deleteProfileData for everything else) — no second
+  // Profile persistence path exists anywhere in this file because of Sync.
+  //
+  // WHY: profile-sync.js needs to read/replace the WHOLE profile
+  // collection (every profile, not just the active one) to compute a
+  // collection-wide fingerprint and to safely adopt a synced collection.
+  // Putting that here, instead of profile-sync.js reaching into
+  // indexeddb.js directly, keeps "how Profile data is shaped and
+  // persisted" a single ProfileStore responsibility.
+  //
+  // FUTURE / DO-NOT-BREAK: Any future feature needing "every profile's
+  // data" should reuse getFullCollection() rather than re-reading
+  // indexeddb.js directly; any future feature needing to bulk-replace the
+  // registry should reuse replaceAllProfiles() rather than writing a
+  // second saveRegistry()-calling code path.
+
+  /**
+   * Returns every known profile's full identity + item/tag data as a plain,
+   * serializable array: [{ id, name, masterFolder, items, tags }, ...]. The
+   * ACTIVE profile's slice comes from this instance's in-memory state
+   * (authoritative — #persist saves it immediately on every mutation, so it
+   * is always at least as fresh as IndexedDB); every other profile is read
+   * fresh from IndexedDB, since this instance never holds their data in
+   * memory.
+   */
+  async getFullCollection() {
+    await this.#ready;
+
+    const results = [];
+    for (const entry of this.#profiles) {
+      if (entry.id === this.#profileId) {
+        results.push({
+          id: entry.id,
+          name: this.#profileName,
+          masterFolder: this.#masterFolder,
+          items: this.#snapshotItems(),
+          tags: this.#tags.map((tag) => ({ ...tag })),
+        });
+        continue;
+      }
+
+      let data;
+      try {
+        data = await loadProfileData(entry.id);
+      } catch (error) {
+        console.warn(`Could not read profile "${entry.id}" for sync.`, error);
+        data = { items: {}, tags: [] };
+      }
+
+      results.push({
+        id: entry.id,
+        name: entry.name || DEFAULT_PROFILE_NAME,
+        masterFolder: entry.masterFolder || null,
+        items: data.items,
+        tags: data.tags,
+      });
+    }
+    return results;
+  }
+
+  /**
+   * Replaces the ENTIRE local Profile collection — registry identity AND
+   * every profile's item/tag data — with `collection`, an array of the same
+   * { id, name, masterFolder, items, tags } shape getFullCollection()
+   * produces. Used exclusively by Profile Sync to adopt a synced collection
+   * once its conservative three-way comparison has decided that's safe.
+   *
+   * Registry-level createdAt is preserved for any profile id already known
+   * locally (so adopting a synced collection doesn't reset "when was this
+   * profile created"); a genuinely new id gets `now`. The active profile
+   * is: preferredActiveId if it's present in the new collection, else the
+   * CURRENTLY active id if it's still present, else the collection's first
+   * entry — so switching to a synced collection never leaves the app
+   * without something active.
+   *
+   * Finishes via the exact same null-profileId-then-switchProfile() reset
+   * deleteProfile() already relies on above, so this is not a second,
+   * competing way profile state gets applied — it is switchProfile() being
+   * pointed at a freshly-written registry/data set instead of an
+   * already-existing one.
+   */
+  async replaceAllProfiles(collection, { preferredActiveId } = {}) {
+    await this.#ready;
+    if (!Array.isArray(collection) || collection.length === 0) return false;
+
+    const now = Date.now();
+    const existingById = new Map(this.#profiles.map((entry) => [entry.id, entry]));
+
+    const profiles = collection.map((incoming) => {
+      const existing = existingById.get(incoming.id);
+      return {
+        id: incoming.id,
+        name: incoming.name || DEFAULT_PROFILE_NAME,
+        masterFolder: incoming.masterFolder || null,
+        createdAt: existing ? existing.createdAt || now : now,
+        updatedAt: now,
+      };
+    });
+
+    const activeId =
+      (preferredActiveId && profiles.some((p) => p.id === preferredActiveId) && preferredActiveId) ||
+      (profiles.some((p) => p.id === this.#profileId) && this.#profileId) ||
+      profiles[0].id;
+
+    for (const incoming of collection) {
+      try {
+        await saveProfileData(incoming.id, {
+          items: isPlainObject(incoming.items) ? incoming.items : {},
+          tags: Array.isArray(incoming.tags) ? incoming.tags : [],
+        });
+      } catch (error) {
+        console.warn(`Could not save synced profile "${incoming.id}".`, error);
+      }
+    }
+
+    // A profile present locally but NOT in the incoming collection was
+    // deleted on the other side — remove its stored data too, so a deleted
+    // Profile can't resurface later. See replaceAllProfiles' caller
+    // (profile-sync.js's three-way reconcile) for why this is only ever
+    // reached once a deletion has been safely identified as unambiguous.
+    const incomingIds = new Set(profiles.map((p) => p.id));
+    for (const stale of this.#profiles) {
+      if (!incomingIds.has(stale.id)) {
+        try {
+          await deleteProfileData(stale.id);
+        } catch (error) {
+          console.warn(`Could not remove obsolete profile "${stale.id}".`, error);
+        }
+      }
+    }
+
+    try {
+      await saveRegistry({ activeProfileId: activeId, profiles });
+    } catch (error) {
+      console.warn("Could not save the synced profile registry.", error);
+    }
+
+    this.#profiles = profiles;
+    // Forced to null (rather than compared against activeId) so the reset
+    // below always runs even when activeId === the currently-active id —
+    // the ACTIVE profile's own item/tag content may itself be what changed.
+    this.#profileId = null;
+    await this.switchProfile(activeId);
+    return true;
+  }
+
   subscribe(listener) {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
