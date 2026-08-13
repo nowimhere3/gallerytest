@@ -22,6 +22,19 @@ Index · HTML
       <section class="panel controls-panel">
         <h2>Load Media</h2>
  
+        <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+             WHAT: Collapses the legacy Choose Files/Choose Folder controls
+             behind a <details> disclosure, expanded by default.
+             WHY: The legacy controls remain immediately discoverable on a
+             fresh load, then collapse after a successful legacy selection
+             to reclaim vertical space.
+             FUTURE: Whether this defaults expanded, and whether it stays
+             collapsed, may become a user Preference later (see Gallery
+             Control Settings Preferences, not built yet) — this hardcoded
+             default is a placeholder for that, not a permanent decision. -->
+        <details id="legacy-picker-details" class="legacy-picker-details" open>
+        <summary>Legacy Picker</summary>
+
         <div class="media-picker-row">
           <label class="button-like secondary">
             <span>Choose Files</span>
@@ -37,6 +50,7 @@ Index · HTML
         <p class="hint">
           Files stay local in your browser. Nothing is uploaded.
         </p>
+        </details>
 
         <!-- [FSA] File System Access folder access — an ADDITIONAL way to
              load a folder, alongside Choose Files/Choose Folder above (not
@@ -52,6 +66,23 @@ Index · HTML
              empty. -->
         <div id="fsa-recent-libraries" class="fsa-recent-libraries hidden"></div>
         <p id="fsa-status-text" class="hint" role="status"></p>
+        <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+             WHAT: One button, shown whenever a library/folder is loaded —
+             reads "Associate with Profile" when the current load has no
+             association yet, "Change Profile" once it does.
+             WHY: Section 5 rule — a wrong association must be fixable
+             without deleting/recreating the library, and there is
+             deliberately no separate second button/UI for that; same
+             control, same click handler, different current state.
+             FUTURE: This is NAVIGATION ONLY — it must never gain its own
+             profile-selection UI. It always defers to the real Profile
+             <details> section (auto-expanded + scrolled into view by this
+             same click handler) for the actual choice. See
+             syncAssociateButtonVisibility()/scrollToProfileSection() in
+             main.js. -->
+        <button id="fsa-associate-btn" class="button-like secondary fsa-associate-btn hidden" type="button" disabled>
+          <span id="fsa-associate-btn-label">Associate with Profile</span>
+        </button>
  
         <hr />
  
@@ -80,11 +111,13 @@ Index · HTML
               <span id="tag-activity-name" class="tag-activity-value"></span>
               <span class="tag-activity-description">(last tagged)</span>
             </div>
-            <div class="tag-activity-row tag-activity-details">
-              <span id="tag-activity-position" class="tag-activity-value"></span>
-              <time id="tag-activity-time" class="tag-activity-value"></time>
-              <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
-            </div>
+            <!-- [Phase 8.3-2] Built dynamically in main.js — up to three
+                 rows (Shuffle OFF / Shuffle ON / legacy-unknown), each with
+                 its own "Find" action that populates the existing Gallery
+                 Jump input rather than applying a tag filter. See
+                 renderTagActivityCenter() / resumeTagActivityToJump(). -->
+            <div id="tag-activity-rows" class="tag-activity-rows"></div>
+            <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
           </div>
         </div>
  
@@ -111,7 +144,7 @@ Index · HTML
         <div class="profile-current-row">
           <label for="profile-select" class="profile-select-label">Profile</label>
           <select id="profile-select"></select>
-          <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete</button>
+          <button id="profile-associate-btn" class="secondary hidden" type="button" disabled>Associate Current Library</button>
         </div>
  
         <div class="profile-create-row">
@@ -128,7 +161,23 @@ Index · HTML
           <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
           <button id="profile-import-replace-btn" class="secondary" type="button">Import Profile (Replace)</button>
           <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
+          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+               WHAT: Creates a brand-new, independent Profile pre-populated
+               from an exported .json, instead of merging/replacing into
+               whichever Profile is currently active.
+               WHY: Section 9 — "reuse another Profile as a starting point"
+               without two libraries ending up silently sharing one mutable
+               Profile. Built entirely from EXISTING primitives
+               (createProfile + switchProfile + importJSON(\"replace\")) —
+               no new Profile-storage mechanism.
+               FUTURE: The created Profile diverges independently from here
+               on — this is a one-time copy, not an ongoing link back to
+               the source file. -->
+          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Profile</button>
+          <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
         </div>
+
+        <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
  
         <label class="compact-check wide-check">
           <input id="profile-skip-missing-input" type="checkbox" />
@@ -156,6 +205,11 @@ Index · HTML
             <input id="shuffle-input" type="checkbox" checked />
             <span>Shuffle</span>
           </label>
+
+          <label class="compact-check wide-check" title="Show only the first loaded item with each filename and file size">
+            <input id="skip-duplicates-input" type="checkbox" />
+            <span>Skip Duplicates</span>
+          </label>
  
           <label class="compact-check wide-check">
             <input id="loop-input" type="checkbox" checked />
@@ -172,6 +226,19 @@ Index · HTML
           <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
           <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
           <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
+          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+               WHAT: Live Library<->Profile association state for whatever
+               is CURRENTLY LOADED — not the globally active profile name.
+               WHY: The old association affordance only lived in a button
+               that could scroll out of view; this makes the state itself
+               always visible, same green/terminal language as the rest of
+               this box and the Status Update Center.
+               FUTURE: Driven entirely by updateAssociatedStatusRow() in
+               main.js, itself derived from currentSourceKind/
+               activeLibraryRecord — never a separate stored value. Do not
+               let this drift out of sync with those; if a new source kind
+               is ever added, update that one function, not this markup. -->
+          <div><strong>Associated:</strong> <span id="associated-text">—</span></div>
         </div>
         <hr />
         </section>
@@ -237,7 +304,19 @@ Index · HTML
         <!-- Phase 1 — Gallery Media Navigation. Human-readable 1-based
              numbering ("400" = the 400th item in the current
              Gallery-visible sequence), same set the runtime/filter
-             pipeline already produces — no second ordering system. -->
+             pipeline already produces — no second ordering system.
+             [8.5] That's exactly why BOTH buttons below are already
+             "search-context" jumps (the number means "in your current
+             filter/search results", e.g. the Tags filter panel), not "in
+             the whole library" — they only differ in whether the target
+             also becomes the LOADED item (direct) or just gets scrolled to
+             (search/locate). Tooltips spell this out explicitly.
+             [Phase 8.3-2] The Status Update Center's "Find" actions feed
+             this same input for the same reason: a stored tagging position
+             is only meaningful against the visible-item total that existed
+             at tag time, which is exactly what this control already
+             validates against (an out-of-range number is rejected, same as
+             any manually-typed one) — no separate resume mechanism. -->
         <div class="gallery-jump-group" role="group" aria-label="Select and navigate to media">
           <span class="toolbar-filter-label">Select</span>
           <input
@@ -254,7 +333,7 @@ Index · HTML
             class="filter-btn active"
             type="button"
             aria-pressed="true"
-            title="Find this media in the Gallery"
+            title="Search: scroll to this position in your current filtered Gallery view (does not load it)"
           >Find Below</button>
           <span class="gallery-jump-separator">or</span>
           <button
@@ -262,7 +341,7 @@ Index · HTML
             class="filter-btn"
             type="button"
             aria-pressed="false"
-            title="Load this media into the Viewer"
+            title="Direct jump: load this media into the Viewer immediately"
           >Load in Player</button>
         </div>
       </div>
@@ -301,8 +380,12 @@ Index · HTML
     <div id="ghost-popunder" class="ghost-popunder hidden">
       <div class="ghost-popunder-row">
         <label class="ghost-popunder-label" for="ghost-opacity-input">Ghost Opacity</label>
-        <input id="ghost-opacity-input" type="range" min="5" max="100" step="1" value="15" />
+        <input id="ghost-opacity-input" type="range" min="0" max="100" step="1" value="15" />
         <span id="ghost-opacity-label">15%</span>
+        <label class="ghost-popunder-remember" for="ghost-remember-input">
+          <input id="ghost-remember-input" type="checkbox" checked />
+          <span>Remember this value</span>
+        </label>
       </div>
     </div>
  

@@ -1,7 +1,24 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
-import { listLibraries, addOrUpdateLibrary, touchLibrary, removeLibrary } from "./storage/library-registry.js";
+import {
+  listLibraries,
+  addOrUpdateLibrary,
+  touchLibrary,
+  removeFromRecents,
+  setLibraryProfile,
+  listLegacyLibraries,
+  addLegacyLibrary,
+  updateLegacyLibrarySignature,
+} from "./storage/library-registry.js";
+import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
+import {
+  loadPreferences,
+  savePlaybackPreferences,
+  savePresentationPreferences,
+  DEFAULT_GHOST_OPACITY_PERCENT,
+} from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
+import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
@@ -39,13 +56,17 @@ const layoutEl = document.querySelector(".layout");
 
 const fileInput = document.getElementById("file-input");
 const folderInput = document.getElementById("folder-input");
+const legacyPickerDetails = document.getElementById("legacy-picker-details");
 const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
 const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
+const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
+const fsaAssociateBtnLabel = document.getElementById("fsa-associate-btn-label");
 const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
 const shuffleInput = document.getElementById("shuffle-input");
+const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
 const videoLoopControl = document.getElementById("video-loop-control");
@@ -64,6 +85,8 @@ const tagsFilterEmpty = document.getElementById("tags-filter-empty");
 const tagsFilterGrid = document.getElementById("tags-filter-grid");
 
 const profileSelect = document.getElementById("profile-select");
+const profileSectionDetails = document.querySelector(".profile-section");
+const profileAssociateBtn = document.getElementById("profile-associate-btn");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
@@ -73,6 +96,8 @@ const profileExportBtn = document.getElementById("profile-export-btn");
 const profileImportMergeBtn = document.getElementById("profile-import-merge-btn");
 const profileImportReplaceBtn = document.getElementById("profile-import-replace-btn");
 const profileImportInput = document.getElementById("profile-import-input");
+const profileImportCopyBtn = document.getElementById("profile-import-copy-btn");
+const profileImportCopyInput = document.getElementById("profile-import-copy-input");
 const profileSkipMissingInput = document.getElementById("profile-skip-missing-input");
 const profileStatusText = document.getElementById("profile-status-text");
 
@@ -84,8 +109,7 @@ const tagsGrid = document.getElementById("tags-grid");
 const tagActivityNeutral = document.getElementById("tag-activity-neutral");
 const tagActivityContent = document.getElementById("tag-activity-content");
 const tagActivityName = document.getElementById("tag-activity-name");
-const tagActivityPosition = document.getElementById("tag-activity-position");
-const tagActivityTime = document.getElementById("tag-activity-time");
+const tagActivityRows = document.getElementById("tag-activity-rows");
 const tagActivityEmpty = document.getElementById("tag-activity-empty");
 
 const prevBtn = document.getElementById("prev-btn");
@@ -97,6 +121,7 @@ const clearBtn = document.getElementById("clear-btn");
 const statusText = document.getElementById("status-text");
 const selectedText = document.getElementById("selected-text");
 const viewModeText = document.getElementById("view-mode-text");
+const associatedText = document.getElementById("associated-text");
 const counterText = document.getElementById("counter-text");
 const galleryCount = document.getElementById("gallery-count");
 
@@ -118,6 +143,7 @@ const ghostToggleBtn = document.getElementById("ghost-toggle-btn");
 const ghostPopunder = document.getElementById("ghost-popunder");
 const ghostOpacityInput = document.getElementById("ghost-opacity-input");
 const ghostOpacityLabel = document.getElementById("ghost-opacity-label");
+const ghostRememberInput = document.getElementById("ghost-remember-input");
 const presentationTagsEmpty = document.getElementById("presentation-tags-empty");
 const presentationTagsRow = document.getElementById("presentation-tags-row");
 const presentationTagsOverflow = document.getElementById("presentation-tags-overflow");
@@ -162,11 +188,225 @@ let allItems = [];
 let viewMode = "all"; // "all" | "favorites"
 let typeFilter = "all"; // "all" | "image" | "video" — Media Type filter (Filtering Phase 1)
 let activeTagFilters = []; // tag ids — Gallery Tag Filtering (Phase 6.3), AND-combined via filterMedia
+// WHAT: Session-global viewing preference applied while deriving the runtime list.
+// WHY: Duplicate suppression must be reversible and must not become Profile or library-registry data.
+// FUTURE / DO-NOT-BREAK: Preferences may supply its initial value later; keep loaded media ownership in allItems.
+let skipDuplicates = false;
 let galleryJumpMode = "find"; // "find" | "play" — Gallery Media Navigation (Phase 2)
 let fillModeActive = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
 let isLoadingFiles = false;
+// [LIBRARY-PROFILE-ASSOCIATION / Phase 8.4-2] The library-registry record
+// for whichever FSA library is currently loaded, if any — null when the
+// current source is the webkitdirectory picker (see legacySessionAssociated
+// below) or nothing is loaded. Tracked here purely so the "Associate this
+// Library with Current Profile" button knows what it's associating; not a
+// second source of truth for the association itself, which — for FSA —
+// always lives in IndexedDB via library-registry.js.
+let activeLibraryRecord = null;
+
+// [Phase 8.4-2] Which picker produced the currently loaded media, if any.
+// This — not "FSA vs legacy" scattered across call sites — is the one
+// thing association-button visibility is computed from. See
+// currentLoadIsAssociated()/syncAssociateButtonVisibility() below.
+let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
+
+// [P1-DIAGNOSTIC / TEMPORARY] See the DevTools-callable probe block at the
+// bottom of this file. Holds the most recently loaded FSA root handle (and
+// its name) purely so that probe can walk from it — nothing in production
+// code paths reads these. Safe to delete alongside that block.
+let __p1DiagnosticRootHandle = null;
+let __p1DiagnosticRootName = null;
+// [P1-DIAGNOSTIC / TEMPORARY] Independent snapshots, NOT read from
+// provider.getItems()/fsaProvider.getItems() live — loadFiles() and
+// loadFromFsaHandle() each dispose() the OTHER provider at the start of
+// every load (by design: only one live source at a time), which would
+// otherwise make it impossible to have both sides' data available to
+// compare at once. These snapshots persist across that disposal.
+let __p1LegacySnapshot = [];
+let __p1FsaSnapshot = [];
+
+// [Phase 8.4-2] webkitdirectory carries no durable physical-folder
+// identity on its own — no isSameEntry()-equivalent exists for it. As of
+// Phase 8.4-3, a FOLDER pick (not a bare "Choose Files" multi-select) CAN
+// still be recognized on a later re-pick, via a metadata fingerprint — see
+// legacyHasDurableIdentity below and legacy-library-signature.js. This
+// flag remains the fallback for the case that genuinely has no folder
+// context at all: it lives purely in memory, resets to false on every
+// fresh legacy load, and is never persisted. Clicking "Associate" while
+// this is the active mechanism just flips it so the button hides for the
+// REST of this load/session — nothing more.
+let legacySessionAssociated = false;
+
+// [Phase 8.4-3] True for the current load only when it came through the
+// webkitdirectory FOLDER picker (has a root folder context to fingerprint)
+// — as opposed to the plain multi-file "Choose Files" input, which has no
+// meaningful folder identity to build a durable association from (see
+// loadFiles()). When true, currentLoadIsAssociated() and the Associate
+// click handler use activeLibraryRecord + the persisted legacy registry
+// instead of the ephemeral legacySessionAssociated flag above.
+let legacyHasDurableIdentity = false;
+
+// [Phase 8.4-3] The signature computed for the CURRENTLY loaded legacy
+// folder, kept only for the case where no stored record matched it yet —
+// so that if the user then clicks "Associate", a new legacy library record
+// can be created from the signature already computed at load time instead
+// of recomputing it. Cleared once a record exists (matched OR newly
+// created) for the current load.
+let pendingLegacySignature = null;
+
+// [LIBRARY-PROFILE-UX / Phase 8.5]
+// WHAT: A short-lived, navigation-only hint set while the Load Media
+// Associate/Change shortcut opens the Profile section.
+// WHY: It lets expandAndScrollToProfileSection() put focus on the explicit
+// Profile-side association button. It never authorizes or triggers a
+// persisted association; only clicking that button does.
+// FUTURE: Keep this flag purely presentational. Profile switching,
+// creation, and import must remain ordinary profile actions.
+let pendingLibraryAssociationIntent = false;
+
+// [Phase 8.4-2] Single visibility rule for whether the current load is
+// considered associated — drives both the Associate/Change button's LABEL
+// (see syncAssociateButtonVisibility) and the green "Associated:" status
+// row (see updateAssociatedStatusRow), never a separately-tracked boolean.
+function currentLoadIsAssociated() {
+  if (currentSourceKind === "fsa") {
+    // No persisted library.id (e.g. addOrUpdateLibrary() failed to save
+    // this folder — see fsaChooseFolderBtn's catch) means there is
+    // nothing a click could actually persist an association against;
+    // treat that as "can't participate" rather than dangling a button
+    // that would silently no-op when clicked.
+    if (!activeLibraryRecord || !activeLibraryRecord.id) return true;
+    // [Phase 8.5] Checked against REAL known profiles, not just
+    // truthiness — a profileId can go stale in-memory the moment its
+    // Profile is deleted, without waiting for a reload (see
+    // profileDeleteBtn's stale-clearing below). Must agree with
+    // updateAssociatedStatusRow()'s own "Not associated" fallback.
+    return Boolean(activeLibraryRecord.profileId && getProfileNameById(activeLibraryRecord.profileId));
+  }
+  if (currentSourceKind === "legacy") {
+    // [Phase 8.4-3] A folder pick with durable identity behaves exactly
+    // like FSA here — same activeLibraryRecord.profileId check — it's
+    // just persisted via a signature instead of a handle. Only the
+    // handle-less "Choose Files" case falls back to the ephemeral flag.
+    if (legacyHasDurableIdentity) {
+      return Boolean(
+        activeLibraryRecord && activeLibraryRecord.profileId && getProfileNameById(activeLibraryRecord.profileId)
+      );
+    }
+    return legacySessionAssociated;
+  }
+  return true; // "none" — nothing loaded; not a real association state,
+  // but this makes updateAssociatedStatusRow's "—" case share the same
+  // underlying check rather than needing its own separate one.
+}
+
+// Looks up the DISPLAY NAME for a profileId that may or may not be the
+// currently active profile — the green status row must reflect the
+// LOADED LIBRARY's association, not whatever profile the user happens to
+// be looking at right now (see updateAssociatedStatusRow's own comment).
+function getProfileNameById(profileId) {
+  if (!profileId) return null;
+  const entry = profile.listProfiles().find((candidate) => candidate.id === profileId);
+  return entry ? entry.name : null;
+}
+
+// [LIBRARY-PROFILE-UX / Phase 8.5]
+// WHAT: Updates the green "Associated:" row in the live status box.
+// WHY: Section 1 — must reflect the CURRENTLY LOADED library's own
+// association, not the globally active profile (they can differ — e.g.
+// Profile B is active but the just-loaded Library A is unassociated).
+// FUTURE: Always call this alongside syncAssociateButtonVisibility() (see
+// that function) rather than adding separate call sites — they must never
+// drift out of sync with each other.
+function updateAssociatedStatusRow() {
+  if (currentSourceKind === "none") {
+    associatedText.textContent = "—";
+    return;
+  }
+
+  if (!currentLoadIsAssociated()) {
+    associatedText.textContent = "Not associated";
+    return;
+  }
+
+  const usesDurableRecord = currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
+  if (usesDurableRecord) {
+    // Deliberately NO fallback to profile.getProfileName() here: if
+    // activeLibraryRecord.profileId doesn't resolve to a real profile
+    // (deleted since — see profileDeleteBtn's stale-clearing below), that
+    // MUST read "Not associated", never the currently-active profile's
+    // name — this is exactly the "do not display the globally active
+    // Profile" rule from section 1.
+    const name = activeLibraryRecord ? getProfileNameById(activeLibraryRecord.profileId) : null;
+    associatedText.textContent = name || "Not associated";
+    return;
+  }
+
+  // Ephemeral ("Choose Files") association has no stored profileId to look
+  // up at all — it only ever means "the profile that was active at the
+  // moment Associate was clicked", i.e. whatever profile is active now.
+  associatedText.textContent = profile.getProfileName() || "Not associated";
+}
+
+// [LIBRARY-PROFILE-UX / Phase 8.5]
+// WHAT: Shows/hides the Associate/Change button AND sets its label — one
+// button, "Associate with Profile" when the current load has no
+// association, "Change Profile" once it does (see the button's own HTML
+// comment for why this is deliberately one element, not two). Also
+// refreshes the green Associated: row every time, since both are driven
+// by the exact same underlying state.
+// WHY: Consolidates every place that used to independently decide
+// "hidden or not" into one call, so the button and the status row can
+// never disagree with each other.
+// FUTURE: If a new source kind is ever added, this + currentLoadIsAssociated()
+// are the only two functions that need to learn about it.
+function syncAssociateButtonVisibility() {
+  const shouldShow = currentSourceKind !== "none";
+  const associated = currentLoadIsAssociated();
+  fsaAssociateBtn.classList.toggle("hidden", !shouldShow);
+  fsaAssociateBtn.disabled = !shouldShow;
+  profileAssociateBtn.classList.toggle("hidden", !shouldShow);
+  profileAssociateBtn.disabled = !shouldShow;
+  if (shouldShow) {
+    fsaAssociateBtnLabel.textContent = associated ? "Change Profile" : "Associate with Profile";
+  }
+  updateAssociatedStatusRow();
+}
+
+// [LIBRARY-PROFILE-UX / Phase 8.5]
+// WHAT: Expands the Profile <details> section if collapsed and smooth-
+// scrolls it into view.
+// WHY: Section 4/6 — "Associate"/"Change Profile" are navigation-only;
+// all actual profile selection/creation/import stays in Profile itself,
+// never duplicated here.
+// FUTURE: Do not add profile-selection UI to this function or its
+// caller — if Load Media ever needs more than a shortcut, that's a
+// scope change, not an extension of this helper.
+function expandAndScrollToProfileSection() {
+  if (profileSectionDetails && !profileSectionDetails.open) {
+    profileSectionDetails.open = true;
+  }
+  profileSectionDetails?.scrollIntoView({ behavior: "smooth", block: "start" });
+  syncAssociateButtonVisibility();
+  if (pendingLibraryAssociationIntent) {
+    pendingLibraryAssociationIntent = false;
+    profileAssociateBtn?.focus();
+  } else {
+    profileSelect?.focus();
+  }
+}
+
+// [Phase 8.4-3] Debug breadcrumbs for legacy folder matching, privacy-safe
+// by construction — every call site below only ever passes counts, short
+// hashes, or internally-generated record ids, never filenames/paths/root
+// names themselves. See legacy-library-signature.js's header comment for
+// why raw rootName is fine to STORE (it's just local IndexedDB data, same
+// as an FSA handle's name already is) but not fine to LOG.
+function logLegacyIdentity(event, details) {
+  console.debug(`[LEGACY-IDENTITY] ${event}`, details || "");
+}
 
 // ---- Undo Last Hide ---------------------------------------------------
 //
@@ -275,11 +515,15 @@ function filterMedia(items, { favourites = false, mediaType = "all", tags = [] }
 }
 
 function getVisibleItems() {
-  const filtered = filterMedia(allItems, {
+  let filtered = filterMedia(allItems, {
     favourites: viewMode === "favorites",
     mediaType: typeFilter,
     tags: activeTagFilters,
   });
+
+  if (skipDuplicates) {
+    filtered = skipDuplicateMedia(filtered);
+  }
 
   if (viewMode === "favorites") {
     // Newest favorite first (Favourite Ordering). Items favorited under an
@@ -310,7 +554,7 @@ function finishLoadingItems(items) {
   reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
 }
 
-async function loadFiles(fileList) {
+async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {}) {
   const total = (fileList || []).length;
   if (!total || isLoadingFiles) return;
 
@@ -329,6 +573,28 @@ async function loadFiles(fileList) {
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
+  activeLibraryRecord = null;
+  currentSourceKind = "legacy";
+  // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
+  // fingerprint) participates in durable identity — "Choose Files" keeps
+  // the old ephemeral, ununrecognizable-on-reload behavior unchanged (see
+  // currentLoadIsAssociated()). Recomputed on every load rather than
+  // trusted from a previous one.
+  legacyHasDurableIdentity = Boolean(isFolderPick && rootName);
+  legacySessionAssociated = false;
+  pendingLegacySignature = null;
+  // [LIBRARY-PROFILE-UX / Phase 8.5] A pending "navigate to Profile to
+  // associate" intent belongs to whatever was loaded when it was set —
+  // never carry it forward onto a new, unrelated load that's only just
+  // starting now.
+  pendingLibraryAssociationIntent = false;
+  fsaAssociateBtn.classList.add("hidden");
+  fsaAssociateBtn.disabled = true;
+
+  // [Phase 8.4-3] Mirrors loadFromFsaHandle's own recognizedProfileName —
+  // only set when a legacy re-pick actually causes a Profile switch, so
+  // the note below appears exactly for that case.
+  let recognizedProfileName = null;
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -338,7 +604,98 @@ async function loadFiles(fileList) {
       },
     });
 
+    // [Phase 8.4-3] Resolve legacy identity BEFORE finishLoadingItems()
+    // stamps favorite/hidden/tag state — mirrors the FSA flow's ordering
+    // exactly, so a recognized folder's Profile is active by the time
+    // items get stamped, not after.
+    if (legacyHasDurableIdentity) {
+      try {
+        const signature = await computeLegacySignature(items, rootName);
+        const storedRecords = await listLegacyLibraries();
+        logLegacyIdentity("signature generated", {
+          rootNameHash: signature.rootNameHash,
+          itemCount: signature.itemCount,
+          sampleSize: signature.sampleEntries.length,
+        });
+        logLegacyIdentity("candidates checked", { count: storedRecords.length });
+
+        const matchResult = matchLegacySignature(signature, storedRecords);
+
+        if (matchResult.status === "match") {
+          logLegacyIdentity("match found", { matchedId: matchResult.record.id, score: Number(matchResult.score.toFixed(2)) });
+          // Refresh the stored signature to what was just seen (drift
+          // tracking — see updateLegacyLibrarySignature's own comment),
+          // preserving id/profileId.
+          const refreshed = await updateLegacyLibrarySignature(matchResult.record.id, signature);
+          activeLibraryRecord = refreshed || matchResult.record;
+          pendingLegacySignature = null;
+
+          if (activeLibraryRecord.profileId) {
+            const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
+            if (knownProfileIds.has(activeLibraryRecord.profileId)) {
+              if (activeLibraryRecord.profileId !== profile.getProfileId()) {
+                await profile.switchProfile(activeLibraryRecord.profileId);
+              }
+              recognizedProfileName = profile.getProfileName();
+              logLegacyIdentity("associated profile id", { profileId: activeLibraryRecord.profileId });
+            } else {
+              // [Phase 8.4-3] Same stale-association handling as the FSA
+              // path: the profile this library pointed at no longer
+              // exists (deleted since). Clear it rather than switching to
+              // nothing or leaving a dangling reference.
+              console.warn("[LEGACY-IDENTITY] Recognized library's associated profile no longer exists — clearing the stale association.");
+              try {
+                const cleared = await setLibraryProfile(activeLibraryRecord.id, null);
+                activeLibraryRecord = cleared || { ...activeLibraryRecord, profileId: null };
+              } catch (error) {
+                activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
+              }
+            }
+          }
+        } else if (matchResult.status === "ambiguous") {
+          // Per spec: false negatives are preferable to guessing. Treated
+          // identically to "no match" from here on — unassociated, no
+          // profile switch, Associate button will offer to create a new
+          // record if the user proceeds.
+          logLegacyIdentity("ambiguous — refusing to guess", { candidateIds: matchResult.candidateIds });
+          activeLibraryRecord = null;
+          pendingLegacySignature = signature;
+        } else {
+          logLegacyIdentity("no match — new/unrecognized library");
+          activeLibraryRecord = null;
+          pendingLegacySignature = signature;
+        }
+      } catch (error) {
+        // Identity resolution must never block the actual media load —
+        // worst case, this folder just isn't recognized this time.
+        console.warn("[LEGACY-IDENTITY] Could not resolve legacy folder identity.", error);
+        activeLibraryRecord = null;
+        pendingLegacySignature = null;
+      }
+    }
+
     finishLoadingItems(items);
+    // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
+    // session can dispose() the legacy provider out from under it.
+    __p1LegacySnapshot = [...items];
+    // [Phase 8.4-2] Legacy loads participate in the same Associate-button
+    // UI as FSA during the current session — see the Core Visibility Rule.
+    syncAssociateButtonVisibility();
+    // [LIBRARY-PROFILE-UX / Phase 8.5]
+    // WHAT: Collapses the Legacy Picker disclosure after a successful load.
+    // WHY: Section 2 — it's rarely needed again immediately after loading;
+    // collapsing it back reclaims the vertical space it was expanded for.
+    // FUTURE: Whether this auto-collapses at all may become a user
+    // Preference later (see Gallery Control Settings Preferences, not
+    // built yet) — this unconditional collapse is a placeholder default.
+    legacyPickerDetails.open = false;
+    // [Phase 8.4-3] Same "brief recognition note" treatment as the FSA
+    // path — fsaStatusText survives the reactive statusText re-render
+    // finishLoadingItems() just triggered, so it's the right element for
+    // a message that should stick around, not the generic status line.
+    if (recognizedProfileName) {
+      fsaStatusText.textContent = `✓ Recognized this library — Profile: ${recognizedProfileName}.`;
+    }
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
@@ -363,6 +720,75 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
 
   isLoadingFiles = true;
 
+  // [P1-DIAGNOSTIC / TEMPORARY] Retains the root handle for the
+  // DevTools-callable probe at the bottom of this file — see that block's
+  // header comment for removal instructions. Not used by any production
+  // code path; safe to delete alongside that block.
+  __p1DiagnosticRootHandle = dirHandle;
+  __p1DiagnosticRootName = dirHandle.name;
+
+  // [LIBRARY-PROFILE-ASSOCIATION] Resolved BEFORE any of the staging/UI
+  // reset below, so a profile switch (if this library is associated with
+  // one) happens once, cleanly — the rest of this function's UI reset
+  // (tags grid, profile selector, etc., via profile.subscribe()
+  // elsewhere) already reflects the CORRECT profile while "Scanning
+  // folder…" is showing, rather than briefly showing the outgoing
+  // profile's state. See the breadcrumb at the top of
+  // library-registry.js for where this association is stored and why.
+  //
+  // NOTE: profile.listProfiles()/getProfileId() read ProfileStore's
+  // already-resolved in-memory state; switchProfile() itself internally
+  // awaits ProfileStore's own readiness, so this is safe even if called
+  // very early. The one path not fully covered is listProfiles() being
+  // read before that initial resolution completes (returns an empty
+  // list) — in practice unreachable here, since reaching this function
+  // at all requires either the FSA folder-picker round trip or a Recent
+  // Libraries click, both far slower than one IndexedDB open.
+  activeLibraryRecord = libraryRecord || null;
+  currentSourceKind = "fsa";
+  // [LIBRARY-PROFILE-UX / Phase 8.5] Same reset as loadFiles() — a new
+  // load starting means any pending Associate/Change-Profile navigation
+  // intent from a PREVIOUS load no longer applies.
+  pendingLibraryAssociationIntent = false;
+  fsaAssociateBtn.classList.add("hidden");
+  fsaAssociateBtn.disabled = true;
+
+  // [Phase 8.5-2] Set for an associated library that was genuinely
+  // recognized: either an existing folder was re-picked, or a Recent
+  // Library resumed and switched profiles. A newly registered folder is
+  // not described as recognized merely because it has a record now.
+  let recognizedProfileName = null;
+
+  if (activeLibraryRecord && activeLibraryRecord.id && activeLibraryRecord.profileId) {
+    const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
+
+    if (knownProfileIds.has(activeLibraryRecord.profileId)) {
+      const switchedProfiles = activeLibraryRecord.profileId !== profile.getProfileId();
+      if (switchedProfiles) {
+        await profile.switchProfile(activeLibraryRecord.profileId);
+      }
+      if (activeLibraryRecord.wasExisting || switchedProfiles) {
+        recognizedProfileName = profile.getProfileName();
+      }
+    } else {
+      // [LIBRARY-PROFILE-ASSOCIATION] Test F — the Profile this library
+      // was associated with no longer exists. Never guess a replacement
+      // (no name-matching, no falling back to whatever's active): clear
+      // the stale pointer and fall through to the "unassociated" path
+      // below, which offers re-association once the library has loaded.
+      console.warn(
+        `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" was associated with a profile that no longer exists. Clearing the stale association.`
+      );
+      try {
+        const updated = await setLibraryProfile(activeLibraryRecord.id, null);
+        if (updated) activeLibraryRecord = updated;
+      } catch (error) {
+        console.warn("[LIBRARY-REGISTRY] Could not clear the stale profile association.", error);
+        activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
+      }
+    }
+  }
+
   bumpGalleryGeneration();
   runtime.clear();
   clearViewerNode();
@@ -382,7 +808,8 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // investigation this came out of), a resume must never silently trust
   // whatever count a fresh walk returns. Compare against what this
   // library's registry record last reported, if anything.
-  const previousCount = libraryRecord && typeof libraryRecord.itemCount === "number" ? libraryRecord.itemCount : null;
+  const previousCount =
+    activeLibraryRecord && typeof activeLibraryRecord.itemCount === "number" ? activeLibraryRecord.itemCount : null;
 
   try {
     const result = await fsaProvider.loadFromDirectoryHandle(dirHandle, {
@@ -397,6 +824,10 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       previousCount !== null && previousCount !== count
         ? ` (previously ${previousCount} item${previousCount === 1 ? "" : "s"} on record — folder contents may have changed, or the scan may be incomplete; see console)`
         : "";
+    // [Phase 8.4-2] Optional, brief recognition note — not a separate
+    // notification system, just a prefix on the same status line that
+    // already reports the load result.
+    const recognizedNote = recognizedProfileName ? `✓ Recognized this library — Profile: ${recognizedProfileName}. ` : "";
 
     if (result.incomplete) {
       // Reliability requirement: an interrupted scan must never be
@@ -404,21 +835,24 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       // the console (see FsaFileProvider); this surfaces it to the user
       // too, with whatever was actually found before the failure.
       fsaStatusText.textContent =
-        `Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded.${driftNote} ` +
+        `${recognizedNote}Folder scan stopped early — only ${count} item${count === 1 ? "" : "s"} loaded.${driftNote} ` +
         "Check the browser console for details, then try again.";
     } else if (result.diagnostics.errors.length) {
       fsaStatusText.textContent =
-        `Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
+        `${recognizedNote}Loaded ${count} item${count === 1 ? "" : "s"}, but ${result.diagnostics.errors.length} file` +
         `${result.diagnostics.errors.length === 1 ? "" : "s"} could not be read (see console).${driftNote}`;
     } else {
-      fsaStatusText.textContent = `Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
+      fsaStatusText.textContent = `${recognizedNote}Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
     }
 
     finishLoadingItems(result.items);
+    // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
+    // session can dispose() the FSA provider out from under it.
+    __p1FsaSnapshot = [...result.items];
 
-    if (libraryRecord && libraryRecord.id) {
+    if (activeLibraryRecord && activeLibraryRecord.id) {
       try {
-        await touchLibrary(libraryRecord.id, { itemCount: count });
+        await touchLibrary(activeLibraryRecord.id, { itemCount: count });
       } catch (error) {
         // Doesn't affect this session's already-loaded library — only
         // means the registry's remembered count/timestamp is stale.
@@ -426,6 +860,12 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       }
       await renderRecentLibraries();
     }
+
+    // [Phase 8.4-2] Single visibility rule, same one loadFiles() uses for
+    // the legacy path — see currentLoadIsAssociated() for the id-less
+    // edge case (a library that failed to persist never shows the
+    // button, since a click would have nothing to associate).
+    syncAssociateButtonVisibility();
   } catch (error) {
     console.error("[FSA] Failed to load the selected folder.", error);
     fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
@@ -500,8 +940,15 @@ async function resumeLibrary(record) {
     // offering a broken resume for it.
     console.error("[FSA] A saved folder is no longer accessible.", error);
     fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Libraries.`;
+    // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove, not removeLibrary() — a
+    // permission failure doesn't mean the physical folder is gone for
+    // good (it may just be a revoked permission on an otherwise-fine
+    // folder). Keeping the record means re-picking the same folder later
+    // can still recognize it via isSameEntry() and recover this library's
+    // profile association, same as an explicit "X" — see
+    // library-registry.js.
     try {
-      await removeLibrary(record.id);
+      await removeFromRecents(record.id);
     } catch (removeError) {
       console.warn("[LIBRARY-REGISTRY] Could not remove the stale library record.", removeError);
     }
@@ -512,12 +959,22 @@ async function resumeLibrary(record) {
   await loadFromFsaHandle(dirHandle, record);
 }
 
+// [LIBRARY-PROFILE-ASSOCIATION] Shows which Profile (if any) this library
+// is associated with — the "Main Library / 2151 items · Profile: Main"
+// row the phase spec described as optional. Reads profile.listProfiles()
+// fresh each render rather than caching a name, so a profile rename is
+// reflected here immediately without this module needing its own
+// invalidation logic.
 function formatLibraryMeta(record) {
   const parts = [];
   if (typeof record.itemCount === "number") {
     parts.push(`${record.itemCount} item${record.itemCount === 1 ? "" : "s"}`);
   }
   if (record.lastOpenedAt) parts.push(`opened ${formatRelativeTime(record.lastOpenedAt)}`);
+  if (record.profileId) {
+    const associated = profile.listProfiles().find((entry) => entry.id === record.profileId);
+    parts.push(`Profile: ${associated ? associated.name : "unknown"}`);
+  }
   return parts.join(" · ");
 }
 
@@ -573,15 +1030,20 @@ async function renderRecentLibraries() {
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "fsa-recent-library-remove-btn";
-    removeBtn.title = `Forget "${record.name}"`;
-    removeBtn.setAttribute("aria-label", `Forget "${record.name}"`);
+    removeBtn.title = `Remove "${record.name}" from Recent Libraries`;
+    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Libraries`);
     removeBtn.textContent = "✕";
     removeBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
+      // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove — takes this row out of
+      // Recent Libraries but deliberately does NOT touch its Profile
+      // association or identity (handle). Re-picking this same physical
+      // folder later still recognizes it and recovers the association.
+      // See library-registry.js.
       try {
-        await removeLibrary(record.id);
+        await removeFromRecents(record.id);
       } catch (error) {
-        console.warn("[LIBRARY-REGISTRY] Could not forget this library.", error);
+        console.warn("[LIBRARY-REGISTRY] Could not remove this library from Recent Libraries.", error);
       }
       await renderRecentLibraries();
     });
@@ -591,6 +1053,100 @@ async function renderRecentLibraries() {
     fsaRecentLibrariesEl.appendChild(row);
   }
 }
+
+// [LIBRARY-PROFILE-UX / Phase 8.5]
+// WHAT: The actual persistence step — associates whatever is CURRENTLY
+// loaded with targetProfileId, branching on source kind exactly as the
+// old direct click handler used to. Returns true/false so the explicit
+// Profile-side association action can report whether it succeeded.
+// WHY: Keeps the persistence logic separate from the Load Media shortcut,
+// which is navigation-only.
+// FUTURE: This is the ONE place that writes a library<->profile
+// association. Do not duplicate this logic at a new call site — call this
+// function instead.
+async function associateCurrentLibraryWithProfile(targetProfileId) {
+  if (!targetProfileId) return false;
+
+  if (currentSourceKind === "legacy") {
+    if (legacyHasDurableIdentity) {
+      fsaAssociateBtn.disabled = true;
+      profileAssociateBtn.disabled = true;
+      try {
+        let record = activeLibraryRecord;
+        if (!record) {
+          if (!pendingLegacySignature) return false; // nothing to create a record from
+          record = await addLegacyLibrary(pendingLegacySignature);
+        }
+
+        const updated = await setLibraryProfile(record.id, targetProfileId);
+        activeLibraryRecord = updated || { ...record, profileId: targetProfileId };
+        pendingLegacySignature = null;
+        logLegacyIdentity("associated profile id", { profileId: targetProfileId, libraryId: activeLibraryRecord.id });
+        syncAssociateButtonVisibility();
+        fsaStatusText.textContent =
+          `Associated this folder with "${profile.getProfileName()}". ` +
+          "It should be recognized next time you pick the same folder here.";
+        return true;
+      } catch (error) {
+        console.warn("[LEGACY-IDENTITY] Could not save this legacy library association.", error);
+        fsaStatusText.textContent = "Could not save the association. Try again.";
+        return false;
+      } finally {
+        fsaAssociateBtn.disabled = false;
+        profileAssociateBtn.disabled = false;
+      }
+    }
+
+    // Ephemeral fallback ("Choose Files", no folder context) — see
+    // legacySessionAssociated's own comment. Nothing is persisted;
+    // re-loading (even the exact same files again) starts unassociated
+    // again, by design.
+    legacySessionAssociated = true;
+    syncAssociateButtonVisibility();
+    fsaStatusText.textContent = `Associated the current folder with "${profile.getProfileName()}" for this session.`;
+    return true;
+  }
+
+  if (currentSourceKind !== "fsa" || !activeLibraryRecord || !activeLibraryRecord.id) return false;
+
+  fsaAssociateBtn.disabled = true;
+  profileAssociateBtn.disabled = true;
+  try {
+    const updated = await setLibraryProfile(activeLibraryRecord.id, targetProfileId);
+    if (updated) activeLibraryRecord = updated;
+    syncAssociateButtonVisibility();
+    fsaStatusText.textContent = `Associated "${activeLibraryRecord.name}" with "${profile.getProfileName()}".`;
+    await renderRecentLibraries();
+    return true;
+  } catch (error) {
+    console.warn("[LIBRARY-REGISTRY] Could not associate this library with the current profile.", error);
+    fsaStatusText.textContent = "Could not save the association. Try again.";
+    return false;
+  } finally {
+    fsaAssociateBtn.disabled = false;
+    profileAssociateBtn.disabled = false;
+  }
+}
+
+// [LIBRARY-PROFILE-UX / Phase 8.5]
+// WHAT: "Associate with Profile" / "Change Profile" — navigation only. No
+// longer persists anything itself.
+// WHY: Section 4/5 — clicking this must never write a profile association
+// directly; it hands off to the Profile section, where the user can choose
+// a profile and then click the explicit association button.
+// FUTURE: If this ever needs to do more than "set intent + navigate", that
+// is itself a sign the design boundary from section 4/6 is being crossed —
+// reconsider before adding logic here.
+fsaAssociateBtn.addEventListener("click", () => {
+  if (currentSourceKind === "none") return;
+  pendingLibraryAssociationIntent = true;
+  expandAndScrollToProfileSection();
+});
+
+profileAssociateBtn.addEventListener("click", async () => {
+  if (currentSourceKind === "none") return;
+  await associateCurrentLibraryWithProfile(profile.getProfileId());
+});
 
 function setLoadingState(isLoading, total) {
   fileInput.disabled = isLoading;
@@ -1412,9 +1968,14 @@ function makePresentationTagButton(tag, appliedTagIds, item) {
     const isApplying = !profile.hasItemTag(item.relativePath, tag.id);
     profile.toggleItemTag(item.relativePath, tag.id);
     if (isApplying) {
+      // [8.4] Shuffle context travels WITH the activity record it
+      // describes, not as separate global state — a later switch of the
+      // Shuffle toggle must never retroactively relabel what this specific
+      // tagging pass meant. See ProfileStore#recordTagActivity's own note.
       profile.recordTagActivity(tag.id, {
         position: state.currentIndex + 1,
         total: state.total,
+        shuffle: state.shuffle,
       });
     }
     // No re-render call needed here — profile.subscribe() below re-runs
@@ -1492,6 +2053,18 @@ function flashInvalidGalleryJumpInput() {
   window.setTimeout(() => galleryJumpInput.classList.remove("is-invalid"), 500);
 }
 
+// [8.5] "find"/"play" (galleryJumpMode) ARE the search-vs-direct jump
+// distinction the product spec asks for — not a separate mechanism to
+// build. Both already jump within whatever search/filter context is
+// currently active (state.total already reflects getVisibleItems(), see
+// the comment at this control's HTML). "find" = SEARCH jump: locate a
+// position in that context (scroll/highlight only, nothing loads).
+// "play" = DIRECT jump: unconditionally load that position into the
+// Viewer. Keeping these two names/behaviors distinct (rather than
+// collapsing to one "jump" now that 8.3 adds a real filter-apply action)
+// matters for the next phase too: once FSA master-folder auto-detection
+// exists, "direct jump" must keep meaning "load it, full stop" even if a
+// future profile/folder switch changes what's in the search context.
 function performGalleryJump() {
   const state = runtime.getState();
   const raw = galleryJumpInput.value.trim();
@@ -1605,17 +2178,20 @@ folderInput.addEventListener("change", (event) => {
   // metadata — the folder's own name, nothing more. No matching/detection
   // happens here or anywhere yet; that's deferred to a later phase.
   const firstFile = files && files[0];
-  if (firstFile && firstFile.webkitRelativePath) {
-    const topFolderName = firstFile.webkitRelativePath.split("/")[0];
-    if (topFolderName) profile.setMasterFolder({ name: topFolderName });
-  }
+  const topFolderName = firstFile && firstFile.webkitRelativePath ? firstFile.webkitRelativePath.split("/")[0] : null;
+  if (topFolderName) profile.setMasterFolder({ name: topFolderName });
 
-  loadFiles(files);
+  // [Phase 8.4-3] isFolderPick=true is what unlocks durable legacy
+  // identity in loadFiles() — the plain "Choose Files" input below never
+  // sets this, since a set of individually-picked files has no folder
+  // root to fingerprint against.
+  loadFiles(files, { isFolderPick: true, rootName: topFolderName });
   folderInput.value = "";
 });
 
 intervalInput.addEventListener("change", () => {
   runtime.setIntervalMs(Number(intervalInput.value) * 1000);
+  savePlaybackPreferences({ intervalSeconds: Number(intervalInput.value) });
 });
 
 function adjustInterval(direction) {
@@ -1635,10 +2211,29 @@ intervalIncreaseBtn.addEventListener("click", () => adjustInterval(1));
 
 shuffleInput.addEventListener("change", () => {
   runtime.setShuffle(shuffleInput.checked);
+  savePlaybackPreferences({ shuffle: shuffleInput.checked });
+});
+
+skipDuplicatesInput.addEventListener("change", () => {
+  const currentItem = runtime.getState().currentItem;
+  skipDuplicates = skipDuplicatesInput.checked;
+  savePlaybackPreferences({ skipDuplicates });
+
+  // WHAT: A suppressed current copy resolves to the retained equivalent before rebuilding the runtime list.
+  // WHY: Live toggling must not strand the viewer or jump arbitrarily when an exact duplicate remains playable.
+  // FUTURE / DO-NOT-BREAK: Reconciliation is by view-only duplicate key; never rewrite either item's id or Profile metadata.
+  const retainedEquivalent = skipDuplicates
+    ? getVisibleItems().find((item) => haveSameDuplicateKey(item, currentItem))
+    : null;
+  reloadRuntime({
+    preserveId: retainedEquivalent?.id || currentItem?.id,
+    keepPlaying: runtime.getState().isPlaying,
+  });
 });
 
 loopInput.addEventListener("change", () => {
   runtime.setLoop(loopInput.checked);
+  savePlaybackPreferences({ loopPlaylist: loopInput.checked });
 });
 
 videoLoopInput.addEventListener("change", syncVideoLoopControl);
@@ -1649,6 +2244,7 @@ fillInput.addEventListener("change", () => {
   } else if (!fillInput.checked) {
     exitFillMode();
   }
+  savePlaybackPreferences({ fillPanel: fillInput.checked });
 });
 
 allMediaBtn.addEventListener("click", () => setViewMode("all"));
@@ -1688,6 +2284,18 @@ clearBtn.addEventListener("click", () => {
   exitFillMode();
   lastHiddenRelativePath = null;
   syncUndoHideButton();
+  // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
+  // Library…" click after this point would have nothing to associate.
+  activeLibraryRecord = null;
+  currentSourceKind = "none";
+  legacySessionAssociated = false;
+  legacyHasDurableIdentity = false;
+  pendingLegacySignature = null;
+  // [LIBRARY-PROFILE-UX / Phase 8.5] A pending "navigate to Profile to
+  // associate" intent belongs to whatever was loaded when it was set —
+  // never carry it forward onto a different, unrelated later load.
+  pendingLibraryAssociationIntent = false;
+  syncAssociateButtonVisibility();
 });
 
 favoriteBtn.addEventListener("click", () => {
@@ -1862,6 +2470,30 @@ ghostOpacityInput.addEventListener("input", () => {
   applyGhostOpacity(Number(ghostOpacityInput.value));
 });
 
+// `change` (commit, not every drag tick) is the persistence path — avoids
+// an IndexedDB write per pixel of slider movement. Only writes when
+// "Remember this value" is checked; unchecked, the live value above still
+// applies for the rest of this session but never touches the saved
+// default.
+ghostOpacityInput.addEventListener("change", () => {
+  if (!ghostRememberInput.checked) return;
+  savePresentationPreferences({ ghostOpacityPercent: Number(ghostOpacityInput.value) });
+});
+
+// Checking the box immediately commits whatever the slider currently shows
+// as the new remembered default; unchecking it just persists the
+// unchecked state itself (the built-in 15% fallback is what a future
+// unchecked launch uses — see loadPreferences()/normalizeRecord(), not a
+// stale remembered number).
+ghostRememberInput.addEventListener("change", () => {
+  const remember = ghostRememberInput.checked;
+  const partial = { rememberGhostOpacity: remember };
+  if (remember) {
+    partial.ghostOpacityPercent = Number(ghostOpacityInput.value);
+  }
+  savePresentationPreferences(partial);
+});
+
 // ---- Keyboard shortcuts (Presentation Mode only) -------------------------
 //
 // Single, centralized listener rather than scattering key handling across
@@ -1963,6 +2595,51 @@ function formatTagActivityTime(timestamp) {
   return `${dateText} · ${timeText}`;
 }
 
+// [Phase 8.3-2] Replaces the old "Find in Gallery" tag-filter shortcut.
+// This is a RESUME action, not a filter action: it hands the stored
+// tagging position straight to the existing Gallery Jump input, the same
+// as if the user had read the number off this card and typed it in
+// themselves. No new navigation system, no tag filter applied. Whether
+// that number still lands on the same item depends on the current visible
+// set matching the one that existed at tag time — performGalleryJump's
+// existing range check already guards against a now-invalid number
+// (smaller current total, etc.) exactly as it would for any manually
+// typed value, so nothing extra is needed here for that case.
+function resumeTagActivityToJump(slot) {
+  if (!slot) return;
+
+  galleryJumpInput.value = String(slot.position);
+  galleryJumpInput.scrollIntoView({ behavior: "smooth", block: "center" });
+  galleryJumpInput.focus();
+  galleryJumpInput.select();
+}
+
+function buildTagActivityRow(label, slot) {
+  const row = document.createElement("div");
+  row.className = "tag-activity-row tag-activity-details";
+
+  const value = document.createElement("span");
+  value.className = "tag-activity-value";
+  value.textContent = label ? `${label} · ${slot.position} / ${slot.total}` : `${slot.position} / ${slot.total}`;
+  row.appendChild(value);
+
+  const time = document.createElement("time");
+  time.className = "tag-activity-value";
+  time.textContent = formatTagActivityTime(slot.timestamp);
+  time.dateTime = new Date(slot.timestamp).toISOString();
+  row.appendChild(time);
+
+  const findBtn = document.createElement("button");
+  findBtn.type = "button";
+  findBtn.className = "tag-activity-search-btn secondary";
+  findBtn.textContent = "Find";
+  findBtn.setAttribute("aria-label", label ? `Resume from ${label} position` : "Resume from this position");
+  findBtn.addEventListener("click", () => resumeTagActivityToJump(slot));
+  row.appendChild(findBtn);
+
+  return row;
+}
+
 function renderTagActivityCenter() {
   const selectedTag = profile.getTags().find((tag) => tag.id === selectedTagActivityId);
 
@@ -1971,25 +2648,22 @@ function renderTagActivityCenter() {
   if (!selectedTag) return;
 
   tagActivityName.textContent = selectedTag.name;
-  const hasActivity =
-    Number.isInteger(selectedTag.lastTagPosition) &&
-    Number.isInteger(selectedTag.totalAtTime) &&
-    Number.isFinite(selectedTag.lastTaggedAt);
 
-  tagActivityPosition.classList.toggle("hidden", !hasActivity);
-  tagActivityTime.classList.toggle("hidden", !hasActivity);
+  const { shuffleOff, shuffleOn, legacy } = profile.getTagActivity(selectedTagActivityId);
+  const hasActivity = Boolean(shuffleOff || shuffleOn || legacy);
+
+  tagActivityRows.classList.toggle("hidden", !hasActivity);
   tagActivityEmpty.classList.toggle("hidden", hasActivity);
+  tagActivityRows.innerHTML = "";
 
-  if (hasActivity) {
-    tagActivityPosition.textContent = `${selectedTag.lastTagPosition} / ${selectedTag.totalAtTime}`;
-    tagActivityTime.textContent = formatTagActivityTime(selectedTag.lastTaggedAt);
-    tagActivityTime.dateTime = new Date(selectedTag.lastTaggedAt).toISOString();
-  } else {
-    tagActivityPosition.textContent = "";
-    tagActivityTime.textContent = "";
-    tagActivityTime.removeAttribute("datetime");
-  }
+  if (shuffleOff) tagActivityRows.appendChild(buildTagActivityRow("Shuffle OFF", shuffleOff));
+  if (shuffleOn) tagActivityRows.appendChild(buildTagActivityRow("Shuffle ON", shuffleOn));
+  // `legacy` = a record from before Shuffle context was ever tracked — no
+  // label, since labeling it either way would be a guess (see
+  // ProfileStore#getTagActivity). Still fully usable to resume from.
+  if (legacy) tagActivityRows.appendChild(buildTagActivityRow(null, legacy));
 }
+
 
 function renderTagsGrid() {
   const tags = profile.getTags();
@@ -2179,6 +2853,7 @@ profileSelect.addEventListener("change", async () => {
   if (!ok) {
     profileActiveStatusText.textContent = "Could not switch profile.";
     renderProfileSelector(); // revert the <select> to the still-active profile
+    return;
   }
 });
 
@@ -2229,6 +2904,38 @@ profileDeleteBtn.addEventListener("click", async () => {
   try {
     await profile.deleteProfile(activeId);
     profileActiveStatusText.textContent = `Deleted "${activeName}". Now on "${profile.getProfileName()}".`;
+
+    // [LIBRARY-PROFILE-UX / Phase 8.5]
+    // WHAT: If the CURRENTLY LOADED library was associated with the
+    // profile just deleted, clear that association right now.
+    // WHY: Section 1 — "update the row immediately when... a stale/deleted
+    // Profile association is cleared" — without this, activeLibraryRecord
+    // keeps pointing at a profileId that no longer exists until the next
+    // reopen (updateAssociatedStatusRow already refuses to fall back to
+    // the active profile's name in that case, but "Associate with
+    // Profile" should reappear immediately too, not just the row text).
+    // FUTURE: Mirrors the existing stale-profile clearing already done at
+    // LOAD time in loadFromFsaHandle/loadFiles — this is the same cleanup,
+    // just triggered by a live delete instead of a re-pick.
+    if (activeLibraryRecord && activeLibraryRecord.profileId === activeId) {
+      if (currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity)) {
+        try {
+          const cleared = await setLibraryProfile(activeLibraryRecord.id, null);
+          activeLibraryRecord = cleared || { ...activeLibraryRecord, profileId: null };
+        } catch (error) {
+          activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
+        }
+      }
+    } else if (currentSourceKind === "legacy" && !legacyHasDurableIdentity && legacySessionAssociated) {
+      // Ephemeral association has no stored profileId to compare against —
+      // it's simply "the profile active when Associate was clicked". If a
+      // deletion just happened at all while that ephemeral association is
+      // live, the safest assumption is it may have been that very profile;
+      // clear it rather than risk it silently pointing at a name that no
+      // longer means what the user thinks.
+      legacySessionAssociated = false;
+    }
+    syncAssociateButtonVisibility();
   } catch (error) {
     profileActiveStatusText.textContent = `Could not delete profile: ${error.message}`;
   } finally {
@@ -2242,6 +2949,11 @@ profileDeleteBtn.addEventListener("click", async () => {
 // to profile IDENTITY, not item/tag content.
 profile.subscribe(() => {
   renderProfileSelector();
+  // [LIBRARY-PROFILE-UX / Phase 8.5] The green "Associated:" row can name
+  // a profile that isn't the active one (see updateAssociatedStatusRow) —
+  // a rename of THAT profile, or a switch away from it, needs to refresh
+  // this row even though nothing about the loaded library itself changed.
+  syncAssociateButtonVisibility();
 });
 
 // ---- Profile Export / Import ----------------------------------------------
@@ -2309,6 +3021,46 @@ profileImportInput.addEventListener("change", async (event) => {
   }
 });
 
+// [LIBRARY-PROFILE-UX / Phase 8.5]
+// WHAT: "Import as New Profile" — populates a brand-new Profile from an
+// exported .json instead of merging/replacing into whichever Profile is
+// currently active.
+// WHY: Section 9 — reusing another Profile as a starting point without
+// two libraries ending up silently sharing one mutable Profile. Built
+// entirely from EXISTING primitives already used elsewhere on this page
+// (createProfile, switchProfile, importJSON) — no new persistence.
+// FUTURE: This is a one-time copy — the new Profile diverges independently
+// from here on, there is no ongoing link back to the source file.
+profileImportCopyBtn.addEventListener("click", () => profileImportCopyInput.click());
+
+profileImportCopyInput.addEventListener("change", async (event) => {
+  const file = event.target.files && event.target.files[0];
+  profileImportCopyInput.value = "";
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Not a recognized profile file (invalid JSON).");
+    }
+
+    const suggestedName = typeof parsed.profileName === "string" && parsed.profileName.trim() ? parsed.profileName.trim() : "Imported Profile";
+    const name = window.prompt("Name for the new profile:", suggestedName);
+    if (!name || !name.trim()) return; // cancelled
+
+    const created = await profile.createProfile(name.trim());
+    await profile.switchProfile(created.id);
+    const result = profile.importJSON(parsed, { mode: "replace" });
+
+    profileActiveStatusText.textContent = `Created "${created.name}" from import (${result.applied} applied).`;
+  } catch (error) {
+    profileActiveStatusText.textContent = `Could not import as a new profile: ${error.message}`;
+  }
+});
+
 // Centralized reaction to ANY profile change — a single toggle, a merge
 // import, or a replace import all funnel through here. allItems is kept in
 // sync regardless of what's currently loaded into the runtime (so an item
@@ -2334,16 +3086,51 @@ profile.subscribe(() => {
 
 // ---- Boot ---------------------------------------------------------------
 
-runtime.setShuffle(shuffleInput.checked);
-runtime.setLoop(loopInput.checked);
+// [APP-PREFERENCES] Applies a loaded (already validated/defaulted —
+// see loadPreferences()/normalizeRecord() in app-preferences.js) global
+// preferences record to the DOM controls and to MediaRuntime. Called once,
+// synchronously, before any of the hardcoded boot calls below that used to
+// read these same controls' HTML-default values — so a saved preference is
+// never overwritten by that hardcoded initialization.
+//
+// A stored `ghostOpacityPercent` is deliberately ignored when
+// `rememberGhostOpacity` is false: it may be a stale value left over from
+// before the user unchecked "Remember this value", and unchecked launches
+// must always show the built-in fallback, not that old number.
+function applyLoadedPreferences(preferences) {
+  const { playback, presentation } = preferences;
+
+  intervalInput.value = String(playback.intervalSeconds);
+  shuffleInput.checked = playback.shuffle;
+  skipDuplicatesInput.checked = playback.skipDuplicates;
+  skipDuplicates = playback.skipDuplicates;
+  loopInput.checked = playback.loopPlaylist;
+  fillInput.checked = playback.fillPanel;
+
+  ghostRememberInput.checked = presentation.rememberGhostOpacity;
+  const ghostPercent = presentation.rememberGhostOpacity
+    ? presentation.ghostOpacityPercent
+    : DEFAULT_GHOST_OPACITY_PERCENT;
+  ghostOpacityInput.value = String(ghostPercent);
+
+  runtime.setShuffle(shuffleInput.checked);
+  runtime.setLoop(loopInput.checked);
+  runtime.setIntervalMs(Number(intervalInput.value) * 1000);
+  applyGhostOpacity(Number(ghostOpacityInput.value));
+}
+
+applyLoadedPreferences(await loadPreferences());
+
 syncVideoLoopControl();
 resetLoopRuleToDefault();
 syncUndoHideButton();
 renderTagsGrid();
 renderTagsFilterGrid();
 renderProfileSelector();
-runtime.setIntervalMs(Number(intervalInput.value) * 1000);
-applyGhostOpacity(Number(ghostOpacityInput.value));
+// [LIBRARY-PROFILE-UX / Phase 8.5] Redundant with the HTML default (both
+// already read "—"), but explicit here so the boot sequence doesn't rely
+// on the markup default staying in sync with this function's logic.
+syncAssociateButtonVisibility();
 
 runtime.subscribe(render);
 
@@ -2368,3 +3155,278 @@ window.addEventListener("beforeunload", () => {
 
   await renderRecentLibraries();
 })();
+
+// =============================================================================
+// [P1-DIAGNOSTIC / TEMPORARY] FSA direct-lookup recovery test.
+//
+// WHAT: Two DevTools-callable functions comparing Legacy (webkitdirectory)
+// vs FSA discovery on the CURRENTLY LOADED folder, then probing whether
+// FSA's getDirectoryHandle() can directly resolve a directory FSA's own
+// entries() enumeration omitted.
+// WHY: Determines whether FSA enumeration being incomplete also means FSA
+// lookup is dead-ended, or whether the omitted subtree is still directly
+// addressable — the fork in the road between an FSA-only recovery
+// strategy and needing Legacy-assisted orchestration.
+// FUTURE / DO-NOT-BREAK: This entire block is temporary and additive —
+// nothing in it is called by any production path. Delete this block, the
+// four __p1* variables, and the two snapshot lines (in loadFiles() and
+// loadFromFsaHandle()) once P1 concludes. Never trim/normalize/reconstruct
+// the real relativePath strings this reads from the __p1*Snapshot arrays
+// (not the providers' own .getItems() — see those snapshot vars' own
+// comment for why); they are read once into __p1RealPathsById and never
+// logged.
+//
+// NOTE: loadFiles()/loadFromFsaHandle() each dispose() the OTHER provider
+// at the start of every load, so only ONE of provider/fsaProvider ever has
+// live items at a time — you must load BOTH pickers (either order) before
+// calling __fsaP1FindCandidates(), even though only the most-recently-
+// loaded one's items are visible via .getItems() at any given moment.
+//
+// USAGE (run in the DevTools console, on this app, after loading the SAME
+// folder via BOTH pickers — the Legacy Picker's <input webkitdirectory>,
+// then "Choose Folder" (FSA) — in either order, most-recent load per
+// picker is what's compared):
+//
+//   __fsaP1FindCandidates()       // lists anonymized candidates: D01, D02,
+//                                 // ... (Legacy-only, i.e. FSA-omitted) and
+//                                 // C01, C02, ... (present in both — controls)
+//   __fsaP1Probe('D01')           // runs the direct-lookup probe on one
+//   __fsaP1Probe('C01')           // and a control, for comparison
+// =============================================================================
+
+const __p1RealPathsById = new Map(); // anonymous id -> real relativePath; never logged, never returned
+
+function __p1CodePointMeta(name) {
+  const cps = Array.from(name); // code-point aware, not UTF-16-code-unit aware
+  return {
+    length: cps.length,
+    startsWithAsciiSpace: name.length > 0 && name.charCodeAt(0) === 0x20,
+    endsWithAsciiSpace: name.length > 0 && name.charCodeAt(name.length - 1) === 0x20,
+    firstCodePoint: cps.length ? "U+" + cps[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0") : null,
+    lastCodePoint: cps.length ? "U+" + cps[cps.length - 1].codePointAt(0).toString(16).toUpperCase().padStart(4, "0") : null,
+  };
+}
+
+// All ancestor directory relativePaths implied by a file's relativePath,
+// e.g. "A/B/C.jpg" -> ["A", "A/B"]. Root-level files contribute nothing.
+function __p1DirPrefixesOf(relativePath) {
+  const segments = relativePath.split("/");
+  segments.pop(); // drop the filename itself
+  const prefixes = [];
+  let running = "";
+  for (const segment of segments) {
+    running = running ? `${running}/${segment}` : segment;
+    prefixes.push(running);
+  }
+  return prefixes;
+}
+
+window.__fsaP1FindCandidates = function () {
+  const legacyItems = __p1LegacySnapshot;
+  const fsaItems = __p1FsaSnapshot;
+
+  if (!legacyItems.length || !fsaItems.length) {
+    console.warn(
+      "[P1] Need BOTH a Legacy Picker load and an FSA Choose Folder load of the SAME folder before comparing. " +
+        `Currently: legacy items=${legacyItems.length}, fsa items=${fsaItems.length}.`
+    );
+    return { started: true, completed: false, reason: "missing-comparison-data" };
+  }
+
+  const legacyDirs = new Set();
+  for (const item of legacyItems) for (const p of __p1DirPrefixesOf(item.relativePath)) legacyDirs.add(p);
+
+  const fsaDirs = new Set();
+  for (const item of fsaItems) for (const p of __p1DirPrefixesOf(item.relativePath)) fsaDirs.add(p);
+
+  const omitted = [...legacyDirs].filter((p) => !fsaDirs.has(p));
+  const present = [...legacyDirs].filter((p) => fsaDirs.has(p));
+
+  __p1RealPathsById.clear();
+  const rows = [];
+
+  omitted.forEach((path, i) => {
+    const id = `D${String(i + 1).padStart(2, "0")}`;
+    __p1RealPathsById.set(id, path);
+    const finalSegment = path.split("/").pop();
+    rows.push({ id, kind: "omitted (Legacy-only)", ...__p1CodePointMeta(finalSegment) });
+  });
+
+  // Prefer control candidates that also have edge/internal spaces, so a
+  // parity failure isn't masked by only ever testing plain ASCII names —
+  // but any present-in-both directory is a valid control if none do.
+  const controlPool =
+    present.filter((p) => {
+      const seg = p.split("/").pop();
+      return seg.includes(" ");
+    }).length > 0
+      ? present.filter((p) => p.split("/").pop().includes(" "))
+      : present;
+
+  controlPool.slice(0, 3).forEach((path, i) => {
+    const id = `C${String(i + 1).padStart(2, "0")}`;
+    __p1RealPathsById.set(id, path);
+    const finalSegment = path.split("/").pop();
+    rows.push({ id, kind: "control (present in both)", ...__p1CodePointMeta(finalSegment) });
+  });
+
+  console.log(`[P1] Legacy dirs: ${legacyDirs.size}, FSA dirs: ${fsaDirs.size}, omitted: ${omitted.length}.`);
+  console.table(rows);
+  console.log("[P1] Run __fsaP1Probe('D01') (etc.) next. No real paths were logged above.");
+
+  return { started: true, completed: true, candidateIds: rows.map((r) => r.id) };
+};
+
+async function __p1ResolveAncestors(rootHandle, segments) {
+  let handle = rootHandle;
+  for (const segment of segments) {
+    try {
+      handle = await handle.getDirectoryHandle(segment, { create: false });
+    } catch (error) {
+      return { ok: false, failedAtSegmentIndex: segments.indexOf(segment), errorName: error?.name ?? "Unknown" };
+    }
+  }
+  return { ok: true, handle };
+}
+
+// Minimal recursive counter — deliberately NOT FsaFileProvider (no object
+// URLs, no MediaItem shaping, no batching); this only needs counts to
+// prove the recovered subtree is real and traversable, per the P1 spec.
+async function __p1CountRecursive(dirHandle) {
+  let files = 0;
+  let dirs = 0;
+  for await (const [, handle] of dirHandle.entries()) {
+    if (handle.kind === "directory") {
+      dirs += 1;
+      const nested = await __p1CountRecursive(handle);
+      files += nested.files;
+      dirs += nested.dirs;
+    } else if (handle.kind === "file") {
+      files += 1;
+    }
+  }
+  return { files, dirs };
+}
+
+window.__fsaP1Probe = async function (candidateId) {
+  const report = { candidateId, started: true, completed: false, cancelled: false, exception: null };
+
+  const realPath = __p1RealPathsById.get(candidateId);
+  if (!realPath) {
+    console.warn(`[P1] Unknown candidate id "${candidateId}". Run __fsaP1FindCandidates() first.`);
+    report.completed = false;
+    return report;
+  }
+  if (!__p1DiagnosticRootHandle) {
+    console.warn("[P1] No FSA root handle on record — load a folder via Choose Folder (FSA) first.");
+    report.completed = false;
+    return report;
+  }
+
+  // exactLegacyName is read directly from the untouched relativePath
+  // captured by __fsaP1FindCandidates — never trimmed/normalized here.
+  const segments = realPath.split("/");
+  const exactLegacyName = segments[segments.length - 1];
+  const ancestorSegments = segments.slice(0, -1);
+
+  const integrity = __p1CodePointMeta(exactLegacyName);
+  console.log(`[P1] ${candidateId} exact-name integrity (re-derived fresh, not cached):`, integrity);
+
+  const ancestorResult = await __p1ResolveAncestors(__p1DiagnosticRootHandle, ancestorSegments);
+  if (!ancestorResult.ok) {
+    console.log(
+      `[P1] ${candidateId}: could not resolve to the correct parent handle ` +
+        `(failed at ancestor segment index ${ancestorResult.failedAtSegmentIndex}, ${ancestorResult.errorName}).`
+    );
+    report.completed = true;
+    report.result = "C";
+    report.reason = "ancestor-resolution-failed";
+    return report;
+  }
+  const parentHandle = ancestorResult.handle;
+
+  // Enumeration confirmation, under the SAME parent, via the SAME entries()
+  // method the production FSA walker uses — no sibling names logged.
+  let enumeratedChildren = 0;
+  let presentInEnumeration = false;
+  try {
+    for await (const [name] of parentHandle.entries()) {
+      enumeratedChildren += 1;
+      if (name === exactLegacyName) presentInEnumeration = true;
+    }
+  } catch (error) {
+    report.completed = true;
+    report.result = "C";
+    report.reason = `enumeration-threw: ${error?.name ?? "Unknown"}`;
+    console.log(`[P1] ${candidateId}: enumeration itself threw — cannot trust this run.`, report.reason);
+    return report;
+  }
+  console.log(`[P1] ${candidateId}: enumeratedChildren=${enumeratedChildren}, presentInEnumeration=${presentInEnumeration}`);
+
+  // Direct lookup probe — the primary P1 question.
+  let directLookupResult;
+  try {
+    const handle = await parentHandle.getDirectoryHandle(exactLegacyName, { create: false });
+    directLookupResult = { success: true, kind: handle.kind, handle };
+  } catch (error) {
+    // WHAT: Captures error.message alongside error.name.
+    // WHY: error.name alone (e.g. "TypeError") doesn't distinguish "the
+    // API rejected this name before touching the filesystem" from other
+    // failure modes — the message text does.
+    // FUTURE / DO-NOT-BREAK: n/a — read-only diagnostic output.
+    directLookupResult = {
+      success: false,
+      errorName: error?.name ?? "Unknown",
+      errorMessage: error?.message ?? "(no message)",
+    };
+  }
+
+  report.completed = true;
+  report.enumeration = presentInEnumeration ? "HIT" : "MISS";
+  report.directLookup = directLookupResult.success ? "SUCCESS" : `FAIL (${directLookupResult.errorName})`;
+
+  if (!presentInEnumeration && directLookupResult.success) {
+    report.result = "A";
+  } else if (!presentInEnumeration && !directLookupResult.success) {
+    report.result = "B";
+  } else if (presentInEnumeration && directLookupResult.success) {
+    report.result = "control-parity-confirmed";
+  } else {
+    report.result = "C";
+    report.reason = "enumeration HIT but direct lookup FAILED — inconsistent, needs manual review";
+  }
+
+  console.log(`[P1] ${candidateId}: enumeration=${report.enumeration}, directLookup=${report.directLookup} -> RESULT ${report.result}`);
+  if (!directLookupResult.success) {
+    console.log(`[P1] ${candidateId} error detail: ${directLookupResult.errorName} — "${directLookupResult.errorMessage}"`);
+    report.errorMessage = directLookupResult.errorMessage;
+  }
+
+  if (directLookupResult.success) {
+    try {
+      const immediate = [];
+      for await (const _entry of directLookupResult.handle.entries()) immediate.push(1);
+      const recursive = await __p1CountRecursive(directLookupResult.handle);
+
+      const legacyPrefix = `${realPath}/`;
+      const legacyFilesUnderPath = __p1LegacySnapshot.filter((it) => it.relativePath.startsWith(legacyPrefix)).length;
+      const fsaFilesUnderPathBefore = __p1FsaSnapshot.filter((it) => it.relativePath.startsWith(legacyPrefix)).length;
+
+      report.recoveredImmediateChildren = immediate.length;
+      report.recoveredRecursiveFiles = recursive.files;
+      report.legacyFilesUnderThisPath = legacyFilesUnderPath;
+      report.previouslyAbsentFromFsaScan = legacyFilesUnderPath - fsaFilesUnderPathBefore;
+
+      console.log(
+        `[P1] ${candidateId} recovered subtree — immediateChildren=${immediate.length}, ` +
+          `recursiveFiles=${recursive.files}, legacyFilesUnderThisPath=${legacyFilesUnderPath}, ` +
+          `previouslyAbsentFromFsaScan=${report.previouslyAbsentFromFsaScan}`
+      );
+    } catch (error) {
+      console.log(`[P1] ${candidateId}: recovered handle exists but subtree traversal threw — `, error?.name ?? error);
+      report.subtreeTraversalError = error?.name ?? "Unknown";
+    }
+  }
+
+  return report;
+};

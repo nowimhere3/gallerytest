@@ -572,7 +572,7 @@ export class ProfileStore {
     return this.#tags.map((tag) => ({ ...tag })).sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  recordTagActivity(tagId, { position, total, timestamp = Date.now() } = {}) {
+  recordTagActivity(tagId, { position, total, timestamp = Date.now(), shuffle } = {}) {
     const tag = this.#tags.find((candidate) => candidate.id === tagId);
     const normalizedPosition = Number(position);
     const normalizedTotal = Number(total);
@@ -589,13 +589,81 @@ export class ProfileStore {
       return false;
     }
 
+    // Legacy flat fields — kept purely for backward compatibility (an
+    // older exported profile, or any other code still reading these
+    // directly) and always reflect whichever tagging action happened most
+    // recently, regardless of Shuffle mode. Phase 8.3-2 stops treating
+    // these as the source of truth for display/resume — see tagActivity
+    // below and getTagActivity() — since a single flat position can't
+    // represent "where I was in Shuffle OFF" AND "where I was in Shuffle
+    // ON" at the same time.
     tag.lastTagPosition = normalizedPosition;
     tag.totalAtTime = normalizedTotal;
     tag.lastTaggedAt = normalizedTimestamp;
+
+    if (typeof shuffle === "boolean") {
+      tag.lastTagShuffle = shuffle;
+
+      // [Phase 8.3-2] Two independent resume points, keyed by the Shuffle
+      // mode active at the moment of tagging. A later Shuffle ON tagging
+      // action must never overwrite the saved Shuffle OFF position (or
+      // vice versa) — each mode keeps its own last-known
+      // {position, total, timestamp}, only ever overwritten by a later
+      // tagging action in that SAME mode.
+      if (!isPlainObject(tag.tagActivity)) tag.tagActivity = {};
+      tag.tagActivity[shuffle ? "shuffleOn" : "shuffleOff"] = {
+        position: normalizedPosition,
+        total: normalizedTotal,
+        timestamp: normalizedTimestamp,
+      };
+    }
+    // If `shuffle` isn't a boolean (a caller that doesn't know the Shuffle
+    // state at all), only the legacy flat fields above are updated — we
+    // never guess which bucket an unknown mode belongs in.
+
     this.#tagIdsChangedBeforeLoad.add(tagId);
     this.#emit();
     this.#persist();
     return true;
+  }
+
+  // Reads back the two independent resume points Phase 8.3-2 introduced.
+  // Each of `shuffleOff`/`shuffleOn` is either a
+  // { position, total, timestamp } snapshot or null if that mode has never
+  // been tagged in for this tag.
+  //
+  // `legacy` covers a record written before Shuffle context was tracked at
+  // all (pre-8.4 — lastTagShuffle is genuinely undefined, not false): its
+  // position is real and still perfectly usable for resuming, but it is
+  // deliberately kept OUT of the shuffleOff/shuffleOn buckets rather than
+  // guessed into one, since that would fabricate a Shuffle state that was
+  // never actually recorded.
+  //
+  // A record that DOES know its Shuffle mode (lastTagShuffle is a real
+  // boolean) but predates the tagActivity object itself (written between
+  // 8.4 and this phase) is bucketed correctly straight away — that much is
+  // known, not guessed.
+  getTagActivity(tagId) {
+    const tag = this.#tags.find((candidate) => candidate.id === tagId);
+    if (!tag) return { shuffleOff: null, shuffleOn: null, legacy: null };
+
+    const hasLegacyPosition =
+      Number.isInteger(tag.lastTagPosition) &&
+      Number.isInteger(tag.totalAtTime) &&
+      Number.isFinite(tag.lastTaggedAt);
+    const legacySnapshot = hasLegacyPosition
+      ? { position: tag.lastTagPosition, total: tag.totalAtTime, timestamp: tag.lastTaggedAt }
+      : null;
+
+    const modern = isPlainObject(tag.tagActivity) ? tag.tagActivity : null;
+
+    const shuffleOff =
+      (modern && modern.shuffleOff) || (!modern && tag.lastTagShuffle === false ? legacySnapshot : null);
+    const shuffleOn =
+      (modern && modern.shuffleOn) || (!modern && tag.lastTagShuffle === true ? legacySnapshot : null);
+    const legacy = !modern && typeof tag.lastTagShuffle !== "boolean" ? legacySnapshot : null;
+
+    return { shuffleOff, shuffleOn, legacy };
   }
 
   #tagNameExists(name, excludingId = null) {
