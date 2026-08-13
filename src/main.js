@@ -11,6 +11,12 @@ import {
   updateLegacyLibrarySignature,
 } from "./storage/library-registry.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
+import {
+  loadPreferences,
+  savePlaybackPreferences,
+  savePresentationPreferences,
+  DEFAULT_GHOST_OPACITY_PERCENT,
+} from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
@@ -137,6 +143,7 @@ const ghostToggleBtn = document.getElementById("ghost-toggle-btn");
 const ghostPopunder = document.getElementById("ghost-popunder");
 const ghostOpacityInput = document.getElementById("ghost-opacity-input");
 const ghostOpacityLabel = document.getElementById("ghost-opacity-label");
+const ghostRememberInput = document.getElementById("ghost-remember-input");
 const presentationTagsEmpty = document.getElementById("presentation-tags-empty");
 const presentationTagsRow = document.getElementById("presentation-tags-row");
 const presentationTagsOverflow = document.getElementById("presentation-tags-overflow");
@@ -2184,6 +2191,7 @@ folderInput.addEventListener("change", (event) => {
 
 intervalInput.addEventListener("change", () => {
   runtime.setIntervalMs(Number(intervalInput.value) * 1000);
+  savePlaybackPreferences({ intervalSeconds: Number(intervalInput.value) });
 });
 
 function adjustInterval(direction) {
@@ -2203,11 +2211,13 @@ intervalIncreaseBtn.addEventListener("click", () => adjustInterval(1));
 
 shuffleInput.addEventListener("change", () => {
   runtime.setShuffle(shuffleInput.checked);
+  savePlaybackPreferences({ shuffle: shuffleInput.checked });
 });
 
 skipDuplicatesInput.addEventListener("change", () => {
   const currentItem = runtime.getState().currentItem;
   skipDuplicates = skipDuplicatesInput.checked;
+  savePlaybackPreferences({ skipDuplicates });
 
   // WHAT: A suppressed current copy resolves to the retained equivalent before rebuilding the runtime list.
   // WHY: Live toggling must not strand the viewer or jump arbitrarily when an exact duplicate remains playable.
@@ -2223,6 +2233,7 @@ skipDuplicatesInput.addEventListener("change", () => {
 
 loopInput.addEventListener("change", () => {
   runtime.setLoop(loopInput.checked);
+  savePlaybackPreferences({ loopPlaylist: loopInput.checked });
 });
 
 videoLoopInput.addEventListener("change", syncVideoLoopControl);
@@ -2233,6 +2244,7 @@ fillInput.addEventListener("change", () => {
   } else if (!fillInput.checked) {
     exitFillMode();
   }
+  savePlaybackPreferences({ fillPanel: fillInput.checked });
 });
 
 allMediaBtn.addEventListener("click", () => setViewMode("all"));
@@ -2456,6 +2468,30 @@ automationTimerApplyBtn.addEventListener("click", () => {
 
 ghostOpacityInput.addEventListener("input", () => {
   applyGhostOpacity(Number(ghostOpacityInput.value));
+});
+
+// `change` (commit, not every drag tick) is the persistence path — avoids
+// an IndexedDB write per pixel of slider movement. Only writes when
+// "Remember this value" is checked; unchecked, the live value above still
+// applies for the rest of this session but never touches the saved
+// default.
+ghostOpacityInput.addEventListener("change", () => {
+  if (!ghostRememberInput.checked) return;
+  savePresentationPreferences({ ghostOpacityPercent: Number(ghostOpacityInput.value) });
+});
+
+// Checking the box immediately commits whatever the slider currently shows
+// as the new remembered default; unchecking it just persists the
+// unchecked state itself (the built-in 15% fallback is what a future
+// unchecked launch uses — see loadPreferences()/normalizeRecord(), not a
+// stale remembered number).
+ghostRememberInput.addEventListener("change", () => {
+  const remember = ghostRememberInput.checked;
+  const partial = { rememberGhostOpacity: remember };
+  if (remember) {
+    partial.ghostOpacityPercent = Number(ghostOpacityInput.value);
+  }
+  savePresentationPreferences(partial);
 });
 
 // ---- Keyboard shortcuts (Presentation Mode only) -------------------------
@@ -3050,8 +3086,41 @@ profile.subscribe(() => {
 
 // ---- Boot ---------------------------------------------------------------
 
-runtime.setShuffle(shuffleInput.checked);
-runtime.setLoop(loopInput.checked);
+// [APP-PREFERENCES] Applies a loaded (already validated/defaulted —
+// see loadPreferences()/normalizeRecord() in app-preferences.js) global
+// preferences record to the DOM controls and to MediaRuntime. Called once,
+// synchronously, before any of the hardcoded boot calls below that used to
+// read these same controls' HTML-default values — so a saved preference is
+// never overwritten by that hardcoded initialization.
+//
+// A stored `ghostOpacityPercent` is deliberately ignored when
+// `rememberGhostOpacity` is false: it may be a stale value left over from
+// before the user unchecked "Remember this value", and unchecked launches
+// must always show the built-in fallback, not that old number.
+function applyLoadedPreferences(preferences) {
+  const { playback, presentation } = preferences;
+
+  intervalInput.value = String(playback.intervalSeconds);
+  shuffleInput.checked = playback.shuffle;
+  skipDuplicatesInput.checked = playback.skipDuplicates;
+  skipDuplicates = playback.skipDuplicates;
+  loopInput.checked = playback.loopPlaylist;
+  fillInput.checked = playback.fillPanel;
+
+  ghostRememberInput.checked = presentation.rememberGhostOpacity;
+  const ghostPercent = presentation.rememberGhostOpacity
+    ? presentation.ghostOpacityPercent
+    : DEFAULT_GHOST_OPACITY_PERCENT;
+  ghostOpacityInput.value = String(ghostPercent);
+
+  runtime.setShuffle(shuffleInput.checked);
+  runtime.setLoop(loopInput.checked);
+  runtime.setIntervalMs(Number(intervalInput.value) * 1000);
+  applyGhostOpacity(Number(ghostOpacityInput.value));
+}
+
+applyLoadedPreferences(await loadPreferences());
+
 syncVideoLoopControl();
 resetLoopRuleToDefault();
 syncUndoHideButton();
@@ -3062,8 +3131,6 @@ renderProfileSelector();
 // already read "—"), but explicit here so the boot sequence doesn't rely
 // on the markup default staying in sync with this function's logic.
 syncAssociateButtonVisibility();
-runtime.setIntervalMs(Number(intervalInput.value) * 1000);
-applyGhostOpacity(Number(ghostOpacityInput.value));
 
 runtime.subscribe(render);
 
