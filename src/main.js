@@ -20,6 +20,7 @@ import {
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
+import { ProfileSync } from "./profile/profile-sync.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
@@ -30,6 +31,18 @@ const provider = new LocalFileInputProvider();
 // ever actually loaded into the app at once.
 const fsaProvider = new FsaFileProvider();
 const profile = new ProfileStore();
+// [PROFILE-SYNC]
+// WHAT: The Profile Sync engine — watches `profile` for changes and mirrors
+// the full Profile collection into a separately-chosen sync folder.
+// WHY: Constructed once, here, alongside `profile` itself, and NEVER
+// referenced from loadFiles()/loadFromFsaHandle() or any other
+// media-source code below — that absence is deliberate. See
+// profile-sync.js's header for the architectural boundary this protects:
+// Profile Sync must survive every media-library change untouched.
+// FUTURE / DO-NOT-BREAK: If a future change ever needs these two to
+// interact, that almost certainly means the boundary is being crossed by
+// mistake — re-read profile-sync.js's header first.
+const profileSync = new ProfileSync(profile);
 const runtime = new MediaRuntime({ profile });
 
 // [TS-POC] Single adapter instance reused across items — attach() always
@@ -100,6 +113,29 @@ const profileImportCopyBtn = document.getElementById("profile-import-copy-btn");
 const profileImportCopyInput = document.getElementById("profile-import-copy-input");
 const profileSkipMissingInput = document.getElementById("profile-skip-missing-input");
 const profileStatusText = document.getElementById("profile-status-text");
+
+// [PROFILE-SYNC] DOM refs for the compact Profile Sync block — see
+// index.html's own [PROFILE-SYNC] comment on `.profile-sync-section`.
+const profileSyncStatusText = document.getElementById("profile-sync-status-text");
+const profileSyncChooseBtn = document.getElementById("profile-sync-choose-btn");
+const profileSyncReconnectBtn = document.getElementById("profile-sync-reconnect-btn");
+const profileSyncConnectedRow = document.getElementById("profile-sync-connected-row");
+const profileSyncNowBtn = document.getElementById("profile-sync-now-btn");
+const profileSyncManageToggleBtn = document.getElementById("profile-sync-manage-toggle-btn");
+const profileSyncManagePanel = document.getElementById("profile-sync-manage-panel");
+const profileSyncChangeBtn = document.getElementById("profile-sync-change-btn");
+const profileSyncDisconnectBtn = document.getElementById("profile-sync-disconnect-btn");
+const profileSyncConflictPanel = document.getElementById("profile-sync-conflict-panel");
+const profileSyncUseSyncedBtn = document.getElementById("profile-sync-use-synced-btn");
+const profileSyncKeepLocalBtn = document.getElementById("profile-sync-keep-local-btn");
+
+// [PROFILE-SYNC-SETUP] Refs for the first-time setup modal — see the
+// [PROFILE-SYNC-SETUP] comment on the <dialog> in index.html.
+const profileSyncSetupDialog = document.getElementById("profile-sync-setup-dialog");
+const profileSyncSetupFolderName = document.getElementById("profile-sync-setup-foldername");
+const profileSyncSetupCopyBtn = document.getElementById("profile-sync-setup-copy-btn");
+const profileSyncSetupCancelBtn = document.getElementById("profile-sync-setup-cancel-btn");
+const profileSyncSetupOpenBtn = document.getElementById("profile-sync-setup-open-btn");
 
 const tagCreateInput = document.getElementById("tag-create-input");
 const tagCreateBtn = document.getElementById("tag-create-btn");
@@ -226,6 +262,23 @@ let __p1DiagnosticRootName = null;
 // compare at once. These snapshots persist across that disposal.
 let __p1LegacySnapshot = [];
 let __p1FsaSnapshot = [];
+
+// [TEMP-PROFILE-IDENTITY-AUDIT]
+// WHAT: Holds the diagnostics object (dirsVisited/filesSeen/filesSkipped/
+// errors/incomplete/fatalError) from the MOST RECENT FSA folder scan, plus
+// the remembered registry item count at that load, so the read-only audit
+// entry point at the bottom of this file can report FSA completeness
+// without re-scanning.
+// WHY: FsaFileProvider.loadFromDirectoryHandle() already computes these
+// (see fsa-file-provider.js) but they are otherwise local to loadFromFsaHandle
+// and discarded after the status line is rendered — the audit needs them to
+// tell "media never discovered" (discovery failure) apart from "media
+// discovered, key differs" (identity failure).
+// FUTURE / DO-NOT-BREAK: This is capture-only. It must never influence the
+// load result, the reported count, or any control flow. Remove it together
+// with the __bgProfileIdentityAudit block below once the cross-device cause
+// is proven.
+let __identityAuditLastFsaLoad = null;
 
 // [Phase 8.4-2] webkitdirectory carries no durable physical-folder
 // identity on its own — no isSameEntry()-equivalent exists for it. As of
@@ -849,6 +902,21 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the FSA provider out from under it.
     __p1FsaSnapshot = [...result.items];
+    // [TEMP-PROFILE-IDENTITY-AUDIT] Capture-only: retain this scan's
+    // completeness diagnostics for the read-only audit entry point (see the
+    // block at the bottom of this file). Does not affect the load in any way.
+    __identityAuditLastFsaLoad = {
+      dirsVisited: result.diagnostics.dirsVisited,
+      filesSeen: result.diagnostics.filesSeen,
+      filesSkipped: result.diagnostics.filesSkipped,
+      nonFatalErrors: result.diagnostics.errors.length,
+      incomplete: result.incomplete,
+      fatalError: result.fatalError ? String(result.fatalError.name || result.fatalError) : null,
+      loadedCount: count,
+      rememberedItemCount:
+        activeLibraryRecord && typeof activeLibraryRecord.itemCount === "number" ? activeLibraryRecord.itemCount : null,
+      rootHandleName: dirHandle.name,
+    };
 
     if (activeLibraryRecord && activeLibraryRecord.id) {
       try {
@@ -3084,6 +3152,193 @@ profile.subscribe(() => {
   renderPresentationTagsPanel(runtime.getState().currentItem);
 });
 
+// ---- Profile Sync UI (Profile Sync Folder POC) ---------------------------
+//
+// [PROFILE-SYNC] Purely a thin UI layer over ProfileSync's own state
+// machine (getStatus/subscribe) — no connection/sync state is held or
+// duplicated here, same relationship renderProfileSelector() above has to
+// ProfileStore. profileSync.subscribe(renderProfileSync) below keeps every
+// element in sync with the engine automatically.
+
+function renderProfileSync() {
+  const status = profileSync.getStatus();
+
+  profileSyncChooseBtn.classList.toggle("hidden", status.configured);
+  profileSyncReconnectBtn.classList.toggle("hidden", status.status !== "permission-needed");
+  profileSyncConnectedRow.classList.toggle(
+    "hidden",
+    !status.configured || status.status === "permission-needed"
+  );
+  profileSyncNowBtn.disabled = status.status === "syncing" || status.status === "conflict";
+  profileSyncConflictPanel.classList.toggle("hidden", status.status !== "conflict");
+
+  if (!status.configured) {
+    profileSyncManagePanel.classList.add("hidden");
+  }
+
+  let line;
+  switch (status.status) {
+    case "not-configured":
+      line = "Status: Not configured";
+      break;
+    case "checking":
+      line = "Status: Checking folder access…";
+      break;
+    case "permission-needed":
+      line = `Status: Permission needed for "${status.folderName}".`;
+      break;
+    case "syncing":
+      line = "Status: Syncing…";
+      break;
+    case "conflict":
+      line = "Profile changed on another device. Choose a version below.";
+      break;
+    case "offline":
+      line = `Offline — saved locally. Changes will sync when available.${status.message ? ` (${status.message})` : ""}`;
+      break;
+    case "connected":
+    default:
+      line = `✓ Connected — "${status.folderName}" · Auto Sync: ON · Last sync: ${
+        status.lastSyncAt ? formatRelativeTime(status.lastSyncAt) : "just now"
+      }`;
+  }
+  profileSyncStatusText.textContent = line;
+}
+
+// [PROFILE-SYNC-SETUP]
+// WHAT: Opens the first-time setup modal. Shown for BOTH entry points that
+// deliberately start a fresh folder selection — "Choose Google Drive
+// Folder" (unconfigured) and "Change Sync Folder" (already configured).
+// WHY: The native OS folder picker can't explain the shared-Drive-folder
+// convention itself, so this modal does, once, right before it.
+// FUTURE / DO-NOT-BREAK: This must NOT be reachable from the Reconnect
+// button or startup silent reconnect — those reuse the remembered handle
+// via profileSync.reconnect()/init() and must never re-open a picker or
+// this modal (see profile-sync.js). If a new "start a fresh folder"
+// affordance is ever added, route it here too rather than calling the
+// picker directly.
+function openSyncSetupModal() {
+  if (!isFsaSupported()) {
+    profileSyncStatusText.textContent = "This browser does not support the File System Access API.";
+    return;
+  }
+
+  // Reached from "Change Sync Folder" leaves the Manage panel open behind
+  // the dimmed backdrop otherwise — collapse it as the modal takes over.
+  profileSyncManagePanel.classList.add("hidden");
+
+  if (typeof profileSyncSetupDialog.showModal === "function") {
+    profileSyncSetupCopyBtn.textContent = "Copy Folder Name"; // reset any leftover "Copied!" from a prior open
+    profileSyncSetupDialog.showModal();
+  } else {
+    // <dialog> unsupported but FSA present is not a real browser
+    // combination; rather than dead-end, fall straight through to the
+    // picker so setup still works.
+    runSyncFolderPicker();
+  }
+}
+
+// [PROFILE-SYNC-SETUP] The actual folder-selection path — the SAME setup
+// logic as before this modal existed (picker -> connectNewFolder). Invoked
+// only from the modal's primary button so showDirectoryPicker() keeps its
+// own direct user gesture; never duplicated anywhere else.
+async function runSyncFolderPicker() {
+  let dirHandle;
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+  } catch (error) {
+    if (error && error.name === "AbortError") return; // user closed the picker — not an error
+    profileSyncStatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    return;
+  }
+
+  await profileSync.connectNewFolder(dirHandle);
+}
+
+// Copies the recommended folder name. The name's single source of truth is
+// the modal's inset field (textContent) — never a second literal here — so
+// it can't drift from what the user sees. Failure stays inside the modal:
+// briefly show "Copy failed" and leave the (user-select:all) inset field so
+// the name can still be selected and copied by hand.
+let syncSetupCopyResetTimer = null;
+async function copySyncFolderName() {
+  const name = profileSyncSetupFolderName.textContent.trim();
+
+  let ok = false;
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(name);
+      ok = true;
+    }
+  } catch {
+    ok = false;
+  }
+
+  if (!ok) {
+    // Fallback for a blocked/absent async clipboard. Appended INSIDE the
+    // dialog (not document.body) since a modal dialog makes the rest of the
+    // page inert, and an inert textarea can't be selected/copied.
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = name;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      profileSyncSetupDialog.appendChild(textarea);
+      textarea.select();
+      ok = document.execCommand("copy");
+      textarea.remove();
+    } catch {
+      ok = false;
+    }
+  }
+
+  if (syncSetupCopyResetTimer) clearTimeout(syncSetupCopyResetTimer);
+  profileSyncSetupCopyBtn.textContent = ok ? "Copied!" : "Copy failed";
+  syncSetupCopyResetTimer = setTimeout(() => {
+    profileSyncSetupCopyBtn.textContent = "Copy Folder Name";
+  }, 1800);
+}
+
+profileSyncChooseBtn.addEventListener("click", openSyncSetupModal);
+profileSyncChangeBtn.addEventListener("click", openSyncSetupModal);
+
+profileSyncSetupCopyBtn.addEventListener("click", copySyncFolderName);
+
+// Cancel (and Escape, which fires the dialog's own cancel/close) simply
+// closes — never opens the picker, never touches the current sync
+// relationship.
+profileSyncSetupCancelBtn.addEventListener("click", () => profileSyncSetupDialog.close());
+
+// Close synchronously FIRST, then open the picker in the same task — the
+// click's transient user activation survives a synchronous close(), so
+// showDirectoryPicker()'s user-gesture requirement is still met.
+profileSyncSetupOpenBtn.addEventListener("click", () => {
+  profileSyncSetupDialog.close();
+  runSyncFolderPicker();
+});
+
+profileSyncDisconnectBtn.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Disconnect Profile Sync? Your Profiles remain saved locally — they will just stop syncing to this folder."
+  );
+  if (!confirmed) return;
+  await profileSync.disconnect();
+  profileSyncManagePanel.classList.add("hidden");
+});
+
+profileSyncReconnectBtn.addEventListener("click", () => profileSync.reconnect());
+profileSyncNowBtn.addEventListener("click", () => profileSync.syncNow());
+profileSyncManageToggleBtn.addEventListener("click", () => {
+  const nowOpen = profileSyncManagePanel.classList.toggle("hidden") === false;
+  profileSyncManageToggleBtn.setAttribute("aria-expanded", String(nowOpen));
+});
+profileSyncUseSyncedBtn.addEventListener("click", () => profileSync.resolveConflict("use-synced"));
+profileSyncKeepLocalBtn.addEventListener("click", () => profileSync.resolveConflict("keep-local"));
+
+profileSync.subscribe(renderProfileSync);
+renderProfileSync();
+
 // ---- Boot ---------------------------------------------------------------
 
 // [APP-PREFERENCES] Applies a loaded (already validated/defaulted —
@@ -3155,6 +3410,13 @@ window.addEventListener("beforeunload", () => {
 
   await renderRecentLibraries();
 })();
+
+// [PROFILE-SYNC] Boot-time: silently reconnect to a remembered sync folder
+// if permission is still usable — see ProfileSync#init(). Not awaited here
+// (same pattern as initFsaLibraries above) so a slow permission check never
+// blocks the rest of boot; renderProfileSync() (already subscribed above)
+// picks up whatever state this settles into.
+profileSync.init();
 
 // =============================================================================
 // [P1-DIAGNOSTIC / TEMPORARY] FSA direct-lookup recovery test.
@@ -3427,6 +3689,376 @@ window.__fsaP1Probe = async function (candidateId) {
       report.subtreeTraversalError = error?.name ?? "Unknown";
     }
   }
+
+  return report;
+};
+
+// =============================================================================
+// [TEMP-PROFILE-IDENTITY-AUDIT / TEMPORARY]
+//
+// WHAT: One manually-invoked, read-only DevTools entry point —
+// window.__bgProfileIdentityAudit(options) — that compares the ACTIVE
+// Profile's stored media keys (Favorites / Hidden / tag-assigned) against the
+// CURRENTLY LOADED media collection's keys, reporting aggregate exact-vs-
+// normalized match counts, FSA scan-completeness diagnostics, safe path-shape
+// aggregates, and read-only sync-folder-shape presence flags.
+//
+// WHY: The static audit proved the Profile lookup key is a raw, un-normalized
+// `relativePath` string and that silent FSA under-enumeration is possible, but
+// could NOT prove which effect causes the desktop's visible mismatch: discovery
+// failure (media never scanned) vs identity failure (media scanned, key differs
+// by Unicode/case/separator/root-level). This distinguishes them with direct
+// runtime evidence, on both ChromeOS and Windows, WITHOUT changing behavior.
+//
+// FUTURE / DO-NOT-BREAK: This block is inert unless explicitly called. It must
+// NEVER mutate, persist, sync, normalize, or migrate any record; never call a
+// ProfileStore method that emits (it uses only read accessors); never write
+// IndexedDB or the filesystem; never requestPermission (queryPermission only);
+// and never print raw filenames/paths by default (hashing requires an explicit
+// salt). Remove this entire block, the `__identityAuditLastFsaLoad` variable,
+// and its single capture line in loadFromFsaHandle() once the cross-device
+// cause is proven. Do not build production features on top of it.
+// =============================================================================
+
+// Normalization forms compared. Each is pure and side-effect-free.
+const __iaNFC = (s) => s.normalize("NFC");
+const __iaNFD = (s) => s.normalize("NFD");
+const __iaCI = (s) => s.normalize("NFC").toLowerCase(); // case-insensitive, on an NFC base
+const __iaSlash = (s) => s.normalize("NFC").replace(/\\/g, "/").replace(/\/+/g, "/"); // separator-normalized
+
+// Salted SHA-256 hex (falls back to a non-crypto hash only if SubtleCrypto is
+// unavailable — GitHub Pages is HTTPS so the real digest is used there). Used
+// ONLY when the caller supplies a salt and opts into per-key hashing.
+async function __iaHash(salt, value) {
+  const text = `${salt} ${value}`;
+  if (typeof crypto !== "undefined" && crypto.subtle && typeof crypto.subtle.digest === "function") {
+    const bytes = new TextEncoder().encode(text);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+// Builds Map<normalizedForm, Set<rawLoadedKey>> indexes for each normalization
+// so match lookup AND ambiguity detection (>1 distinct loaded key sharing a
+// normalized form) are both O(1) per stored key.
+function __iaBuildLoadedIndexes(loadedKeys) {
+  const mapOf = (fn) => {
+    const m = new Map();
+    for (const k of loadedKeys) {
+      const key = fn(k);
+      let set = m.get(key);
+      if (!set) m.set(key, (set = new Set()));
+      set.add(k);
+    }
+    return m;
+  };
+  return {
+    exact: new Set(loadedKeys),
+    nfc: mapOf(__iaNFC),
+    nfd: mapOf(__iaNFD),
+    ci: mapOf(__iaCI),
+    slash: mapOf(__iaSlash),
+  };
+}
+
+// Classifies stored keys into mutually-exclusive terminal buckets so the counts
+// partition the total exactly:
+//   exact + nfc + nfd + ci + slash + ambiguous + unmatched === total
+// A normalized match that resolves to MORE THAN ONE distinct loaded key is
+// classified `ambiguous` (never silently attributed to a single file).
+function __iaClassify(storedKeys, idx) {
+  const counts = { exact: 0, nfc: 0, nfd: 0, ci: 0, slash: 0, ambiguous: 0, unmatched: 0, total: storedKeys.length };
+  const stages = [
+    ["nfc", __iaNFC, idx.nfc],
+    ["nfd", __iaNFD, idx.nfd],
+    ["ci", __iaCI, idx.ci],
+    ["slash", __iaSlash, idx.slash],
+  ];
+  const unmatched = [];
+  const ambiguous = [];
+
+  for (const k of storedKeys) {
+    if (idx.exact.has(k)) {
+      counts.exact += 1;
+      continue;
+    }
+    let done = false;
+    for (const [stage, fn, map] of stages) {
+      const set = map.get(fn(k));
+      if (set && set.size) {
+        if (set.size > 1) {
+          counts.ambiguous += 1;
+          ambiguous.push({ stage });
+        } else {
+          counts[stage] += 1;
+        }
+        done = true;
+        break;
+      }
+    }
+    if (!done) {
+      counts.unmatched += 1;
+      unmatched.push(k);
+    }
+  }
+  return { counts, unmatched, ambiguous };
+}
+
+// Distribution/collision aggregates over a key list — no raw paths, only shape.
+function __iaShape(keys) {
+  const depthHistogram = {};
+  let withEdgeWhitespace = 0;
+  let rawNeqNfc = 0;
+  let nfcNeqNfd = 0;
+  const firstSegments = new Set();
+  const ciGroups = new Map();
+  const nfcGroups = new Map();
+
+  for (const k of keys) {
+    const segments = k.split("/");
+    const depth = segments.length;
+    depthHistogram[depth] = (depthHistogram[depth] || 0) + 1;
+    if (segments.some((s) => s !== s.trim())) withEdgeWhitespace += 1;
+    if (k !== __iaNFC(k)) rawNeqNfc += 1;
+    if (__iaNFC(k) !== __iaNFD(k)) nfcNeqNfd += 1;
+    firstSegments.add(segments[0]);
+
+    const ci = __iaCI(k);
+    let ciSet = ciGroups.get(ci);
+    if (!ciSet) ciGroups.set(ci, (ciSet = new Set()));
+    ciSet.add(k);
+
+    const nfc = __iaNFC(k);
+    let nfcSet = nfcGroups.get(nfc);
+    if (!nfcSet) nfcGroups.set(nfc, (nfcSet = new Set()));
+    nfcSet.add(k);
+  }
+
+  const depths = Object.keys(depthHistogram).map(Number);
+  const maxDepth = depths.length ? Math.max(...depths) : 0;
+
+  return {
+    count: keys.length,
+    minDepth: depths.length ? Math.min(...depths) : 0,
+    maxDepth,
+    depthHistogram,
+    keysWithEdgeWhitespaceSegment: withEdgeWhitespace,
+    keysNotAlreadyNFC: rawNeqNfc,
+    keysWhereNFCDiffersFromNFD: nfcNeqNfd,
+    distinctFirstSegments: firstSegments.size,
+    allShareSingleFirstSegment: firstSegments.size === 1 && maxDepth > 1,
+    caseOnlyCollisionGroups: [...ciGroups.values()].filter((s) => s.size > 1).length,
+    nfcCollisionGroups: [...nfcGroups.values()].filter((s) => s.size > 1).length,
+  };
+}
+
+// Read-only sync-folder shape probe (Audit B). Reads the saved sync handle
+// straight from its own IndexedDB store — never through ProfileSync, so no
+// reconcile/write/Auto-Sync is triggered — and uses queryPermission only (never
+// a prompt) plus create:false lookups (never a write). Reports presence flags
+// for the normal vs nested generation without reading Profile contents.
+async function __iaSyncFolderShape() {
+  let loadSyncConfig;
+  try {
+    ({ loadSyncConfig } = await import("./storage/profile-sync-store.js"));
+  } catch (error) {
+    return { available: false, reason: `could not load sync store: ${error && error.name}` };
+  }
+
+  let config;
+  try {
+    config = await loadSyncConfig();
+  } catch (error) {
+    return { available: false, reason: `could not read sync config: ${error && error.name}` };
+  }
+  if (!config || !config.handle) return { available: true, configured: false };
+
+  const handle = config.handle;
+  let permission;
+  try {
+    permission = await handle.queryPermission({ mode: "readwrite" });
+  } catch (error) {
+    return { available: true, configured: true, folderName: config.folderName, permission: "error" };
+  }
+  if (permission !== "granted") {
+    return { available: true, configured: true, folderName: config.folderName, permission };
+  }
+
+  const present = async (fn) => {
+    try {
+      await fn();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const rootManifest = await present(() => handle.getFileHandle("manifest.json"));
+  let rootProfilesDir = null;
+  try {
+    rootProfilesDir = await handle.getDirectoryHandle("profiles");
+  } catch {
+    rootProfilesDir = null;
+  }
+  const nestedProfilesDir = rootProfilesDir ? await present(() => rootProfilesDir.getDirectoryHandle("profiles")) : false;
+  const nestedManifest = rootProfilesDir ? await present(() => rootProfilesDir.getFileHandle("manifest.json")) : false;
+
+  return {
+    available: true,
+    configured: true,
+    folderName: config.folderName,
+    permission,
+    selectedSyncHandleName: handle.name,
+    rootManifestPresent: rootManifest,
+    rootProfilesDirPresent: Boolean(rootProfilesDir),
+    nestedProfilesDirPresent: nestedProfilesDir,
+    nestedManifestPresent: nestedManifest,
+  };
+}
+
+/**
+ * [TEMP-PROFILE-IDENTITY-AUDIT] Manual, read-only entry point.
+ *
+ * Usage (DevTools console, after loading beebeegees via its FSA Recent Library
+ * with BEAST active — do NOT click Sync Now):
+ *
+ *   await __bgProfileIdentityAudit()                      // aggregates only, no paths
+ *   await __bgProfileIdentityAudit({ salt: "team-2026", hashUnmatched: true })
+ *
+ * options:
+ *   - salt: string. Required only if hashUnmatched is true. The SAME salt on
+ *     both devices makes emitted hashes comparable across devices while never
+ *     revealing a filename. Never persisted, never synced.
+ *   - hashUnmatched: false (default). When true (and salt given), emits salted
+ *     SHA-256 hashes of unmatched Favorite keys AND all loaded keys, in both
+ *     raw and NFC forms — so the two devices' sets can be intersected offline
+ *     to separate "never discovered" (raw hashes don't intersect) from
+ *     "discovered but different form" (NFC hashes intersect).
+ *   - includeSyncFolder: true (default). Set false to skip the Audit-B probe.
+ *   - maxHashSamples: 1000 (default) cap on emitted hashes per list.
+ */
+window.__bgProfileIdentityAudit = async function (options = {}) {
+  const { salt = null, hashUnmatched = false, includeSyncFolder = true, maxHashSamples = 1000 } = options;
+
+  // ---- Identity context (all read-only accessors; none emit) --------------
+  const activeProfileId = profile.getProfileId();
+  const activeProfileName = profile.getProfileName();
+  const knownPaths = profile.knownPaths();
+
+  const favoriteKeys = knownPaths.filter((p) => profile.isFavorite(p));
+  const hiddenKeys = knownPaths.filter((p) => profile.isHidden(p));
+  const taggedKeys = knownPaths.filter((p) => profile.getItemTags(p).length > 0);
+  const tagAssignmentTotal = knownPaths.reduce((sum, p) => sum + profile.getItemTags(p).length, 0);
+
+  const loadedKeys = allItems.map((item) => item.relativePath);
+  const loadedIdx = __iaBuildLoadedIndexes(loadedKeys);
+  const loadedShape = __iaShape(loadedKeys);
+
+  const favorites = __iaClassify(favoriteKeys, loadedIdx);
+  const hidden = __iaClassify(hiddenKeys, loadedIdx);
+  const tagged = __iaClassify(taggedKeys, loadedIdx);
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    identity: {
+      activeProfileId,
+      activeProfileName,
+      associatedLibraryName: activeLibraryRecord ? activeLibraryRecord.name : null,
+      currentSourceKind, // "fsa" | "legacy" | "none"
+      fsaRootHandleName: __p1DiagnosticRootName || (activeLibraryRecord ? activeLibraryRecord.name : null),
+      loadedMediaCount: loadedKeys.length,
+      rememberedRecentLibraryItemCount:
+        activeLibraryRecord && typeof activeLibraryRecord.itemCount === "number" ? activeLibraryRecord.itemCount : null,
+      storedProfileItemCount: knownPaths.length,
+      storedFavoriteCount: favoriteKeys.length,
+      storedHiddenCount: hiddenKeys.length,
+      storedTagAssignmentCount: tagAssignmentTotal,
+    },
+    favoriteMatches: favorites.counts,
+    hiddenMatches: hidden.counts,
+    taggedRecordMatches: tagged.counts,
+    loadedPathShape: loadedShape,
+    storedFavoritePathShape: __iaShape(favoriteKeys),
+    fsaCompleteness: __identityAuditLastFsaLoad
+      ? {
+          ...__identityAuditLastFsaLoad,
+          countDriftVsRemembered:
+            __identityAuditLastFsaLoad.rememberedItemCount !== null
+              ? __identityAuditLastFsaLoad.loadedCount - __identityAuditLastFsaLoad.rememberedItemCount
+              : null,
+        }
+      : { note: "No FSA scan has run in this session (load beebeegees via FSA Recent Library first)." },
+    rootLevelEvidence: {
+      fsaRootHandleName: __p1DiagnosticRootName || null,
+      associatedLibraryName: activeLibraryRecord ? activeLibraryRecord.name : null,
+      minSegmentDepth: loadedShape.minDepth,
+      maxSegmentDepth: loadedShape.maxDepth,
+      distinctFirstSegments: loadedShape.distinctFirstSegments,
+      allKeysShareOneCommonFirstSegment: loadedShape.allShareSingleFirstSegment,
+    },
+  };
+
+  // ---- Interpretation hint (NOT a verdict) --------------------------------
+  const fav = favorites.counts;
+  const normalizedRecovered = fav.nfc + fav.nfd + fav.ci + fav.slash;
+  report.interpretationHint =
+    fav.total === 0
+      ? "No stored favorites in the active profile — confirm BEAST is the active profile."
+      : fav.exact >= fav.total - fav.ambiguous
+      ? "Mostly EXACT matches — identity is stable on this device."
+      : normalizedRecovered > 0 && normalizedRecovered >= fav.unmatched
+      ? "Normalized comparisons recover most misses => IDENTITY failure (Unicode/case/separator). Media WAS discovered."
+      : fav.unmatched > normalizedRecovered
+      ? "Most misses survive every safe normalization => likely DISCOVERY failure (media never scanned) OR a genuinely different key. Cross-check fsaCompleteness.countDriftVsRemembered and run hashUnmatched on both devices to confirm."
+      : "Mixed signal — see counts; the cross-device hash comparison may be needed to distinguish.";
+
+  // ---- Optional cross-device hashing (opt-in, salted) ---------------------
+  if (hashUnmatched) {
+    if (!salt || typeof salt !== "string") {
+      report.hashes = { skipped: true, reason: "hashUnmatched requires a non-empty string `salt` (same on both devices)." };
+    } else {
+      const hashList = async (keys, fn) => Promise.all(keys.slice(0, maxHashSamples).map((k) => __iaHash(salt, fn(k))));
+      report.hashes = {
+        note: "Salted SHA-256. Intersect across devices: raw-hash overlap => same discovered file; NFC-hash overlap without raw overlap => same file, different Unicode form.",
+        salted: true,
+        truncatedTo: maxHashSamples,
+        unmatchedFavoritesRaw: await hashList(favorites.unmatched, (s) => s),
+        unmatchedFavoritesNFC: await hashList(favorites.unmatched, __iaNFC),
+        loadedRaw: await hashList(loadedKeys, (s) => s),
+        loadedNFC: await hashList(loadedKeys, __iaNFC),
+      };
+    }
+  }
+
+  // ---- Audit B: read-only sync-folder shape -------------------------------
+  if (includeSyncFolder) {
+    try {
+      report.syncFolderShape = await __iaSyncFolderShape();
+    } catch (error) {
+      report.syncFolderShape = { available: false, reason: String(error && error.name) };
+    }
+  }
+
+  // ---- Console summary (no raw paths) -------------------------------------
+  console.log("%c[bgProfileIdentityAudit] read-only — nothing was modified.", "font-weight:bold");
+  console.log("Identity / context:", report.identity);
+  console.table({
+    Favorites: report.favoriteMatches,
+    Hidden: report.hiddenMatches,
+    "Tagged records": report.taggedRecordMatches,
+  });
+  console.log("FSA completeness:", report.fsaCompleteness);
+  console.log("Loaded path shape:", report.loadedPathShape);
+  console.log("Root-level evidence:", report.rootLevelEvidence);
+  if (report.syncFolderShape) console.log("Sync-folder shape (read-only):", report.syncFolderShape);
+  console.log("%cInterpretation hint: " + report.interpretationHint, "color:#0a7");
+  console.log("Full report object returned — use copy(await __bgProfileIdentityAudit()) or JSON.stringify it.");
 
   return report;
 };
