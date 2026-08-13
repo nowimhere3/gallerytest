@@ -1203,7 +1203,8 @@ hr {
 .ghost-popunder-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 10px 14px;
   min-height: 42px;
 }
 
@@ -1217,7 +1218,7 @@ hr {
 
 .ghost-popunder-row input[type="range"] {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 80px;
 }
 
 #ghost-opacity-label {
@@ -1226,6 +1227,21 @@ hr {
   text-align: right;
   color: var(--text);
   font-size: 0.9rem;
+}
+
+.ghost-popunder-remember {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ghost-popunder-remember input {
+  margin: 0;
 }
 
 .presentation-settings {
