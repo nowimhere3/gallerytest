@@ -205,6 +205,21 @@ let activeLibraryRecord = null;
 // currentLoadIsAssociated()/syncAssociateButtonVisibility() below.
 let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
 
+// [P1-DIAGNOSTIC / TEMPORARY] See the DevTools-callable probe block at the
+// bottom of this file. Holds the most recently loaded FSA root handle (and
+// its name) purely so that probe can walk from it — nothing in production
+// code paths reads these. Safe to delete alongside that block.
+let __p1DiagnosticRootHandle = null;
+let __p1DiagnosticRootName = null;
+// [P1-DIAGNOSTIC / TEMPORARY] Independent snapshots, NOT read from
+// provider.getItems()/fsaProvider.getItems() live — loadFiles() and
+// loadFromFsaHandle() each dispose() the OTHER provider at the start of
+// every load (by design: only one live source at a time), which would
+// otherwise make it impossible to have both sides' data available to
+// compare at once. These snapshots persist across that disposal.
+let __p1LegacySnapshot = [];
+let __p1FsaSnapshot = [];
+
 // [Phase 8.4-2] webkitdirectory carries no durable physical-folder
 // identity on its own — no isSameEntry()-equivalent exists for it. As of
 // Phase 8.4-3, a FOLDER pick (not a bare "Choose Files" multi-select) CAN
@@ -653,6 +668,9 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     }
 
     finishLoadingItems(items);
+    // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
+    // session can dispose() the legacy provider out from under it.
+    __p1LegacySnapshot = [...items];
     // [Phase 8.4-2] Legacy loads participate in the same Associate-button
     // UI as FSA during the current session — see the Core Visibility Rule.
     syncAssociateButtonVisibility();
@@ -694,6 +712,13 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
   isLoadingFiles = true;
+
+  // [P1-DIAGNOSTIC / TEMPORARY] Retains the root handle for the
+  // DevTools-callable probe at the bottom of this file — see that block's
+  // header comment for removal instructions. Not used by any production
+  // code path; safe to delete alongside that block.
+  __p1DiagnosticRootHandle = dirHandle;
+  __p1DiagnosticRootName = dirHandle.name;
 
   // [LIBRARY-PROFILE-ASSOCIATION] Resolved BEFORE any of the staging/UI
   // reset below, so a profile switch (if this library is associated with
@@ -814,6 +839,9 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     }
 
     finishLoadingItems(result.items);
+    // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
+    // session can dispose() the FSA provider out from under it.
+    __p1FsaSnapshot = [...result.items];
 
     if (activeLibraryRecord && activeLibraryRecord.id) {
       try {
@@ -3060,3 +3088,278 @@ window.addEventListener("beforeunload", () => {
 
   await renderRecentLibraries();
 })();
+
+// =============================================================================
+// [P1-DIAGNOSTIC / TEMPORARY] FSA direct-lookup recovery test.
+//
+// WHAT: Two DevTools-callable functions comparing Legacy (webkitdirectory)
+// vs FSA discovery on the CURRENTLY LOADED folder, then probing whether
+// FSA's getDirectoryHandle() can directly resolve a directory FSA's own
+// entries() enumeration omitted.
+// WHY: Determines whether FSA enumeration being incomplete also means FSA
+// lookup is dead-ended, or whether the omitted subtree is still directly
+// addressable — the fork in the road between an FSA-only recovery
+// strategy and needing Legacy-assisted orchestration.
+// FUTURE / DO-NOT-BREAK: This entire block is temporary and additive —
+// nothing in it is called by any production path. Delete this block, the
+// four __p1* variables, and the two snapshot lines (in loadFiles() and
+// loadFromFsaHandle()) once P1 concludes. Never trim/normalize/reconstruct
+// the real relativePath strings this reads from the __p1*Snapshot arrays
+// (not the providers' own .getItems() — see those snapshot vars' own
+// comment for why); they are read once into __p1RealPathsById and never
+// logged.
+//
+// NOTE: loadFiles()/loadFromFsaHandle() each dispose() the OTHER provider
+// at the start of every load, so only ONE of provider/fsaProvider ever has
+// live items at a time — you must load BOTH pickers (either order) before
+// calling __fsaP1FindCandidates(), even though only the most-recently-
+// loaded one's items are visible via .getItems() at any given moment.
+//
+// USAGE (run in the DevTools console, on this app, after loading the SAME
+// folder via BOTH pickers — the Legacy Picker's <input webkitdirectory>,
+// then "Choose Folder" (FSA) — in either order, most-recent load per
+// picker is what's compared):
+//
+//   __fsaP1FindCandidates()       // lists anonymized candidates: D01, D02,
+//                                 // ... (Legacy-only, i.e. FSA-omitted) and
+//                                 // C01, C02, ... (present in both — controls)
+//   __fsaP1Probe('D01')           // runs the direct-lookup probe on one
+//   __fsaP1Probe('C01')           // and a control, for comparison
+// =============================================================================
+
+const __p1RealPathsById = new Map(); // anonymous id -> real relativePath; never logged, never returned
+
+function __p1CodePointMeta(name) {
+  const cps = Array.from(name); // code-point aware, not UTF-16-code-unit aware
+  return {
+    length: cps.length,
+    startsWithAsciiSpace: name.length > 0 && name.charCodeAt(0) === 0x20,
+    endsWithAsciiSpace: name.length > 0 && name.charCodeAt(name.length - 1) === 0x20,
+    firstCodePoint: cps.length ? "U+" + cps[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0") : null,
+    lastCodePoint: cps.length ? "U+" + cps[cps.length - 1].codePointAt(0).toString(16).toUpperCase().padStart(4, "0") : null,
+  };
+}
+
+// All ancestor directory relativePaths implied by a file's relativePath,
+// e.g. "A/B/C.jpg" -> ["A", "A/B"]. Root-level files contribute nothing.
+function __p1DirPrefixesOf(relativePath) {
+  const segments = relativePath.split("/");
+  segments.pop(); // drop the filename itself
+  const prefixes = [];
+  let running = "";
+  for (const segment of segments) {
+    running = running ? `${running}/${segment}` : segment;
+    prefixes.push(running);
+  }
+  return prefixes;
+}
+
+window.__fsaP1FindCandidates = function () {
+  const legacyItems = __p1LegacySnapshot;
+  const fsaItems = __p1FsaSnapshot;
+
+  if (!legacyItems.length || !fsaItems.length) {
+    console.warn(
+      "[P1] Need BOTH a Legacy Picker load and an FSA Choose Folder load of the SAME folder before comparing. " +
+        `Currently: legacy items=${legacyItems.length}, fsa items=${fsaItems.length}.`
+    );
+    return { started: true, completed: false, reason: "missing-comparison-data" };
+  }
+
+  const legacyDirs = new Set();
+  for (const item of legacyItems) for (const p of __p1DirPrefixesOf(item.relativePath)) legacyDirs.add(p);
+
+  const fsaDirs = new Set();
+  for (const item of fsaItems) for (const p of __p1DirPrefixesOf(item.relativePath)) fsaDirs.add(p);
+
+  const omitted = [...legacyDirs].filter((p) => !fsaDirs.has(p));
+  const present = [...legacyDirs].filter((p) => fsaDirs.has(p));
+
+  __p1RealPathsById.clear();
+  const rows = [];
+
+  omitted.forEach((path, i) => {
+    const id = `D${String(i + 1).padStart(2, "0")}`;
+    __p1RealPathsById.set(id, path);
+    const finalSegment = path.split("/").pop();
+    rows.push({ id, kind: "omitted (Legacy-only)", ...__p1CodePointMeta(finalSegment) });
+  });
+
+  // Prefer control candidates that also have edge/internal spaces, so a
+  // parity failure isn't masked by only ever testing plain ASCII names —
+  // but any present-in-both directory is a valid control if none do.
+  const controlPool =
+    present.filter((p) => {
+      const seg = p.split("/").pop();
+      return seg.includes(" ");
+    }).length > 0
+      ? present.filter((p) => p.split("/").pop().includes(" "))
+      : present;
+
+  controlPool.slice(0, 3).forEach((path, i) => {
+    const id = `C${String(i + 1).padStart(2, "0")}`;
+    __p1RealPathsById.set(id, path);
+    const finalSegment = path.split("/").pop();
+    rows.push({ id, kind: "control (present in both)", ...__p1CodePointMeta(finalSegment) });
+  });
+
+  console.log(`[P1] Legacy dirs: ${legacyDirs.size}, FSA dirs: ${fsaDirs.size}, omitted: ${omitted.length}.`);
+  console.table(rows);
+  console.log("[P1] Run __fsaP1Probe('D01') (etc.) next. No real paths were logged above.");
+
+  return { started: true, completed: true, candidateIds: rows.map((r) => r.id) };
+};
+
+async function __p1ResolveAncestors(rootHandle, segments) {
+  let handle = rootHandle;
+  for (const segment of segments) {
+    try {
+      handle = await handle.getDirectoryHandle(segment, { create: false });
+    } catch (error) {
+      return { ok: false, failedAtSegmentIndex: segments.indexOf(segment), errorName: error?.name ?? "Unknown" };
+    }
+  }
+  return { ok: true, handle };
+}
+
+// Minimal recursive counter — deliberately NOT FsaFileProvider (no object
+// URLs, no MediaItem shaping, no batching); this only needs counts to
+// prove the recovered subtree is real and traversable, per the P1 spec.
+async function __p1CountRecursive(dirHandle) {
+  let files = 0;
+  let dirs = 0;
+  for await (const [, handle] of dirHandle.entries()) {
+    if (handle.kind === "directory") {
+      dirs += 1;
+      const nested = await __p1CountRecursive(handle);
+      files += nested.files;
+      dirs += nested.dirs;
+    } else if (handle.kind === "file") {
+      files += 1;
+    }
+  }
+  return { files, dirs };
+}
+
+window.__fsaP1Probe = async function (candidateId) {
+  const report = { candidateId, started: true, completed: false, cancelled: false, exception: null };
+
+  const realPath = __p1RealPathsById.get(candidateId);
+  if (!realPath) {
+    console.warn(`[P1] Unknown candidate id "${candidateId}". Run __fsaP1FindCandidates() first.`);
+    report.completed = false;
+    return report;
+  }
+  if (!__p1DiagnosticRootHandle) {
+    console.warn("[P1] No FSA root handle on record — load a folder via Choose Folder (FSA) first.");
+    report.completed = false;
+    return report;
+  }
+
+  // exactLegacyName is read directly from the untouched relativePath
+  // captured by __fsaP1FindCandidates — never trimmed/normalized here.
+  const segments = realPath.split("/");
+  const exactLegacyName = segments[segments.length - 1];
+  const ancestorSegments = segments.slice(0, -1);
+
+  const integrity = __p1CodePointMeta(exactLegacyName);
+  console.log(`[P1] ${candidateId} exact-name integrity (re-derived fresh, not cached):`, integrity);
+
+  const ancestorResult = await __p1ResolveAncestors(__p1DiagnosticRootHandle, ancestorSegments);
+  if (!ancestorResult.ok) {
+    console.log(
+      `[P1] ${candidateId}: could not resolve to the correct parent handle ` +
+        `(failed at ancestor segment index ${ancestorResult.failedAtSegmentIndex}, ${ancestorResult.errorName}).`
+    );
+    report.completed = true;
+    report.result = "C";
+    report.reason = "ancestor-resolution-failed";
+    return report;
+  }
+  const parentHandle = ancestorResult.handle;
+
+  // Enumeration confirmation, under the SAME parent, via the SAME entries()
+  // method the production FSA walker uses — no sibling names logged.
+  let enumeratedChildren = 0;
+  let presentInEnumeration = false;
+  try {
+    for await (const [name] of parentHandle.entries()) {
+      enumeratedChildren += 1;
+      if (name === exactLegacyName) presentInEnumeration = true;
+    }
+  } catch (error) {
+    report.completed = true;
+    report.result = "C";
+    report.reason = `enumeration-threw: ${error?.name ?? "Unknown"}`;
+    console.log(`[P1] ${candidateId}: enumeration itself threw — cannot trust this run.`, report.reason);
+    return report;
+  }
+  console.log(`[P1] ${candidateId}: enumeratedChildren=${enumeratedChildren}, presentInEnumeration=${presentInEnumeration}`);
+
+  // Direct lookup probe — the primary P1 question.
+  let directLookupResult;
+  try {
+    const handle = await parentHandle.getDirectoryHandle(exactLegacyName, { create: false });
+    directLookupResult = { success: true, kind: handle.kind, handle };
+  } catch (error) {
+    // WHAT: Captures error.message alongside error.name.
+    // WHY: error.name alone (e.g. "TypeError") doesn't distinguish "the
+    // API rejected this name before touching the filesystem" from other
+    // failure modes — the message text does.
+    // FUTURE / DO-NOT-BREAK: n/a — read-only diagnostic output.
+    directLookupResult = {
+      success: false,
+      errorName: error?.name ?? "Unknown",
+      errorMessage: error?.message ?? "(no message)",
+    };
+  }
+
+  report.completed = true;
+  report.enumeration = presentInEnumeration ? "HIT" : "MISS";
+  report.directLookup = directLookupResult.success ? "SUCCESS" : `FAIL (${directLookupResult.errorName})`;
+
+  if (!presentInEnumeration && directLookupResult.success) {
+    report.result = "A";
+  } else if (!presentInEnumeration && !directLookupResult.success) {
+    report.result = "B";
+  } else if (presentInEnumeration && directLookupResult.success) {
+    report.result = "control-parity-confirmed";
+  } else {
+    report.result = "C";
+    report.reason = "enumeration HIT but direct lookup FAILED — inconsistent, needs manual review";
+  }
+
+  console.log(`[P1] ${candidateId}: enumeration=${report.enumeration}, directLookup=${report.directLookup} -> RESULT ${report.result}`);
+  if (!directLookupResult.success) {
+    console.log(`[P1] ${candidateId} error detail: ${directLookupResult.errorName} — "${directLookupResult.errorMessage}"`);
+    report.errorMessage = directLookupResult.errorMessage;
+  }
+
+  if (directLookupResult.success) {
+    try {
+      const immediate = [];
+      for await (const _entry of directLookupResult.handle.entries()) immediate.push(1);
+      const recursive = await __p1CountRecursive(directLookupResult.handle);
+
+      const legacyPrefix = `${realPath}/`;
+      const legacyFilesUnderPath = __p1LegacySnapshot.filter((it) => it.relativePath.startsWith(legacyPrefix)).length;
+      const fsaFilesUnderPathBefore = __p1FsaSnapshot.filter((it) => it.relativePath.startsWith(legacyPrefix)).length;
+
+      report.recoveredImmediateChildren = immediate.length;
+      report.recoveredRecursiveFiles = recursive.files;
+      report.legacyFilesUnderThisPath = legacyFilesUnderPath;
+      report.previouslyAbsentFromFsaScan = legacyFilesUnderPath - fsaFilesUnderPathBefore;
+
+      console.log(
+        `[P1] ${candidateId} recovered subtree — immediateChildren=${immediate.length}, ` +
+          `recursiveFiles=${recursive.files}, legacyFilesUnderThisPath=${legacyFilesUnderPath}, ` +
+          `previouslyAbsentFromFsaScan=${report.previouslyAbsentFromFsaScan}`
+      );
+    } catch (error) {
+      console.log(`[P1] ${candidateId}: recovered handle exists but subtree traversal threw — `, error?.name ?? error);
+      report.subtreeTraversalError = error?.name ?? "Unknown";
+    }
+  }
+
+  return report;
+};
