@@ -268,7 +268,24 @@
           </label>
         </div>
  
+        <!-- [GENERAL-STATUS-UPDATE-CENTER]
+             WHAT: The application-wide Status Update Center. The Status: row
+             shows the latest meaningful event from ANY subsystem (media,
+             folder, Profile, Profile Sync); Selected:/View:/Associated: each
+             keep their own independent responsibility.
+             WHY: Users need one consistent activity display without conflating
+             transient events with selection, view, or Library/Profile
+             association state. All rows share the card's single green
+             ("#00ff00") monospace treatment set on this container so every
+             label, value, and dynamically-inserted message inherits it — never
+             styled per-row, never allowed to fall back to white/grey or another
+             font. See publishStatus() in main.js for the event bridge.
+             FUTURE / DO-NOT-BREAK: New subsystems may publish to Status: via
+             publishStatus(), but must not clear Selected/View/Associated or
+             introduce a second green/font. Keep long names contained inside
+             the border (see .status-box wrapping rules in styles.css). -->
         <div class="status-box">
+          <h3 class="status-center-heading">Status Update Center</h3>
           <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
           <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
           <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
@@ -277,8 +294,8 @@
                is CURRENTLY LOADED — not the globally active profile name.
                WHY: The old association affordance only lived in a button
                that could scroll out of view; this makes the state itself
-               always visible, same green/terminal language as the rest of
-               this box and the Status Update Center.
+               always visible, in the same single green/terminal language as
+               every other row of this Status Update Center.
                FUTURE: Driven entirely by updateAssociatedStatusRow() in
                main.js, itself derived from currentSourceKind/
                activeLibraryRecord — never a separate stored value. Do not

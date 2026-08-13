@@ -697,15 +697,46 @@ button:not(:disabled):hover,
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(9, 16, 29, 0.65);
-  /* [Phase 8.4-2] This box communicates live/current file state, same as
-     the Status Update Center — shares its exact green/monospace treatment
-     for that reason. Styled on the container so both the <strong> labels
-     and the dynamic <span> values inherit it, rather than styling the
-     three value spans individually. */
+  /* [Phase 8.4-2 / GENERAL-STATUS-UPDATE-CENTER] This box IS the application's
+     Status Update Center: the Status: row shows the latest meaningful event
+     from any subsystem, alongside the independent Selected/View/Associated
+     context rows. The single green ("#00ff00") + monospace treatment is set
+     on the container so the heading, every <strong> label, every <span>
+     value, and every dynamically-inserted message inherit it — never styled
+     per-row, never allowed to fall back to white/grey or another font. */
   color: #00ff00;
   font-family: "Courier New", ui-monospace, monospace;
   display: grid;
   gap: 8px;
+  /* [GENERAL-STATUS-UPDATE-CENTER] Containment: keep every label, value,
+     folder name, filename, and dynamically-inserted message inside the
+     border at any sidebar width. box-sizing is already border-box globally.
+     overflow-wrap:anywhere (inherited by every child) breaks unusually long
+     unbroken strings; min-width:0 on the grid children defeats the default
+     min-width:auto that would otherwise let a long token force horizontal
+     overflow past the card edge. */
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* [GENERAL-STATUS-UPDATE-CENTER] Grid children (each Status/Selected/View/
+   Associated row, and the heading) inherit the card's single green +
+   monospace treatment. min-width:0 lets them shrink instead of overflowing;
+   white-space:normal + max-width:100% keep wrapped text within the border. */
+.status-box > * {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.status-center-heading {
+  margin: 0 0 2px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: inherit;
+  font-family: inherit;
 }
 
 .viewer-header {

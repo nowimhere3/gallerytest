@@ -159,6 +159,25 @@ const selectedText = document.getElementById("selected-text");
 const viewModeText = document.getElementById("view-mode-text");
 const associatedText = document.getElementById("associated-text");
 const counterText = document.getElementById("counter-text");
+
+// [GENERAL-STATUS-UPDATE-CENTER]
+// WHAT: Publishes meaningful media, folder, Profile, and Profile Sync activity to the
+// shared Status row while preserving the independent context rows.
+// WHY: Users need one consistent application-wide activity display without conflating
+// transient events with selection, view, or Library/Profile association state.
+// FUTURE / DO-NOT-BREAK: New subsystems may publish status activity here, but must not
+// duplicate their underlying state or clear Selected, View, or Associated. All text
+// must retain the card's shared green typography and remain contained by its border.
+//
+// This is the SINGLE writer of the Status: row — media, folder, Profile, and
+// Profile Sync events all funnel through here so no subsystem writes #status-text
+// directly and none can quietly reintroduce white/grey text or a second font.
+// It deliberately never touches selectedText/viewModeText/associatedText, which
+// keeps each context row independently owned.
+function publishStatus(message) {
+  if (!statusText || !message) return;
+  statusText.textContent = message;
+}
 const galleryCount = document.getElementById("gallery-count");
 
 const viewerPanel = document.getElementById("viewer-panel");
@@ -653,7 +672,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     const items = await provider.loadFromFileList(fileList, {
       batchSize: BATCH_SIZE,
       onProgress: (loaded, totalCount) => {
-        statusText.textContent = `Loading media… ${loaded} / ${totalCount}`;
+        publishStatus(`Loading media… ${loaded} / ${totalCount}`);
       },
     });
 
@@ -748,6 +767,18 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     // a message that should stick around, not the generic status line.
     if (recognizedProfileName) {
       fsaStatusText.textContent = `✓ Recognized this library — Profile: ${recognizedProfileName}.`;
+    }
+
+    // [GENERAL-STATUS-UPDATE-CENTER] Folder/media selection event for the
+    // shared Status: row. Published AFTER finishLoadingItems()' synchronous
+    // render (which set "Media loaded") so it is the latest event. Only names
+    // the folder when the browser actually provided one (a real folder pick);
+    // a plain "Choose Files" selection has no folder root to name — never
+    // invent one. Does not touch Selected/View/Associated.
+    if (isFolderPick) {
+      publishStatus(rootName ? `Media folder loaded — "${rootName}" · Legacy Folder Input` : "Media folder loaded — Legacy Folder Input");
+    } else {
+      publishStatus("Media selected — Legacy File Input");
     }
   } finally {
     isLoadingFiles = false;
@@ -847,7 +878,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   clearViewerNode();
   exitFillMode();
   setLoadingState(true);
-  statusText.textContent = "Scanning folder…";
+  publishStatus("Scanning folder…");
   lastHiddenRelativePath = null;
   syncUndoHideButton();
   // [FSA] Switching TO the FSA path — release whatever the local <input>
@@ -868,7 +899,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     const result = await fsaProvider.loadFromDirectoryHandle(dirHandle, {
       batchSize: BATCH_SIZE,
       onProgress: (loaded) => {
-        statusText.textContent = `Scanning folder… ${loaded} media file${loaded === 1 ? "" : "s"} found so far`;
+        publishStatus(`Scanning folder… ${loaded} media file${loaded === 1 ? "" : "s"} found so far`);
       },
     });
 
@@ -934,6 +965,12 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // edge case (a library that failed to persist never shows the
     // button, since a click would have nothing to associate).
     syncAssociateButtonVisibility();
+
+    // [GENERAL-STATUS-UPDATE-CENTER] Folder selection event for the shared
+    // Status: row. The FSA path always provides a real folder name
+    // (dirHandle.name). Published after the load's synchronous render so it
+    // is the latest event; does not touch Selected/View/Associated.
+    publishStatus(`Media folder loaded — "${dirHandle.name}" · File System Access`);
   } catch (error) {
     console.error("[FSA] Failed to load the selected folder.", error);
     fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
@@ -1227,7 +1264,7 @@ function setLoadingState(isLoading, total) {
   fsaRecentLibrariesEl.classList.toggle("is-loading", isLoading);
 
   if (isLoading) {
-    statusText.textContent = total ? `Loading media… 0 / ${total}` : "Loading media…";
+    publishStatus(total ? `Loading media… 0 / ${total}` : "Loading media…");
   }
 }
 
@@ -1282,7 +1319,26 @@ function handleFavoriteToggle() {
   // subscription set up at boot. It doesn't matter whether the change
   // came from this toggle, an Import, or anything else; there's exactly
   // one place that decides what a profile change means for the UI.
+  // Capture the target BEFORE toggling — in Favorites-only view, unfavoriting
+  // removes it from the visible set and the runtime moves off it, so
+  // getCurrentItem() afterward would point at a different item (mirrors the
+  // hide handler's own "capture first" note).
+  const favItem = runtime.getCurrentItem();
   runtime.toggleFavorite();
+
+  // [GENERAL-STATUS-UPDATE-CENTER] Profile event (#3) for the shared Status:
+  // row. Reads the resulting favorite state straight from the existing
+  // ProfileStore — no second Profile-event system — and reports it against
+  // the active Profile's name. Only touches Status:, never the other context
+  // rows.
+  const favProfileName = profile.getProfileName();
+  if (favItem && favProfileName) {
+    publishStatus(
+      profile.isFavorite(favItem.relativePath)
+        ? `Favorite added to "${favProfileName}"`
+        : `Favorite removed from "${favProfileName}"`
+    );
+  }
 }
 
 function setViewMode(mode) {
@@ -2202,16 +2258,21 @@ function syncControls(state) {
   overlayNextBtn.disabled = !canNavigate;
   overlayHideBtn.disabled = !state.currentItem;
 
+  // [GENERAL-STATUS-UPDATE-CENTER] The media subsystem's contribution to the
+  // shared Status: row — routed through publishStatus() like every other
+  // subsystem, so this reactive re-render republishes "the latest meaningful
+  // event" whenever media state changes, without ever writing #status-text
+  // directly.
   if (hasItems && !canNavigate) {
-    statusText.textContent = "All media is hidden";
+    publishStatus("All media is hidden");
   } else if (state.waitingOnVideo) {
-    statusText.textContent = "Slideshow running (playing video)";
+    publishStatus("Slideshow running (playing video)");
   } else if (state.isPlaying) {
-    statusText.textContent = "Slideshow running";
+    publishStatus("Slideshow running");
   } else if (hasItems) {
-    statusText.textContent = "Media loaded";
+    publishStatus("Media loaded");
   } else {
-    statusText.textContent = "No media loaded";
+    publishStatus("No media loaded");
   }
 
   selectedText.textContent = state.currentItem ? state.currentItem.name : "—";
@@ -2396,6 +2457,12 @@ overlayHideBtn.addEventListener("click", () => {
     lastHiddenRelativePath = item.relativePath;
     syncUndoHideButton();
   }
+
+  // [GENERAL-STATUS-UPDATE-CENTER] Profile event (#3): a hidden-state change
+  // is a Profile mutation. Reported against the active Profile's name; only
+  // touches Status:, never the other context rows.
+  const hideProfileName = profile.getProfileName();
+  if (item && hideProfileName) publishStatus(`Hidden state updated in "${hideProfileName}"`);
 });
 
 overlayUndoHideBtn.addEventListener("click", () => {
@@ -2408,6 +2475,11 @@ overlayUndoHideBtn.addEventListener("click", () => {
 
   lastHiddenRelativePath = null;
   syncUndoHideButton();
+
+  // [GENERAL-STATUS-UPDATE-CENTER] Profile event (#3): restoring a hidden item
+  // is the same Profile mutation as hiding one, reported the same way.
+  const undoProfileName = profile.getProfileName();
+  if (undoProfileName) publishStatus(`Hidden state updated in "${undoProfileName}"`);
 });
 
 overlayPlayBtn.addEventListener("click", () => {
@@ -2923,6 +2995,11 @@ profileSelect.addEventListener("change", async () => {
     renderProfileSelector(); // revert the <select> to the still-active profile
     return;
   }
+
+  // [GENERAL-STATUS-UPDATE-CENTER] Profile event (#3) for the shared Status:
+  // row — the active Profile changed. Uses ProfileStore's existing name; no
+  // new state. Only touches Status:.
+  publishStatus(`Profile updated — "${profile.getProfileName()}"`);
 });
 
 async function createProfileFromInput() {
@@ -2943,6 +3020,9 @@ async function createProfileFromInput() {
 
     profileCreateInput.value = "";
     profileActiveStatusText.textContent = `Created and switched to "${created.name}".`;
+    // [GENERAL-STATUS-UPDATE-CENTER] Profile event (#3): a new Profile became
+    // active. Same shared Status: row, existing ProfileStore name.
+    publishStatus(`Profile updated — "${created.name}"`);
   } catch (error) {
     profileActiveStatusText.textContent = `Could not create profile: ${error.message}`;
   } finally {
@@ -3177,6 +3257,15 @@ function renderProfileSync() {
   }
 
   let line;
+  // [GENERAL-STATUS-UPDATE-CENTER] centerLine mirrors the settled, meaningful
+  // Profile Sync states into the shared Status: row (state #2 and its
+  // error/offline/permission/conflict variants). Left null for the transient
+  // not-configured/checking/syncing states so the general row is not clobbered
+  // with sync noise — this reports the LATEST MEANINGFUL event, and the
+  // dedicated section below remains the permanent source of Profile Sync truth.
+  // Error/offline/permission wording may differ, but the text stays green
+  // because it renders inside the shared card via publishStatus().
+  let centerLine = null;
   switch (status.status) {
     case "not-configured":
       line = "Status: Not configured";
@@ -3186,23 +3275,29 @@ function renderProfileSync() {
       break;
     case "permission-needed":
       line = `Status: Permission needed for "${status.folderName}".`;
+      centerLine = `Permission needed for "${status.folderName}".`;
       break;
     case "syncing":
       line = "Status: Syncing…";
       break;
     case "conflict":
       line = "Profile changed on another device. Choose a version below.";
+      centerLine = "Profile changed on another device. Choose a version below.";
       break;
     case "offline":
       line = `Offline — saved locally. Changes will sync when available.${status.message ? ` (${status.message})` : ""}`;
+      centerLine = line;
       break;
     case "connected":
     default:
       line = `✓ Connected — "${status.folderName}" · Auto Sync: ON · Last sync: ${
         status.lastSyncAt ? formatRelativeTime(status.lastSyncAt) : "just now"
       }`;
+      centerLine = line;
   }
   profileSyncStatusText.textContent = line;
+
+  if (centerLine) publishStatus(centerLine);
 }
 
 // [PROFILE-SYNC-SETUP]
