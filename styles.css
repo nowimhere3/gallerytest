@@ -31,8 +31,18 @@ body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+/* [UI-REDESIGN / Stage 2]
+   WHAT: The page's exterior gutter, 24px -> 18px.
+   WHY: The approved composition asks for a restrained outside gutter
+   (~16-18px at desktop) rather than a banner-sized margin. This is the
+   ONE place that gutter is expressed — it is deliberately not re-added as
+   internal padding on .panel or on the rail's header, which would read as
+   card padding instead of page margin.
+   FUTURE: Stage 6 owns the responsive story. If a phone breakpoint needs
+   a tighter gutter, override this single declaration in that media query
+   rather than introducing a wrapper. */
 body {
-  padding: 24px;
+  padding: 18px;
 }
 
 button,
@@ -45,18 +55,46 @@ input {
   margin: 0 auto;
 }
 
-.topbar {
-  margin-bottom: 20px;
+/* [UI-REDESIGN / Stage 2]
+   WHAT: `.topbar`, `.topbar h1` and `.subtitle` retired with header.topbar
+   itself. Replaced by the rail identity rules below.
+   WHY: All three were dead the moment the element was removed — no other
+   markup carried those classes (checked). See also the retired
+   `.simulated-fullscreen .topbar` rule further down, which existed only to
+   hide this header during Fill Panel.
+   FUTURE: Do not resurrect a top banner to hold a title. Identity lives in
+   the rail; the workspace nav is the only thing above the content. */
+
+/* [UI-REDESIGN / Stage 2]
+   WHAT: The compact [BG] Browser Gallery identity at the top of the rail.
+   WHY: Sized to read as a label, not as a heading — the old 2rem <h1>
+   competed with every real section title on the page. The mark is a
+   bordered monogram rather than an image so the placeholder cannot be
+   mistaken for finished branding.
+   FUTURE: Placeholder. Swapping in real branding is a content change to
+   the two spans; it should not need new layout rules here. */
+.rail-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
-.topbar h1 {
-  margin: 0 0 6px;
-  font-size: 2rem;
+.rail-identity-mark {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--neon-blue-glow);
+  border-radius: 8px;
+  color: var(--neon-blue);
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
 }
 
-.subtitle {
-  margin: 0;
-  color: var(--muted);
+.rail-identity-name {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--text);
 }
 
 .layout {
@@ -89,12 +127,43 @@ input {
   flex-direction: column;
 }
 
-.playback-section {
+/* [UI-REDESIGN / Stage 2]
+   WHAT: The rail's flex order, restated for the approved IA:
+     (unordered, 0) identity, Load Media / Libraries, divider
+     1 Associated Profile summary
+     2 Clear Media
+     3 Live Status
+     4 Slideshow transport      <- temporary, Stage 3 removes
+     5 Playback settings        <- temporary, Stage 3 removes
+   WHY: Libraries -> association -> destructive action -> live state is the
+   approved reading order, and Live Status has to clear the interval and
+   checkbox controls so a large load's progress is visible without
+   scrolling. Transport and Playback settings keep their relative order but
+   are pushed below; the brief keeps them in the rail only until Stage 3.
+   The three moved elements are direct children of .controls-panel now
+   because `order` applies to flex children only.
+   FUTURE: When Stage 3 removes the two sections below, orders 4 and 5 go
+   with them — 1..3 stay as-is. Anything new added to the rail still needs
+   its own explicit `order`, or it silently joins the unordered group at
+   the top. */
+.rail-profile-summary {
   order: 1;
 }
 
-.slideshow-settings-section {
+.clear-media-btn {
   order: 2;
+}
+
+.status-box {
+  order: 3;
+}
+
+.playback-section {
+  order: 4;
+}
+
+.slideshow-settings-section {
+  order: 5;
 }
 
 /* [UI-REDESIGN / Stage 1B]
@@ -264,8 +333,46 @@ input {
   pointer-events: none;
 }
 
+/* [UI-REDESIGN / Stage 2]
+   WHAT: The Associated Profile summary block in the rail.
+   WHY: Reuses .panel's border/radius language at a smaller scale rather
+   than introducing a new card style, and deliberately does NOT reuse the
+   green monospace .status-box treatment — that language means "live file
+   state", and this is durable context about the current library, not a
+   progress readout.
+   FUTURE: Presentation only. If this block ever needs to show more than
+   the label, the value, and the existing shortcut, check the placement
+   rule first — it is a summary, not a Profile manager. */
+.rail-profile-summary {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(9, 16, 29, 0.4);
+}
+
+.rail-profile-summary-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Wraps rather than truncates: a Profile name the user cannot read in full
+   defeats the point of showing the association at all. */
+.rail-profile-summary-value {
+  margin: 0;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 /* [LIBRARY-PROFILE-ASSOCIATION] Deliberately understated — this is an
-   occasional, easy-to-miss-on-purpose affordance, not a primary action. */
+   occasional, easy-to-miss-on-purpose affordance, not a primary action.
+   [UI-REDESIGN / Stage 2] The 8px top margin now separates it from the
+   summary value directly above it instead of from the FSA status line. */
 .fsa-associate-btn {
   width: 100%;
   margin-top: 8px;
@@ -1314,12 +1421,16 @@ hr {
 }
 
 /* Fill Panel / Presentation Mode replaces the ordinary Gallery chrome
-   entirely rather than layering on top of it — the page heading/subtitle
-   live outside .layout entirely, so they need their own rule here rather
-   than being covered by .simulated-fullscreen-layout below. */
-.simulated-fullscreen .topbar {
-  display: none;
-}
+   entirely rather than layering on top of it.
+   [UI-REDESIGN / Stage 2] `.simulated-fullscreen .topbar { display: none }`
+   retired here: it existed solely to hide header.topbar, which no longer
+   exists. The identity that replaced it lives inside .controls-panel, and
+   `.simulated-fullscreen-layout .controls-panel { display: none }` below
+   already hides that whole rail during Fill Panel — so the identity is
+   still correctly suppressed, by the rule that hides its container.
+   FUTURE: Anything added ABOVE .layout would once again sit outside those
+   rules and need its own Fill Panel handling. Prefer not to add anything
+   there. */
 
 .simulated-fullscreen-layout {
   grid-template-columns: 1fr;

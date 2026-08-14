@@ -8,17 +8,32 @@
 </head>
 <body>
   <div class="app-shell">
-    <header class="topbar">
-      <div>
-        <h1>Local Media Gallery</h1>
-        <p class="subtitle">
-          Single-instance slideshow app for loading local media and filling the iframe/panel it runs inside.
-        </p>
-      </div>
-    </header>
- 
+    <!-- [UI-REDESIGN / Stage 2]
+         WHAT: header.topbar (large <h1> title + .subtitle) removed; the
+         app's identity is now the compact [BG] placeholder at the top of
+         the left rail below.
+         WHY: The old topbar spent a full banner of vertical space on text
+         that never changed, above every screen. The rail is where
+         persistent context already lives, so identity belongs there with
+         it. Nothing in main.js ever read the <h1> or .subtitle — verified
+         before removal — so this is presentation only.
+         FUTURE: The mark is a PLACEHOLDER. Replacing it with real branding
+         means swapping the two spans' contents, not reintroducing a
+         topbar. -->
     <main class="layout">
       <section class="panel controls-panel">
+        <!-- [UI-REDESIGN / Stage 2]
+             WHAT: Compact identity placeholder — [BG] Browser Gallery.
+             WHY: Replaces the removed topbar per the approved rail IA.
+             Deliberately no logo asset and no id: this is static
+             decoration, nothing in main.js addresses it.
+             FUTURE: Placeholder only. Do not generate or embed a logo
+             image here without approval. -->
+        <div class="rail-identity">
+          <span class="rail-identity-mark" aria-hidden="true">BG</span>
+          <span class="rail-identity-name">Browser Gallery</span>
+        </div>
+
         <h2>Load Media</h2>
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -65,26 +80,99 @@
              empty. -->
         <div id="fsa-recent-libraries" class="fsa-recent-libraries hidden"></div>
         <p id="fsa-status-text" class="hint" role="status"></p>
-        <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
-             WHAT: One button, shown whenever a library/folder is loaded —
-             reads "Associate with Profile" when the current load has no
-             association yet, "Change Profile" once it does.
-             WHY: Section 5 rule — a wrong association must be fixable
-             without deleting/recreating the library, and there is
-             deliberately no separate second button/UI for that; same
-             control, same click handler, different current state.
-             FUTURE: This is NAVIGATION ONLY — it must never gain its own
-             profile-selection UI. It always defers to the real Profile
-             <details> section (auto-expanded + scrolled into view by this
-             same click handler) for the actual choice. See
-             syncAssociateButtonVisibility()/scrollToProfileSection() in
-             main.js. -->
-        <button id="fsa-associate-btn" class="button-like secondary fsa-associate-btn hidden" type="button" disabled>
-          <span id="fsa-associate-btn-label">Associate with Profile</span>
-        </button>
- 
+
         <hr />
- 
+
+        <!-- [UI-REDESIGN / Stage 2]
+             WHAT: The Associated Profile summary. Both of its live parts are
+             EXISTING elements moved here, not new ones: #associated-text
+             came out of the .status-box below, and #fsa-associate-btn came
+             out of the Libraries block above.
+             WHY: The approved rail IA gives the current library's
+             association its own summary between Libraries and Clear Media,
+             instead of burying the value as a fourth row of the green
+             status box while its only control sat further up. Moving both
+             into one block puts the state and the way to change it in the
+             same place.
+             FUTURE: This block stays a SUMMARY plus the existing
+             navigation shortcut. Do not add a profile <select>, a create
+             field, or any other profile management here — that lives in
+             Settings, and the whole point of the shortcut is to go there.
+             See the button's own note below. -->
+        <div class="rail-profile-summary">
+          <p class="rail-profile-summary-label">Associated Profile</p>
+          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+               WHAT: Live Library<->Profile association state for whatever
+               is CURRENTLY LOADED — not the globally active profile name.
+               WHY: The old association affordance only lived in a button
+               that could scroll out of view; this makes the state itself
+               always visible.
+               [UI-REDESIGN / Stage 2] Moved out of the green .status-box
+               into this summary. The element, its id, and every writer of
+               it are unchanged — only its parent and its styling moved. It
+               is no longer green/monospace because it is no longer one of
+               the live file-state rows; it is the rail's answer to "which
+               Profile owns what I just loaded".
+               FUTURE: Driven entirely by updateAssociatedStatusRow() in
+               main.js, itself derived from currentSourceKind/
+               activeLibraryRecord — never a separate stored value. Do not
+               let this drift out of sync with those; if a new source kind
+               is ever added, update that one function, not this markup. -->
+          <p class="rail-profile-summary-value"><span id="associated-text">—</span></p>
+          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+               WHAT: One button, shown whenever a library/folder is loaded —
+               reads "Associate with Profile" when the current load has no
+               association yet, "Change Profile" once it does.
+               WHY: Section 5 rule — a wrong association must be fixable
+               without deleting/recreating the library, and there is
+               deliberately no separate second button/UI for that; same
+               control, same click handler, different current state.
+               FUTURE: This is NAVIGATION ONLY — it must never gain its own
+               profile-selection UI. It always defers to the real Profile
+               <details> section, which since Stage 1C lives in the Settings
+               workspace: the same click handler now switches to that
+               workspace, expands the section, scrolls to it, and focuses a
+               control inside it. See syncAssociateButtonVisibility()/
+               expandAndScrollToProfileSection() in main.js. -->
+          <button id="fsa-associate-btn" class="button-like secondary fsa-associate-btn hidden" type="button" disabled>
+            <span id="fsa-associate-btn-label">Associate with Profile</span>
+          </button>
+        </div>
+
+        <!-- [UI-REDESIGN / Stage 2]
+             WHAT: Clear Media, moved out of section.playback-section to
+             become a direct child of the rail, with Live Status directly
+             beneath it. Same element, same id, same handler.
+             WHY: Two reasons. It had to leave .playback-section because
+             Stage 3 removes that section entirely and Clear Media stays in
+             the rail. And `order` only applies to flex children, so it has
+             to be a direct child of .controls-panel to be placed here at
+             all.
+             FUTURE: Clear Media is DESTRUCTIVE and stays visually separated
+             from the Libraries controls above it. Do not fold it back into
+             a row with them. -->
+        <button id="clear-btn" class="danger clear-media-btn">Clear Media</button>
+
+        <!-- [UI-REDESIGN / Stage 2]
+             WHAT: Live Status, moved out of section.slideshow-settings-section
+             to sit directly beneath Clear Media. Unchanged apart from its
+             parent and the loss of its fourth row (see the Associated
+             Profile summary above).
+             WHY: The brief's reason is specific — during a large load the
+             progress in #status-text must be watchable without scrolling.
+             Buried at the bottom of the rail under the interval and
+             checkbox controls, it was not. Same `order`-needs-a-direct-
+             child mechanic as Clear Media above.
+             FUTURE: Stage 3 removes the Slideshow/Playback blocks below
+             this; Live Status and Clear Media stay. Keep this box adjacent
+             to Clear Media — the pairing is deliberate, since Clear Media's
+             effect is reported here. -->
+        <div class="status-box">
+          <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
+          <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
+          <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
+        </div>
+
         <section class="playback-section">
         <h2>Slideshow</h2>
  
@@ -94,12 +182,10 @@
           <button id="prev-btn" disabled>Previous</button>
           <button id="next-btn" disabled>Next</button>
         </div>
- 
-        <button id="clear-btn" class="danger clear-media-btn">Clear Media</button>
- 
+
         <hr />
         </section>
- 
+
         <section class="slideshow-settings-section">
  
         <div class="form-row interval-control">
@@ -133,24 +219,6 @@
           </label>
         </div>
  
-        <div class="status-box">
-          <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
-          <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
-          <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
-          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
-               WHAT: Live Library<->Profile association state for whatever
-               is CURRENTLY LOADED — not the globally active profile name.
-               WHY: The old association affordance only lived in a button
-               that could scroll out of view; this makes the state itself
-               always visible, same green/terminal language as the rest of
-               this box and the Status Update Center.
-               FUTURE: Driven entirely by updateAssociatedStatusRow() in
-               main.js, itself derived from currentSourceKind/
-               activeLibraryRecord — never a separate stored value. Do not
-               let this drift out of sync with those; if a new source kind
-               is ever added, update that one function, not this markup. -->
-          <div><strong>Associated:</strong> <span id="associated-text">—</span></div>
-        </div>
         <hr />
         </section>
       </section>
