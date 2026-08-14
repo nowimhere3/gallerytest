@@ -100,39 +100,6 @@
         <hr />
         </section>
  
-        <details class="tags-section">
-        <summary>Tags</summary>
- 
-        <div id="tag-activity-center" class="tag-activity-center" role="status" aria-live="polite" aria-label="Tag Status Update Center">
-          <div id="tag-activity-neutral" class="tag-activity-neutral">Select a tag to view its latest activity.</div>
-          <div id="tag-activity-content" class="hidden">
-            <div class="tag-activity-row">
-              <span id="tag-activity-name" class="tag-activity-value"></span>
-              <span class="tag-activity-description">(last tagged)</span>
-            </div>
-            <!-- [Phase 8.3-2] Built dynamically in main.js — up to three
-                 rows (Shuffle OFF / Shuffle ON / legacy-unknown), each with
-                 its own "Find" action that populates the existing Gallery
-                 Jump input rather than applying a tag filter. See
-                 renderTagActivityCenter() / resumeTagActivityToJump(). -->
-            <div id="tag-activity-rows" class="tag-activity-rows"></div>
-            <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
-          </div>
-        </div>
- 
-        <div class="tag-create-row">
-          <input id="tag-create-input" type="text" placeholder="New tag name" maxlength="40" />
-          <button id="tag-create-btn" class="secondary" type="button">Add</button>
-        </div>
- 
-        <p id="tags-status-text" class="hint" role="status"></p>
- 
-        <div id="tags-empty" class="hint">No tags yet.</div>
-        <div id="tags-grid" class="tags-grid hidden"></div>
-        </details>
- 
-        <hr />
- 
         <details class="profile-section">
         <summary>Profile</summary>
  
@@ -472,9 +439,6 @@
       </section>
       </div>
 
-      <!-- Empty until Stage 1B moves the existing Tags section here intact.
-           Present now, and only now hidden, because of the static-markup
-           contract described on #workspace-gallery above. -->
       <div
         id="workspace-tagging"
         class="workspace-panel"
@@ -482,7 +446,55 @@
         tabindex="0"
         aria-labelledby="workspace-tab-tagging"
         hidden
-      ></div>
+      >
+      <!-- [UI-REDESIGN / Stage 1B]
+           WHAT: The Tags section, moved here intact from the left rail —
+           same elements, same ids, same listeners, same status messages.
+           The <details>/<summary> disclosure was unwrapped to a plain
+           <section>; the heading now reads "Tagging" to match the tab.
+           WHY: This section has no id and no JavaScript reference of any
+           kind — nothing reads or writes its `.open` — so the disclosure
+           was pure chrome. Inside a workspace that exists to show it, a
+           disclosure you must open every time is friction, and removing the
+           <summary> shortens the tab order rather than lengthening it.
+           (details.profile-section is NOT comparable: main.js captures it
+           via querySelector(".profile-section") and sets .open, so it stays
+           a <details> — see Stage 1C.)
+           FUTURE: Keep Gallery's Tag *filter* separate from this Tag
+           *management* surface. They are two containers rendered by two
+           functions (renderTagsFilterGrid / renderTagsGrid) over one
+           ProfileStore; do not merge them or let one render the other. -->
+      <section class="panel tags-section">
+        <h2>Tagging</h2>
+
+        <div id="tag-activity-center" class="tag-activity-center" role="status" aria-live="polite" aria-label="Tag Status Update Center">
+          <div id="tag-activity-neutral" class="tag-activity-neutral">Select a tag to view its latest activity.</div>
+          <div id="tag-activity-content" class="hidden">
+            <div class="tag-activity-row">
+              <span id="tag-activity-name" class="tag-activity-value"></span>
+              <span class="tag-activity-description">(last tagged)</span>
+            </div>
+            <!-- [Phase 8.3-2] Built dynamically in main.js — up to three
+                 rows (Shuffle OFF / Shuffle ON / legacy-unknown), each with
+                 its own "Find" action that populates the existing Gallery
+                 Jump input rather than applying a tag filter. See
+                 renderTagActivityCenter() / resumeTagActivityToJump(). -->
+            <div id="tag-activity-rows" class="tag-activity-rows"></div>
+            <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
+          </div>
+        </div>
+
+        <div class="tag-create-row">
+          <input id="tag-create-input" type="text" placeholder="New tag name" maxlength="40" />
+          <button id="tag-create-btn" class="secondary" type="button">Add</button>
+        </div>
+
+        <p id="tags-status-text" class="hint" role="status"></p>
+
+        <div id="tags-empty" class="hint">No tags yet.</div>
+        <div id="tags-grid" class="tags-grid hidden"></div>
+      </section>
+      </div>
 
       <!-- Empty until Stage 1C adds the Automation Cookbook shell. -->
       <div

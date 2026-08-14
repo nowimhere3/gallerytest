@@ -77,7 +77,8 @@ input {
 
 .controls-panel h2,
 .viewer-panel h2,
-.gallery-panel h2 {
+.gallery-panel h2,
+.tags-section h2 {
   margin-top: 0;
 }
 
@@ -94,34 +95,19 @@ input {
   order: 2;
 }
 
-.tags-section {
-  order: 3;
-}
-
-/* The <hr> between Tags and Profile is a direct flex child of
-   .controls-panel, same as .tags-section/.profile-section. Every other
-   section here gets an explicit `order` — this divider needs one too, or
-   it defaults to order:0 and gets flex-reordered to the very top of the
-   panel (grouped with the other unordered elements), nowhere near Tags or
-   Profile. Tying it to order:3 keeps it in document order right after
-   .tags-section (ties resolve by source order) and still before
-   .profile-section's order:4. Targeted by adjacency so the HTML itself
-   never has to change. */
-.tags-section + hr {
-  order: 3;
-}
-
-.tags-section summary {
-  cursor: pointer;
-  font-size: 1.5em;
-  font-weight: 700;
-  list-style-position: inside;
-}
-
-.tags-section[open] summary {
-  margin-bottom: 16px;
-}
-
+/* [UI-REDESIGN / Stage 1B]
+   WHAT: Four rules retired with the Tags section's move to the Tagging
+   workspace — `.tags-section { order: 3 }`, the `.tags-section + hr`
+   order fix, and the two `summary` rules.
+   WHY: All four only existed to place a <details> among the flex-`order`
+   children of .controls-panel. .tags-section is no longer a child of that
+   panel and no longer has a <summary>, so every one of them was dead. The
+   divider they positioned went with the section: .slideshow-settings-section
+   already ends with its own <hr>, so keeping a second one here would have
+   drawn a double rule above Profile.
+   FUTURE: The rail's remaining sections still depend on explicit `order`.
+   Anything added there needs its own `order`, or it silently jumps to the
+   top of the panel with the other unordered elements. */
 .profile-section {
   order: 4;
 }
@@ -491,6 +477,7 @@ button:not(:disabled):hover,
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 10px;
+  max-width: 520px;
 }
 
 .tag-create-row input[type="text"] {
@@ -707,26 +694,56 @@ button:not(:disabled):hover,
   border-color: transparent;
 }
 
+/* [UI-REDESIGN / Stage 1B]
+   WHAT: The two width-dependent Tags rules, re-tuned for the Tagging
+   workspace. The grid was a hardcoded `1fr 1fr` and the create row was
+   unbounded — both sized for a 340px rail.
+   WHY: The container went from ~300px of usable width to ~1000px. Left
+   alone, two fixed columns became two very wide chips and the "New tag
+   name" field stretched the full panel. This is a width adaptation forced
+   by the move, not a restyle: no ids, no behavior, no markup involved.
+   FUTURE: Stage 5 owns final fidelity here. auto-fill already collapses to
+   one column on narrow viewports, so the ≤520px override below is belt and
+   braces rather than load-bearing. */
 .tags-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 8px;
   margin-top: 4px;
 }
 
+/* [UI-REDESIGN / Stage 1B]
+   WHAT: The pill's inset moved off .tag-chip-row and onto its two children,
+   so the select button (.tag-chip) — not the row's padding — owns every
+   pixel of the pill that is not an action button.
+   WHY: The row is what reads as "the Tag button", but the only element with
+   a click listener is the .tag-chip button, which is content-sized
+   (`padding: 2px 4px`, transparent, no border). The row's 12px left inset,
+   its gap, and the free space `justify-content: space-between` opens up were
+   unowned background: a click there hit the div and did nothing. In the
+   340px rail this was a few pixels wide and went unnoticed; at the Tagging
+   workspace's ~220px+ columns it became most of the pill. Fixed with
+   geometry — `flex: 1` + `align-self: stretch` on the existing button —
+   rather than a new listener on the row, so there is still exactly one
+   click target, one handler, and one keyboard-focusable element per tag.
+   FUTURE: Any control added to .tag-chip-row must carry its own inset the
+   same way. Restoring padding on the row itself re-creates the dead zone. */
 .tag-chip-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  min-height: 40px;
-  padding: 6px 6px 6px 12px;
+  gap: 0;
+  min-height: 42px;
+  padding: 0;
   border-radius: 10px;
   border: 1px solid rgba(70, 130, 255, 0.4);
   background: rgba(30, 60, 140, 0.18);
 }
 
+/* The rename input is a plain flex child with no hit-target duty, so the
+   editing variant keeps the original inset on the row. */
 .tag-chip-row.is-editing {
+  padding: 6px 6px 6px 12px;
   border-color: rgba(70, 130, 255, 0.7);
   background: rgba(30, 60, 140, 0.3);
 }
@@ -740,10 +757,23 @@ button:not(:disabled):hover,
   white-space: nowrap;
 }
 
+/* Fills the pill from its inner left edge to the action cluster, full
+   height. The radius matches the row's inner corners so .is-selected's
+   background tint does not square off the rounded left end. */
+.tag-chip-row > .tag-chip {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 0;
+  padding: 6px 6px 6px 12px;
+  border-radius: 9px 0 0 9px;
+}
+
 .tag-chip-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  padding: 6px 6px 6px 0;
 }
 
 .tag-action-btn {
