@@ -161,6 +161,83 @@ input {
   min-width: 0;
 }
 
+/* [UI-REDESIGN / Stage 1A]
+   WHAT: The workspace shell — the tab bar and the four panels it switches
+   between.
+   WHY: Switching workspaces is a pure visibility change over persistent
+   DOM (see setActiveWorkspace() in main.js), so ALL of the switching lives
+   here in CSS plus one `hidden` attribute. Nothing is rendered, injected,
+   or torn down.
+   FUTURE: Keep `hidden` as the only runtime hook. The app's own `.hidden`
+   class carries `display:none !important` and is already toggled by ~40
+   feature call sites; keeping the two mechanisms separate is what stops a
+   workspace and a feature from fighting over the same element. */
+.workspace-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: rgba(18, 25, 51, 0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow-x: auto;
+}
+
+.workspace-tab {
+  min-height: 40px;
+  padding: 8px 18px;
+  background: transparent;
+  color: var(--muted);
+  border-color: transparent;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.workspace-tab:not(:disabled):hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.workspace-tab[aria-selected="true"] {
+  background: var(--accent);
+  color: #081121;
+  border-color: transparent;
+}
+
+/* Settings is a utility, not a fourth creative workspace — pinned right,
+   and it keeps the muted treatment even while selected so the three real
+   workspaces stay the visual peer group. */
+.workspace-tab-utility {
+  margin-left: auto;
+}
+
+.workspace-tab-utility[aria-selected="true"] {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.workspace-tab:focus-visible,
+.workspace-panel:focus-visible {
+  outline: 2px solid var(--neon-blue);
+  outline-offset: 2px;
+}
+
+.workspace-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* Attribute selectors tie with class selectors on specificity, so this is
+   spelled out rather than relying on `[hidden]`'s UA rule beating
+   `.workspace-panel`'s `display:flex`. */
+.workspace-panel[hidden] {
+  display: none;
+}
+
 .control-stack {
   display: flex;
   flex-direction: column;
@@ -1156,6 +1233,42 @@ hr {
    chrome too, same as the sidebar. */
 .simulated-fullscreen-layout .gallery-panel {
   display: none;
+}
+
+/* [UI-REDESIGN / Stage 1A]
+   WHAT: Extends the two rules above to the new workspace shell — the tab
+   bar and every non-Gallery workspace are ordinary Gallery chrome during
+   Fill Panel, and the Gallery workspace is forced visible even when it is
+   the hidden one.
+   WHY: Presentation Mode is NOT isolated from main.layout. #presentation-
+   controls is a body-level sibling, but the PM *stage* is produced by the
+   three classes enterFillMode() adds to .app-shell / main.layout /
+   #viewer-panel, so every new wrapper inside main.layout must be taught to
+   disappear here or it renders on top of the presentation. Forcing
+   #workspace-gallery visible covers the real case where playback starts
+   with Fill Panel enabled while the user is on Tagging/Settings — without
+   it, PM would show a black screen and no media.
+   FUTURE: Any wrapper added inside main.layout in a later stage needs a
+   line here too. Overriding `hidden` is deliberate and confined to PM:
+   nothing outside this block may override the workspace `hidden` contract,
+   and exiting PM restores the user's actual workspace untouched because no
+   JavaScript state was changed to get here. */
+.simulated-fullscreen-layout .workspace-nav {
+  display: none;
+}
+
+.simulated-fullscreen-layout .workspace-panel {
+  display: none;
+}
+
+.simulated-fullscreen-layout #workspace-gallery,
+.simulated-fullscreen-layout #workspace-gallery[hidden] {
+  display: flex;
+}
+
+.simulated-fullscreen-layout .media-content,
+.simulated-fullscreen-layout #workspace-gallery {
+  gap: 0;
 }
 
 .simulated-fullscreen-viewer {

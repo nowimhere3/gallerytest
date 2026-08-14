@@ -173,6 +173,26 @@ const galleryJumpInput = document.getElementById("gallery-jump-input");
 const galleryJumpModeFindBtn = document.getElementById("gallery-jump-mode-find-btn");
 const galleryJumpModePlayBtn = document.getElementById("gallery-jump-mode-play-btn");
 
+// [UI-REDESIGN / Stage 1A]
+// WHAT: The workspace shell's four tabs and four panels, captured here
+// alongside every other module-scope reference.
+// WHY: These are captured, not queried on demand, for exactly the reason
+// the rest of this block is — every one of them must already exist in
+// index.html when this module parses. That is also why the panels are
+// switched with the `hidden` attribute rather than being created on first
+// activation: a panel built at activation time would leave these consts
+// pointing at nothing, silently.
+// FUTURE: A new workspace adds a static tab + panel to index.html, a pair
+// of captures here, and a row in WORKSPACES below. Nothing else.
+const workspaceTabGalleryBtn = document.getElementById("workspace-tab-gallery");
+const workspaceTabTaggingBtn = document.getElementById("workspace-tab-tagging");
+const workspaceTabCookbookBtn = document.getElementById("workspace-tab-cookbook");
+const workspaceTabSettingsBtn = document.getElementById("workspace-tab-settings");
+const workspaceGalleryPanel = document.getElementById("workspace-gallery");
+const workspaceTaggingPanel = document.getElementById("workspace-tagging");
+const workspaceCookbookPanel = document.getElementById("workspace-cookbook");
+const workspaceSettingsPanel = document.getElementById("workspace-settings");
+
 const presentationControls = document.getElementById("presentation-controls");
 const presentationSettings = document.getElementById("presentation-settings");
 const ghostToggleBtn = document.getElementById("ghost-toggle-btn");
@@ -217,6 +237,89 @@ const automationTimerSecondsValueEl = document.getElementById("automation-timer-
 const automationTimerSecondsDecreaseBtn = document.getElementById("automation-timer-seconds-decrease-btn");
 const automationTimerSecondsIncreaseBtn = document.getElementById("automation-timer-seconds-increase-btn");
 const automationTimerApplyBtn = document.getElementById("automation-timer-apply-btn");
+
+// ---- Workspace shell -------------------------------------------------------
+
+// [UI-REDESIGN / Stage 1A]
+// WHAT: The whole workspace switcher. setActiveWorkspace() does exactly
+// three things — flip `hidden` on the four panels, flip `aria-selected`
+// and roving tabindex on the four tabs, and record which one is active.
+// WHY: It is deliberately this small. Switching workspaces must not reload
+// the library, reset filters, change Profiles, destroy the current item,
+// or stop playback — so this function touches no runtime, filter, profile,
+// or library state and calls no render function. It cannot regress any of
+// those because it never speaks to them. Playback state lives in
+// MediaRuntime, filters in viewMode/typeFilter/activeTagFilters, library
+// identity in currentSourceKind/activeLibraryRecord; none is derived from
+// DOM visibility, and render() keeps arriving via runtime.subscribe(render)
+// while a panel is hidden, so a workspace is already correct when it
+// reappears.
+// FUTURE: Keep this function free of side effects. If a workspace ever
+// needs to refresh on activation, give that workspace its own subscriber
+// rather than growing a render call here — and never swap `hidden` for the
+// app's `.hidden` class, which feature code already owns.
+const WORKSPACES = [
+  { name: "gallery", tab: workspaceTabGalleryBtn, panel: workspaceGalleryPanel },
+  { name: "tagging", tab: workspaceTabTaggingBtn, panel: workspaceTaggingPanel },
+  { name: "cookbook", tab: workspaceTabCookbookBtn, panel: workspaceCookbookPanel },
+  { name: "settings", tab: workspaceTabSettingsBtn, panel: workspaceSettingsPanel },
+];
+
+let activeWorkspace = "gallery";
+
+function setActiveWorkspace(name, { focusTab = false } = {}) {
+  const target = WORKSPACES.find((entry) => entry.name === name);
+  if (!target) return;
+
+  activeWorkspace = target.name;
+
+  WORKSPACES.forEach((entry) => {
+    const isActive = entry === target;
+    entry.panel.hidden = !isActive;
+    entry.tab.setAttribute("aria-selected", isActive ? "true" : "false");
+    // Roving tabindex: the tablist is one Tab stop, arrows move within it.
+    entry.tab.tabIndex = isActive ? 0 : -1;
+  });
+
+  if (focusTab) target.tab.focus();
+}
+
+// [UI-REDESIGN / Stage 1A]
+// WHAT: Brings the Gallery workspace forward before an action that targets
+// an element living inside it.
+// WHY: Some controls outside the Gallery workspace hand work to a control
+// inside it — the Tag Status Update Center's "Find" writes into the
+// Gallery Jump input and focuses it. focus()/scrollIntoView() on a
+// display:none element fail silently, so without this the value would be
+// set somewhere the user cannot see.
+// FUTURE: Any future cross-workspace hand-off must call this (or its
+// equivalent for another workspace) FIRST — never duplicate the target
+// control into the calling workspace to avoid the problem.
+function ensureGalleryWorkspaceVisible() {
+  if (activeWorkspace !== "gallery") setActiveWorkspace("gallery");
+}
+
+WORKSPACES.forEach((entry, index) => {
+  entry.tab.addEventListener("click", () => setActiveWorkspace(entry.name));
+
+  entry.tab.addEventListener("keydown", (event) => {
+    const lastIndex = WORKSPACES.length - 1;
+    let nextIndex = null;
+
+    if (event.key === "ArrowRight") nextIndex = index === lastIndex ? 0 : index + 1;
+    else if (event.key === "ArrowLeft") nextIndex = index === 0 ? lastIndex : index - 1;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = lastIndex;
+
+    if (nextIndex === null) return;
+    event.preventDefault();
+    setActiveWorkspace(WORKSPACES[nextIndex].name, { focusTab: true });
+  });
+});
+
+// Redundant with the static markup (Gallery already ships selected), but
+// explicit so the boot state can never drift from this function's rules.
+setActiveWorkspace("gallery");
 
 // ---- App state -----------------------------------------------------------
 
@@ -2675,6 +2778,12 @@ function formatTagActivityTime(timestamp) {
 // typed value, so nothing extra is needed here for that case.
 function resumeTagActivityToJump(slot) {
   if (!slot) return;
+
+  // [UI-REDESIGN / Stage 1A] The Jump input now lives inside the Gallery
+  // workspace, so bring that workspace forward before writing to it —
+  // scrollIntoView()/focus() are no-ops on a hidden element and this would
+  // otherwise fail silently. Behavior is otherwise unchanged.
+  ensureGalleryWorkspaceVisible();
 
   galleryJumpInput.value = String(slot.position);
   galleryJumpInput.scrollIntoView({ behavior: "smooth", block: "center" });

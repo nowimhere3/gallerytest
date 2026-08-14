@@ -291,6 +291,78 @@
       </section>
  
       <div class="media-content">
+      <!-- [UI-REDESIGN / Stage 1A]
+           WHAT: Primary workspace navigation — Gallery / Tagging /
+           Automations as equal creative workspaces, with Settings pinned
+           far right as a utility rather than a fourth peer tab.
+           WHY: The redesign moves the app from one long scrolling column
+           to task-scoped workspaces; this bar is the single switch between
+           them. Settings is styled apart (margin-left:auto) because rare
+           administration should not read as a creative destination.
+           FUTURE: Adding a workspace means adding BOTH a static <button
+           role="tab"> here AND a static panel below, then extending the
+           WORKSPACES table in main.js — never injecting either at runtime.
+           `Automations` deliberately uses the cookbook-* / workspace-*
+           id namespace: automation-* belongs to Presentation Mode's Loop
+           Automations and must never be shadowed here. -->
+      <nav class="workspace-nav" role="tablist" aria-label="Workspace">
+        <button
+          id="workspace-tab-gallery"
+          class="workspace-tab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="workspace-gallery"
+        >Gallery</button>
+        <button
+          id="workspace-tab-tagging"
+          class="workspace-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspace-tagging"
+          tabindex="-1"
+        >Tagging</button>
+        <button
+          id="workspace-tab-cookbook"
+          class="workspace-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspace-cookbook"
+          tabindex="-1"
+        >Automations</button>
+        <button
+          id="workspace-tab-settings"
+          class="workspace-tab workspace-tab-utility"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspace-settings"
+          tabindex="-1"
+        >⚙ Settings</button>
+      </nav>
+
+      <!-- [UI-REDESIGN / Stage 1A]
+           WHAT: The four workspace panels. All four ship in static markup;
+           only their `hidden` attribute changes at runtime.
+           WHY: src/main.js captures every element it uses as a module-scope
+           const at parse time. A panel created on first activation would
+           make those captures resolve to null, and the failure would be
+           silent. Gallery therefore wraps the EXISTING #viewer-panel and
+           .gallery-panel sections in place — the nodes are re-parented once
+           here, never rebuilt.
+           FUTURE: Stage 1B fills #workspace-tagging, Stage 1C fills
+           #workspace-settings and #workspace-cookbook. Never populate a
+           panel with innerHTML/replaceChildren/replaceWith — move the real
+           element into this markup instead. -->
+      <div
+        id="workspace-gallery"
+        class="workspace-panel workspace-panel-gallery"
+        role="tabpanel"
+        tabindex="0"
+        aria-labelledby="workspace-tab-gallery"
+      >
       <section id="viewer-panel" class="panel viewer-panel">
         <div class="viewer-header">
           <div class="viewer-header-main">
@@ -398,6 +470,39 @@
  
       <div id="gallery-grid" class="gallery-grid hidden"></div>
       </section>
+      </div>
+
+      <!-- Empty until Stage 1B moves the existing Tags section here intact.
+           Present now, and only now hidden, because of the static-markup
+           contract described on #workspace-gallery above. -->
+      <div
+        id="workspace-tagging"
+        class="workspace-panel"
+        role="tabpanel"
+        tabindex="0"
+        aria-labelledby="workspace-tab-tagging"
+        hidden
+      ></div>
+
+      <!-- Empty until Stage 1C adds the Automation Cookbook shell. -->
+      <div
+        id="workspace-cookbook"
+        class="workspace-panel"
+        role="tabpanel"
+        tabindex="0"
+        aria-labelledby="workspace-tab-cookbook"
+        hidden
+      ></div>
+
+      <!-- Empty until Stage 1C moves the existing Profile section here. -->
+      <div
+        id="workspace-settings"
+        class="workspace-panel"
+        role="tabpanel"
+        tabindex="0"
+        aria-labelledby="workspace-tab-settings"
+        hidden
+      ></div>
       </div>
     </main>
   </div>
