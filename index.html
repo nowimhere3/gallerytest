@@ -173,54 +173,20 @@
           <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
         </div>
 
-        <section class="playback-section">
-        <h2>Slideshow</h2>
- 
-        <div class="control-grid playback-grid">
-          <button id="play-btn" disabled>Start</button>
-          <button id="stop-btn" disabled>Stop</button>
-          <button id="prev-btn" disabled>Previous</button>
-          <button id="next-btn" disabled>Next</button>
-        </div>
-
-        <hr />
-        </section>
-
-        <section class="slideshow-settings-section">
- 
-        <div class="form-row interval-control">
-          <label for="interval-input">Interval (seconds)</label>
-          <div class="interval-stepper">
-            <button id="interval-decrease-btn" class="secondary" type="button" aria-label="Decrease interval">−</button>
-            <input id="interval-input" type="number" min="1" max="300" step="1" value="5" />
-            <button id="interval-increase-btn" class="secondary" type="button" aria-label="Increase interval">+</button>
-          </div>
-        </div>
- 
-        <div class="checkbox-stack">
-          <label class="compact-check wide-check">
-            <input id="shuffle-input" type="checkbox" checked />
-            <span>Shuffle</span>
-          </label>
-
-          <label class="compact-check wide-check" title="Show only the first loaded item with each filename and file size">
-            <input id="skip-duplicates-input" type="checkbox" />
-            <span>Skip Duplicates</span>
-          </label>
- 
-          <label class="compact-check wide-check">
-            <input id="loop-input" type="checkbox" checked />
-            <span>Loop Playlist</span>
-          </label>
- 
-          <label class="compact-check wide-check">
-            <input id="fill-input" type="checkbox" checked />
-            <span>Fill Panel</span>
-          </label>
-        </div>
- 
-        <hr />
-        </section>
+        <!-- [UI-REDESIGN / Stage 3]
+             WHAT: section.playback-section (h2 Slideshow + the four
+             transport buttons) and section.slideshow-settings-section (the
+             interval stepper + four checkboxes) both removed from the rail.
+             Their controls were not deleted — every one of them now lives
+             beneath the Player: the transport in .player-transport-row and
+             the settings in #playback-settings-popover.
+             WHY: Stage 2 kept these here on purpose, at flex order 4 and 5,
+             until the Player-side replacements existed and were verified.
+             They do now, so the duplicates go; leaving them would mean two
+             sets of controls writing the same preferences.
+             FUTURE: The rail is now identity, Libraries, association, Clear
+             Media and Live Status — context and destructive actions.
+             Playback controls belong with the Player. -->
       </section>
  
       <div class="media-content">
@@ -315,9 +281,6 @@
                 <button id="type-videos-btn" class="filter-btn" type="button">Videos</button>
               </div>
             </div>
-            <button id="favorite-btn" class="favorite-toggle hidden" type="button" aria-label="Toggle favorite">
-              ♡
-            </button>
             <div class="toolbar-filter-group">
               <span class="toolbar-filter-label">Tags</span>
               <div class="filter-toggle" role="group" aria-label="Tag filter">
@@ -325,7 +288,11 @@
               </div>
             </div>
           </div>
-          <span id="counter-text">0 / 0</span>
+          <!-- [UI-REDESIGN / Stage 3] #favorite-btn and #counter-text both
+               left this header for the transport row beneath the Player —
+               see .player-transport-row below. Favorite is a per-item
+               action and the counter is a position readout; both belong
+               with the transport, not among the library filters. -->
         </div>
  
         <!-- Phase 6.3 — Gallery Tag Filtering. Grows horizontally first
@@ -343,6 +310,171 @@
         </div>
  
         <div id="viewer-stage" class="viewer-stage hidden"></div>
+
+        <!-- [UI-REDESIGN / Stage 3]
+             WHAT: The transport row, directly beneath the Player. Every
+             control in it is an EXISTING element moved here — #favorite-btn
+             and #counter-text from the viewer header above, and #prev-btn /
+             #play-btn / #stop-btn / #next-btn from the rail's now-removed
+             section.playback-section. Only #playback-settings-btn and its
+             popover are new.
+             WHY: These controls act on what is on screen, so they belong
+             under it rather than in a sidebar the eye has to leave the
+             media to reach.
+             The cluster is ordered Favorite - Previous - Start - Stop -
+             Next per the approved composition, which is NOT the order the
+             rail happened to use (Start, Stop, Previous, Next). Start and
+             Stop stay two separate buttons with their established
+             behavior; they are deliberately not merged into one play/pause
+             toggle.
+             FUTURE: This row is hidden during Fill Panel by
+             `.simulated-fullscreen-viewer .player-transport-row`, for the
+             same reason the viewer header is — Presentation Mode ships its
+             own complete toolbar in #presentation-controls. Anything added
+             here needs to be considered against that rule too. -->
+        <div class="player-transport-row">
+          <div class="player-transport-cluster">
+            <button id="favorite-btn" class="favorite-toggle hidden" type="button" aria-label="Toggle favorite">
+              ♡
+            </button>
+            <button id="prev-btn" disabled>Previous</button>
+            <button id="play-btn" disabled>Start</button>
+            <button id="stop-btn" disabled>Stop</button>
+            <button id="next-btn" disabled>Next</button>
+          </div>
+
+          <div class="player-transport-meta">
+            <!-- [UI-REDESIGN / Stage 3]
+                 WHAT: Deliberate entry into Fill Panel / Presentation Mode.
+                 WHY: Replaces the old "Fullscreen / Fill Panel" checkbox,
+                 which made Fill a hidden side effect of pressing Start. An
+                 explicit button means Start just starts, and going
+                 fullscreen is its own decision the user makes when they
+                 want it.
+                 Placed in the right-hand meta group rather than the left
+                 cluster because the approved composition fixes that cluster
+                 as exactly Favorite - Previous - Start - Stop - Next.
+                 FUTURE: Routes through enterFillPanelDeliberately() in
+                 main.js, the SAME path the normal-mode `F` shortcut uses —
+                 that shared path is where the Autoplay on Fill preference
+                 is read. Never call enterFillMode() straight from a new
+                 control or that preference will silently not apply. -->
+            <button
+              id="fill-panel-btn"
+              class="secondary fill-panel-btn"
+              type="button"
+              title="Enter Fill Panel / Presentation Mode"
+              disabled
+            >Fill ⛶</button>
+            <!-- [UI-REDESIGN / Stage 3]
+                 WHAT: Opens the Playback popover below. Reads exactly
+                 "Playback ⚙" in every state.
+                 WHY: The brief is explicit that it must NOT display the
+                 current interval ("7", "7s"). The popover controls
+                 shuffle, duplicates, loop and fill as well, so labelling
+                 it with one of those five values would misdescribe it.
+                 FUTURE: `playback-*` is a fresh id prefix — deliberately
+                 not `automation-*`, which belongs to Presentation Mode's
+                 Loop Automations. Keep new ids in this popover on the
+                 `playback-` prefix. -->
+            <button
+              id="playback-settings-btn"
+              class="secondary playback-settings-btn"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="playback-settings-popover"
+            >Playback ⚙</button>
+            <span id="counter-text">0 / 0</span>
+          </div>
+
+          <!-- [UI-REDESIGN / Stage 3]
+               WHAT: The Playback popover. Its contents are the rail's
+               former Playback settings, moved intact: the interval stepper
+               (#interval-decrease-btn / #interval-input /
+               #interval-increase-btn) and the four checkboxes (#shuffle-input,
+               #skip-duplicates-input, #loop-input, #fill-input).
+               WHY: These are set-once-then-forget preferences, so they cost
+               permanent rail space for very occasional use. Every id,
+               listener and persistence call is unchanged — they already
+               auto-save through savePlaybackPreferences() into the existing
+               IndexedDB store in src/storage/app-preferences.js, and are
+               restored by applyLoadedPreferences() at boot. No new
+               preference storage was introduced for this move.
+               It opens downward over the Gallery grid, never upward over
+               the transport cluster, so the controls the user is most
+               likely to reach for next stay clickable while it is open.
+               FUTURE: Closed by default, and closePlaybackPopover() is the
+               single close path (second click, outside click, Escape,
+               entering Fill Panel). Do not add a second one. -->
+          <div id="playback-settings-popover" class="playback-popover hidden" role="group" aria-labelledby="playback-settings-btn">
+            <div class="form-row interval-control">
+              <label for="interval-input">Interval (seconds)</label>
+              <div class="interval-stepper">
+                <button id="interval-decrease-btn" class="secondary" type="button" aria-label="Decrease interval">−</button>
+                <input id="interval-input" type="number" min="1" max="300" step="1" value="5" />
+                <button id="interval-increase-btn" class="secondary" type="button" aria-label="Increase interval">+</button>
+              </div>
+            </div>
+
+            <div class="checkbox-stack">
+              <label class="compact-check wide-check">
+                <input id="shuffle-input" type="checkbox" checked />
+                <span>Shuffle</span>
+              </label>
+
+              <label class="compact-check wide-check" title="Show only the first loaded item with each filename and file size">
+                <input id="skip-duplicates-input" type="checkbox" />
+                <span>Skip Duplicates</span>
+              </label>
+
+              <label class="compact-check wide-check">
+                <input id="loop-input" type="checkbox" checked />
+                <span>Loop Playlist</span>
+              </label>
+
+              <!-- [UI-REDESIGN / Stage 3]
+                   WHAT: The "Fullscreen / Fill Panel" checkbox (#fill-input)
+                   and its `fillPanel` preference are retired here, replaced
+                   by the explicit `Fill ⛶` button in the transport row.
+                   WHY: As a preference it conflated two things — a stored
+                   setting, and an action. Pressing Start would silently go
+                   fullscreen because of a checkbox ticked days earlier.
+                   Start now just starts; entering Fill is an explicit act.
+                   What survives is the genuinely preference-shaped half of
+                   it: Autoplay on Fill, below.
+                   FUTURE: `fillPanel` is intentionally NOT read or written
+                   any more. Stored records that still carry the key are
+                   harmless — normalizeRecord() drops unknown fields on the
+                   next write, so it retires itself without a migration.
+                   Do not revive the key for a new meaning. -->
+
+              <!-- [UI-REDESIGN / Stage 3]
+                   WHAT: A genuine new preference — whether DELIBERATELY
+                   entering Fill Panel should begin playback when nothing is
+                   currently playing.
+                   WHY: Entering Fill to look at the current image is a
+                   different intent from entering it to run a slideshow, and
+                   until now the two were the same action. Scoped strictly to
+                   deliberate entry: it never makes Fill mode automatic or
+                   persistent during ordinary Start/Space playback, and it
+                   has no effect at all when playback is already running.
+                   Backed by the new `autoplayOnFill` key in
+                   src/storage/app-preferences.js, default ON, saved through
+                   the same savePlaybackPreferences() path as every control
+                   above it. It does NOT reuse `fillPanel`.
+                   FUTURE: If a dedicated Fill entry control is added later,
+                   it must route through the same shared entry path this
+                   preference is read in — see enterFillPanelDeliberately()
+                   in main.js — rather than calling enterFillMode() itself,
+                   or this setting will silently not apply to it. -->
+              <label class="compact-check wide-check" title="Start playback automatically when you deliberately enter Fill Panel">
+                <input id="autoplay-on-fill-input" type="checkbox" checked />
+                <span>Autoplay on Fill</span>
+              </label>
+            </div>
+          </div>
+        </div>
       </section>
  
       <section class="panel gallery-panel">

@@ -19,7 +19,24 @@ const DEFAULT_PLAYBACK = {
   shuffle: true,
   skipDuplicates: false,
   loopPlaylist: true,
-  fillPanel: true,
+  // [UI-REDESIGN / Stage 3] `fillPanel: true` retired with the checkbox it
+  // backed. Deliberately not replaced in place: the setting it represented
+  // ("Start should also go fullscreen") is now the explicit `Fill ⛶` button,
+  // which is an action, not something to remember. Records saved earlier may
+  // still carry a `fillPanel` key; normalizeRecord() below simply stops
+  // copying it forward, so it disappears on the next write with no migration
+  // and no data loss for anything else on the record.
+  //
+  // Whether deliberately entering Fill Panel should
+  // start playback when nothing is playing. Default ON.
+  //
+  // Additive by design: normalizeRecord() below defaults every field
+  // individually, so a record saved before this key existed simply reads
+  // `undefined` here and picks up this default. DATABASE_VERSION is
+  // deliberately NOT bumped — the object store's shape has not changed, only
+  // the record's, and records are reshaped on every read. There is no
+  // migration to run and nothing is rewritten or discarded.
+  autoplayOnFill: true,
 };
 
 const DEFAULT_PRESENTATION = {
@@ -103,7 +120,11 @@ function normalizeRecord(raw) {
       shuffle: bool(playbackSource.shuffle, DEFAULT_PLAYBACK.shuffle),
       skipDuplicates: bool(playbackSource.skipDuplicates, DEFAULT_PLAYBACK.skipDuplicates),
       loopPlaylist: bool(playbackSource.loopPlaylist, DEFAULT_PLAYBACK.loopPlaylist),
-      fillPanel: bool(playbackSource.fillPanel, DEFAULT_PLAYBACK.fillPanel),
+      // [UI-REDESIGN / Stage 3] `fillPanel` is intentionally absent — see
+      // DEFAULT_PLAYBACK above. This function is documented as the single
+      // place that shapes what gets written back, so omitting it here is
+      // exactly how a retired key stops round-tripping.
+      autoplayOnFill: bool(playbackSource.autoplayOnFill, DEFAULT_PLAYBACK.autoplayOnFill),
     },
     presentation: {
       rememberGhostOpacity: bool(presentationSource.rememberGhostOpacity, DEFAULT_PRESENTATION.rememberGhostOpacity),

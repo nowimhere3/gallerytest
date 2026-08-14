@@ -83,7 +83,16 @@ const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
 const videoLoopControl = document.getElementById("video-loop-control");
-const fillInput = document.getElementById("fill-input");
+// [UI-REDESIGN / Stage 3] #fill-input retired — see index.html. Fill is now
+// the explicit #fill-panel-btn action plus this preference.
+const autoplayOnFillInput = document.getElementById("autoplay-on-fill-input");
+const fillPanelBtn = document.getElementById("fill-panel-btn");
+
+// [UI-REDESIGN / Stage 3] The Playback popover's own two elements. The
+// controls INSIDE the popover are the same ones captured just above — they
+// moved parents, not identities, so nothing else in this file changed.
+const playbackSettingsBtn = document.getElementById("playback-settings-btn");
+const playbackSettingsPopover = document.getElementById("playback-settings-popover");
 
 const allMediaBtn = document.getElementById("all-media-btn");
 const favoritesOnlyBtn = document.getElementById("favorites-only-btn");
@@ -1354,6 +1363,14 @@ function setLoadingState(isLoading, total) {
 }
 
 function reloadRuntime({ preserveId, keepPlaying, randomizeInitial } = {}) {
+  // [UI-REDESIGN / Stage 3 fix] Any full reload supersedes a deferred one —
+  // a View switch, Type switch or fresh load has already rebuilt the list
+  // from current filters, so a leftover deferred index would clamp against
+  // the wrong sequence later. Cleared centrally here rather than at each
+  // call site so no future caller can forget.
+  pendingFilterReloadIndex = null;
+  pendingFilterReloadItemId = null;
+
   const wasPlaying = keepPlaying ?? runtime.getState().isPlaying;
   const visible = getVisibleItems();
 
@@ -1405,6 +1422,91 @@ function handleFavoriteToggle() {
   // came from this toggle, an Import, or anything else; there's exactly
   // one place that decides what a profile change means for the UI.
   runtime.toggleFavorite();
+}
+
+// [UI-REDESIGN / Stage 3 fix] Deferred-reload state for the one case where
+// rebuilding the runtime list immediately would yank the media out from
+// under the user: the CURRENT item dropping out of the active filter
+// because of a change the user just made to that same item (un-favoriting
+// it while Favorites is the active view; likewise untagging it under an
+// active Tag filter).
+//
+// Holds the index the item occupied in the list it was removed from, or
+// null when nothing is deferred. The index is what we want for the manual
+// case: the item is gone from the filtered sequence, so what is worth
+// preserving is its POSITION — where the user was — not the item itself.
+let pendingFilterReloadIndex = null;
+
+// The dropped item's id, tracked alongside the index purely so the runtime
+// subscriber below can tell "still sitting on the dropped item" apart from
+// "the slideshow has moved on by itself". Not a second source of truth for
+// favorite state — it is only ever compared, never read for meaning.
+let pendingFilterReloadItemId = null;
+
+// Applies a deferred reload, if one is pending, immediately before the user
+// navigates. Called from the Previous/Next paths only: the reload is what
+// makes the removed item actually leave the sequence, and doing it at the
+// moment of navigation is what keeps the un-favorite itself from moving the
+// player. The clamp lands the user where the removed item used to be rather
+// than at the start of the list, so Next/Previous continues from where they
+// were reading.
+function flushPendingFilterReload() {
+  if (pendingFilterReloadIndex === null) return;
+
+  // Read before reloadRuntime(), which clears this by design (see its own
+  // note) — otherwise the clamp below would have nothing to clamp.
+  const previousIndex = pendingFilterReloadIndex;
+  reloadRuntime({ keepPlaying: runtime.getState().isPlaying });
+
+  const { total } = runtime.getState();
+  if (total) runtime.setCurrentIndex(Math.min(previousIndex, total - 1));
+}
+
+// [UI-REDESIGN / Stage 3 fix] The automatic counterpart to the manual flush
+// above, for when the SLIDESHOW moves off the dropped item on its own — the
+// interval timer for images, or a video's own "ended" event. Both advance
+// inside MediaRuntime by calling next() directly, so main.js cannot get in
+// front of them; this reacts to the state they emit instead.
+//
+// The distinction that makes that safe: while the player is still sitting
+// on the dropped item, nothing happens — that is the whole point of
+// deferring, and it is what keeps the item on screen when the user
+// un-favorites it. The moment the current item is a DIFFERENT one, the
+// deferral has served its purpose and the list is rebuilt immediately,
+// which is what drops the un-favorited item out of the sequence for good.
+// It cannot be reached or played again after that.
+//
+// preserveId keeps whatever the slideshow just advanced TO — that item is
+// still a genuine match for the active filter, so the rebuild must not move
+// off it. The manual path deliberately clamps by index instead, because
+// there the current item is the dropped one and has no place in the new
+// list at all.
+//
+// No recursion: reloadRuntime() clears the pending state before it emits,
+// so the re-entrant call this triggers returns at the first line.
+function handlePendingFilterReloadOnAdvance(state) {
+  if (pendingFilterReloadIndex === null) return;
+  const current = state.currentItem;
+  if (!current) return;
+  if (current.id === pendingFilterReloadItemId) return;
+
+  reloadRuntime({ preserveId: current.id, keepPlaying: state.isPlaying });
+}
+
+// [UI-REDESIGN / Stage 3 fix] The single Previous/Next path. The transport
+// buttons and the keyboard shortcuts both route through these so they can
+// never diverge — the shortcuts are a second way to trigger the existing
+// action, not a second implementation of it.
+function goToPreviousMedia() {
+  handleManualNavigationLoopReset();
+  flushPendingFilterReload();
+  runtime.previous();
+}
+
+function goToNextMedia() {
+  handleManualNavigationLoopReset();
+  flushPendingFilterReload();
+  runtime.next();
 }
 
 function setViewMode(mode) {
@@ -1490,6 +1592,76 @@ function toggleTagsFilterPanel() {
     tagsFilterPanel.classList.contains("hidden") ? "false" : "true"
   );
 }
+
+// ---- Playback popover ---------------------------------------------------
+//
+// [UI-REDESIGN / Stage 3]
+// WHAT: Open/close for #playback-settings-popover, which holds the interval
+// stepper and the four playback checkboxes that used to sit permanently in
+// the rail.
+// WHY: Deliberately thin. The popover only shows and hides existing
+// controls — it does not own, mirror, validate or persist any of their
+// values. Each control still handles its own `change` event and its own
+// savePlaybackPreferences() call exactly as it did in the rail, so opening
+// or closing this popover can never itself change a preference.
+// FUTURE: closePlaybackPopover() is the ONLY close path — second click,
+// outside click, Escape, and entering Fill Panel all route through it. If a
+// new way to dismiss it is ever needed, call this rather than hiding the
+// element directly, or aria-expanded will silently go stale.
+function isPlaybackPopoverOpen() {
+  return !playbackSettingsPopover.classList.contains("hidden");
+}
+
+function openPlaybackPopover() {
+  playbackSettingsPopover.classList.remove("hidden");
+  playbackSettingsBtn.setAttribute("aria-expanded", "true");
+}
+
+// `returnFocus` is for the keyboard path only: Escape must put focus back on
+// the button that opened the popover, or a keyboard user is dropped at the
+// top of the document. An outside CLICK must not steal focus back, because
+// the click has already moved focus somewhere the user chose.
+function closePlaybackPopover({ returnFocus = false } = {}) {
+  if (!isPlaybackPopoverOpen()) return;
+  playbackSettingsPopover.classList.add("hidden");
+  playbackSettingsBtn.setAttribute("aria-expanded", "false");
+  if (returnFocus) playbackSettingsBtn.focus();
+}
+
+function togglePlaybackPopover() {
+  if (isPlaybackPopoverOpen()) {
+    closePlaybackPopover();
+  } else {
+    openPlaybackPopover();
+  }
+}
+
+playbackSettingsBtn.addEventListener("click", (event) => {
+  // Without this the same click continues to the document listener below,
+  // which would immediately read it as an "outside" click and close what
+  // this click just opened.
+  event.stopPropagation();
+  togglePlaybackPopover();
+});
+
+// Outside-click close. Bound once at module scope, and cheap when closed:
+// isPlaybackPopoverOpen() short-circuits before any DOM walking.
+document.addEventListener("click", (event) => {
+  if (!isPlaybackPopoverOpen()) return;
+  if (playbackSettingsPopover.contains(event.target)) return;
+  closePlaybackPopover();
+});
+
+// Escape closes and returns focus to the trigger. This runs alongside
+// handlePresentationKeydown(), which ignores every key unless Fill Panel is
+// active — and entering Fill Panel closes this popover — so the two can
+// never both act on one Escape.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!isPlaybackPopoverOpen()) return;
+  event.preventDefault();
+  closePlaybackPopover({ returnFocus: true });
+});
 
 function syncVideoLoopControl() {
   const enabled = videoLoopInput.checked;
@@ -1713,6 +1885,12 @@ function enterFillMode() {
   if (fillModeActive) return;
 
   fillModeActive = true;
+  // [UI-REDESIGN / Stage 3] The transport row and its popover are hidden by
+  // CSS during Fill Panel, but a popover left open would come back open on
+  // exit, with focus having been somewhere invisible in between. Closing it
+  // here keeps aria-expanded honest and matches how exitFillMode() closes
+  // the ghost popunder and the automation panel.
+  closePlaybackPopover();
   appShell.classList.add("simulated-fullscreen");
   layoutEl.classList.add("simulated-fullscreen-layout");
   viewerPanel.classList.add("simulated-fullscreen-viewer");
@@ -1722,10 +1900,18 @@ function enterFillMode() {
 function exitFillMode() {
   if (!fillModeActive) return;
 
-  // Leaving Presentation is also an explicit end to its playback session.
-  // MediaRuntime owns the timer and playing state, so use its established
-  // stop path rather than keeping any presentation-specific playback state.
-  runtime.stop();
+  // [UI-REDESIGN / Stage 3] The unconditional `runtime.stop()` here is
+  // retired. It previously treated leaving Presentation as an explicit end
+  // to the playback session; exiting Fill now PRESERVES playback state, so a
+  // slideshow running in Fill keeps running in the ordinary Player and a
+  // paused one stays paused.
+  //
+  // This is a deliberate change to long-standing Presentation Mode exit
+  // behavior, made together with the `Fill ⛶` / Autoplay on Fill work:
+  // entering Fill is no longer a mode you commit a playback session to, so
+  // leaving it should not end one. MediaRuntime still owns the timer and the
+  // playing state — nothing presentation-specific is tracked here either
+  // way; the difference is only that we no longer reach for its stop path.
   fillModeActive = false;
   appShell.classList.remove("simulated-fullscreen");
   layoutEl.classList.remove("simulated-fullscreen-layout");
@@ -1753,6 +1939,39 @@ function closeGhostPopunder() {
   ghostPopunder.classList.add("hidden");
   ghostToggleBtn.classList.remove("is-open");
   ghostToggleBtn.setAttribute("aria-expanded", "false");
+}
+
+// [UI-REDESIGN / Stage 3 fix] Closes the innermost open PM pop-out and
+// reports whether it closed anything, so a caller can treat "a panel was
+// open" and "nothing was open" as different outcomes.
+//
+// The order mirrors how these panels actually nest at runtime rather than
+// their markup order. #ghost-popunder is opened by the 👻 button that lives
+// inside the settings row, so it is innermost and must close first.
+// #automation-panel and #presentation-settings are mutually exclusive with
+// each other — see overlaySettingsBtn/overlayAutomationBtn, which each close
+// the other on open ("Only one pop-out panel makes sense open at a time") —
+// so their relative order here is immaterial; at most one is ever open.
+//
+// Each panel is closed through its own established close path, never by
+// hiding the element directly, so aria-expanded and the toggle buttons'
+// is-open styling stay correct. #presentation-settings is the one panel with
+// no close helper of its own — its own toggle handler hides it inline the
+// same way.
+function closeTopmostPresentationPanel() {
+  if (!ghostPopunder.classList.contains("hidden")) {
+    closeGhostPopunder();
+    return true;
+  }
+  if (!automationPanel.classList.contains("hidden")) {
+    closeAutomationEditor();
+    return true;
+  }
+  if (!presentationSettings.classList.contains("hidden")) {
+    presentationSettings.classList.add("hidden");
+    return true;
+  }
+  return false;
 }
 
 function toggleGhostPopunder() {
@@ -2320,6 +2539,11 @@ function syncControls(state) {
   stopBtn.disabled = !state.isPlaying;
   clearBtn.disabled = isLoadingFiles || !allItems.length;
 
+  // [UI-REDESIGN / Stage 3] Nothing to show fullscreen without a current
+  // item — the same condition the `F` shortcut checks, kept here so the
+  // button and the shortcut agree about when Fill is available.
+  fillPanelBtn.disabled = !state.currentItem;
+
   overlayPrevBtn.disabled = !canNavigate;
   overlayNextBtn.disabled = !canNavigate;
   overlayHideBtn.disabled = !state.currentItem;
@@ -2428,13 +2652,18 @@ loopInput.addEventListener("change", () => {
 
 videoLoopInput.addEventListener("change", syncVideoLoopControl);
 
-fillInput.addEventListener("change", () => {
-  if (fillInput.checked && runtime.getState().isPlaying) {
-    enterFillMode();
-  } else if (!fillInput.checked) {
-    exitFillMode();
-  }
-  savePlaybackPreferences({ fillPanel: fillInput.checked });
+// [UI-REDESIGN / Stage 3] The #fill-input change listener is retired with
+// the checkbox. It was the mechanism that made Fill a side effect of a
+// stored setting — entering on tick-while-playing, exiting on untick. Fill
+// is now entered only by an explicit act (#fill-panel-btn or the `F`
+// shortcut) and left only by an explicit act (Escape or the PM toolbar).
+
+// [UI-REDESIGN / Stage 3] Pure preference — read at the moment of
+// deliberate Fill entry (see enterFillPanelDeliberately) and never acted on
+// here, so ticking it does not itself enter Fill, start playback, or change
+// anything on screen.
+autoplayOnFillInput.addEventListener("change", () => {
+  savePlaybackPreferences({ autoplayOnFill: autoplayOnFillInput.checked });
 });
 
 allMediaBtn.addEventListener("click", () => setViewMode("all"));
@@ -2446,21 +2675,67 @@ typeVideosBtn.addEventListener("click", () => setTypeFilter("video"));
 
 tagsFilterToggleBtn.addEventListener("click", () => toggleTagsFilterPanel());
 
-prevBtn.addEventListener("click", () => {
-  handleManualNavigationLoopReset();
-  runtime.previous();
-});
-nextBtn.addEventListener("click", () => {
-  handleManualNavigationLoopReset();
-  runtime.next();
-});
+prevBtn.addEventListener("click", () => goToPreviousMedia());
+nextBtn.addEventListener("click", () => goToNextMedia());
 
-playBtn.addEventListener("click", () => {
+// [UI-REDESIGN / Stage 3] The ordinary Player's single "start" path, shared
+// by the Start button and the Space shortcut so the two can never diverge.
+//
+// It is now just runtime.play(). The `if (fillInput.checked) enterFillMode()`
+// half was retired with the checkbox: Start starts playback and nothing
+// else. Going fullscreen is the `Fill ⛶` button's job, and Autoplay on Fill
+// covers the reverse direction — entering Fill and wanting playback to
+// begin.
+function startPlaybackFromTransport() {
   runtime.play();
-  if (fillInput.checked) {
-    enterFillMode();
+}
+
+// The ordinary Player's Space toggle. Deliberately NOT togglePlay(), which
+// PM's own Space uses and which must keep going straight to the runtime —
+// once PM is up, entering it again is meaningless and its keyboard behavior
+// is established. Stopping is identical in both modes; only starting
+// differs.
+function toggleTransportPlayback() {
+  if (runtime.getState().isPlaying) {
+    runtime.stop();
+  } else {
+    startPlaybackFromTransport();
   }
-});
+}
+
+// [UI-REDESIGN / Stage 3] THE shared path for deliberately entering Fill
+// Panel — as opposed to sliding into it as a side effect of pressing Start
+// with Fullscreen / Fill Panel ticked, which is a different intent and
+// deliberately does NOT come through here.
+//
+// Both deliberate-entry controls — the `Fill ⛶` button and the normal-mode
+// `F` shortcut — call THIS. Any future control meaning "go fullscreen now"
+// must too, rather than enterFillMode() directly, or the Autoplay on Fill
+// preference will silently not apply to it.
+//
+// enterFillMode() no-ops if PM is already up and does not touch playback
+// state, so it is safe regardless of what is running.
+//
+// Autoplay then applies to exactly one case: stopped, with the preference
+// on. `wasPlaying` is sampled BEFORE entering and checked first, so a
+// running slideshow is returned from untouched — entering Fill can never
+// restart, reseek or reset it, whatever this preference says. Stopped with
+// the preference off falls through to neither branch and stays paused,
+// showing the current item and the PM toolbar.
+function enterFillPanelDeliberately() {
+  const wasPlaying = runtime.getState().isPlaying;
+
+  enterFillMode();
+
+  if (wasPlaying) return;
+  if (!autoplayOnFillInput.checked) return;
+  runtime.play();
+}
+
+playBtn.addEventListener("click", () => startPlaybackFromTransport());
+
+// [UI-REDESIGN / Stage 3] Same shared entry path as the `F` shortcut.
+fillPanelBtn.addEventListener("click", () => enterFillPanelDeliberately());
 
 stopBtn.addEventListener("click", () => runtime.stop());
 
@@ -2730,12 +3005,245 @@ function handlePresentationKeydown(event) {
       event.preventDefault();
       togglePlay();
       break;
-    default:
+    default: {
+      // [UI-REDESIGN / Stage 3] The two letter shortcuts, mirroring the
+      // ordinary Player's: F toggles Fill (here, that means EXIT), and L is
+      // Favorite. Both keys mean the same thing in both modes — F is
+      // "toggle fullscreen", L is "favorite this" — so there is nothing to
+      // remember about which mode you are in.
+      //
+      // These guards live HERE rather than at the top of this function on
+      // purpose: PM's existing Escape/Arrow/Space branches have never had
+      // them, and hoisting them would change established PM keyboard
+      // behavior. They apply to the letter keys only.
+      if (event.repeat) break;
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) break;
+
+      const key = event.key.toLowerCase();
+
+      if (key === "f") {
+        // ROOT CAUSE of the reported regression, and why there is
+        // deliberately NO focused-control guard on this branch:
+        // isKeyboardFocusedControl() tests :focus-visible, and that state is
+        // not fixed at focus time — the browser re-evaluates it from recent
+        // input modality. Clicking ❤️ or a Tag control leaves that button
+        // focused; the moment the user then touches the keyboard, the
+        // focused button starts matching :focus-visible and the guard began
+        // swallowing F permanently. The exit became unreachable without
+        // first clicking somewhere neutral.
+        //
+        // Inside PM, F and Escape are the same command: get me out. Escape
+        // has never consulted focus beyond the typing guard, and F must not
+        // either. The isTypingTarget() check above is the ONLY guard — so F
+        // still types a plain "f" into the tag-name field, an input, a
+        // textarea, a select or any contenteditable, and exits from
+        // everywhere else including an ordinary focused PM button.
+        //
+        // Layered, like a back button: one open PM pop-out closes on the
+        // first press and Fill survives; with nothing open, the next press
+        // exits. This is what makes F usable while the Tags row is up
+        // without it being a trapdoor straight out of Presentation.
+        //
+        // preventDefault() is unconditional because F is always handled here
+        // outside text entry — and it is what tells handleTransportKeydown
+        // (which sees this same event) to keep its hands off, so exiting
+        // cannot immediately re-enter.
+        //
+        // The exit itself is the same exitFillMode() the Escape branch above
+        // and the PM Exit button both call — not a second implementation.
+        // Playback state is preserved on the way out for all three.
+        event.preventDefault();
+        if (closeTopmostPresentationPanel()) break;
+        exitFillMode();
+        break;
+      }
+
+      if (key === "l") {
+        // Favorite keeps the focused-control guard it was approved with: it
+        // is an ordinary action rather than an escape hatch, so a PM control
+        // genuinely being driven from the keyboard should still win. Only
+        // the exit above needs to be unconditional.
+        if (isKeyboardFocusedControl(document.activeElement)) break;
+        // Nothing on screen to favorite — same condition that hides the
+        // overlay's own Favorite button (see the render path). Routed
+        // through handleFavoriteToggle(), the exact function both Favorite
+        // buttons call, so there is one Favorite path and one persistence
+        // path rather than a keyboard-specific copy.
+        if (overlayFavoriteBtn.classList.contains("hidden")) break;
+        event.preventDefault();
+        handleFavoriteToggle();
+        break;
+      }
       break;
+    }
   }
 }
 
 document.addEventListener("keydown", handlePresentationKeydown);
+
+// ---- Ordinary Player keyboard shortcuts ---------------------------------
+//
+// [UI-REDESIGN / Stage 3 fix]
+// WHAT: ArrowLeft / Space / ArrowRight drive Previous / Start-Stop / Next
+// for the ordinary Player. Presentation Mode is untouched — it keeps its
+// own handler above, and this one returns immediately while PM is active,
+// so exactly one of the two ever responds to a given key.
+// WHY: These are a keyboard route to the EXISTING buttons, not a new
+// playback model. Previous/Next go through goToPreviousMedia()/
+// goToNextMedia(), the same functions the buttons call, and Space uses the
+// existing togglePlay() — deliberately NOT the Start button's click
+// handler, because that also enters Fill Panel when Fill Panel is ticked,
+// and a spacebar press silently going fullscreen would be an unpleasant
+// surprise. Start and Stop keep their labels and their separate buttons.
+// FUTURE: No visible shortcut hints in this stage, by instruction. If they
+// are added later they belong next to the transport buttons, and this
+// handler should stay the single source of what the keys do.
+// [UI-REDESIGN / Stage 3 fix]
+// Fields that swallow these keys as CONTENT — typing, caret movement, a
+// select's own arrow handling. Blocked on focus alone, with no regard for
+// how the focus was acquired: clicking into a text box with the mouse still
+// means the next ArrowLeft is a caret move, not a Previous.
+function isTextEntryTarget(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  // closest() also tests the element itself, so this one call covers both
+  // "focus IS the field" and "focus is inside one".
+  return Boolean(
+    el.closest?.(
+      "input, textarea, select, [contenteditable=''], [contenteditable='true'], [role='textbox']"
+    )
+  );
+}
+
+// [UI-REDESIGN / Stage 3 fix]
+// Buttons, links and tabs are different: they hold focus after a mouse
+// click without the user having any intent to keep driving them from the
+// keyboard.
+//
+// ROOT CAUSE of the reported regression: the previous guard blocked on any
+// focused button. Mouse-clicking the transport ❤️ leaves it as
+// document.activeElement, so every later ArrowLeft/ArrowRight/Space was
+// suppressed until focus moved elsewhere — the shortcuts appeared to die.
+//
+// :focus-visible is exactly the distinction that was missing. The browser
+// sets it when focus arrives by keyboard (Tab, or a shortcut it considers
+// keyboard-driven) and withholds it when focus arrives by pointer. So a
+// TABBED-to ❤️ still owns Space and toggles Favorite, while a CLICKED ❤️
+// does not and the transport shortcuts keep working — which is the
+// behavioral split asked for, rather than a blanket weakening of the guard.
+function isKeyboardFocusedControl(el) {
+  const control = el?.closest?.("button, a[href], [role='button'], [role='tab']");
+  if (!control) return false;
+
+  try {
+    return control.matches(":focus-visible");
+  } catch {
+    // No :focus-visible support — fall back to the old, stricter behavior
+    // (any focused control blocks) rather than silently firing shortcuts
+    // out from under a keyboard user.
+    return true;
+  }
+}
+
+function handleTransportKeydown(event) {
+  // [UI-REDESIGN / Stage 3 fix] ROOT CAUSE of the "F never exits Fill" bug.
+  //
+  // Both this and handlePresentationKeydown are document keydown listeners,
+  // and PM's is registered first, so BOTH see the same F press. PM's handler
+  // called exitFillMode(), which sets fillModeActive = false — and then this
+  // handler ran on that same event, saw fillModeActive as already false,
+  // sailed past the guard below, and re-entered Fill. One keypress exited
+  // and immediately re-entered, so Fill appeared never to close while the PM
+  // subpanels (closed by exitFillMode on the way out) did.
+  //
+  // Every branch in either handler calls preventDefault() when it acts, so
+  // defaultPrevented is an accurate "this event is already spoken for".
+  // Checked before the fillModeActive guard because it is about ownership of
+  // the event, not about which mode we are in.
+  if (event.defaultPrevented) return;
+  // Presentation Mode owns the keyboard while it is up.
+  if (fillModeActive) return;
+  // Held keys must not machine-gun through the library.
+  if (event.repeat) return;
+  // Any modifier means the user is aiming at the browser or the OS, not at
+  // the player — Ctrl+Left is a text/word jump, Alt+Left is Back, and so on.
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+  // An open Playback popover owns the keyboard while it is up, the same way
+  // it already owns Escape — so Playback ⚙ keeps its normal keyboard
+  // behavior instead of the transport stealing keys out from under an open
+  // disclosure.
+  if (isPlaybackPopoverOpen()) return;
+  // Typing in a field always wins, however the field was focused.
+  if (isTextEntryTarget(document.activeElement)) return;
+  // A control the user is actually driving from the keyboard wins too —
+  // this is what keeps ArrowLeft/Right working for the workspace tablist
+  // and keeps Space on a tabbed-to ❤️ toggling Favorite. A control merely
+  // left focused by a mouse click does NOT block; see
+  // isKeyboardFocusedControl().
+  if (isKeyboardFocusedControl(document.activeElement)) return;
+
+  switch (event.key) {
+    case "ArrowLeft":
+      // Reading the button's own disabled state is what "respect existing
+      // disabled/no-media behavior" means here — syncControls() already
+      // computes it from the runtime, so there is no second rule to keep
+      // in step.
+      if (prevBtn.disabled) return;
+      event.preventDefault();
+      goToPreviousMedia();
+      break;
+    case "ArrowRight":
+      if (nextBtn.disabled) return;
+      event.preventDefault();
+      goToNextMedia();
+      break;
+    case " ":
+    case "Spacebar": // older browsers
+      // Whichever of the pair is currently live: Stop while playing, Start
+      // otherwise. If that button is disabled there is nothing to do, and
+      // the page keeps its normal scroll behavior.
+      if (runtime.getState().isPlaying ? stopBtn.disabled : playBtn.disabled) return;
+      // Also load-bearing for the mouse-clicked-❤️ case: a <button> that
+      // still holds pointer focus would otherwise fire its own click on
+      // Space and toggle Favorite as well. Preventing the default here
+      // suppresses that activation, so Space means exactly one thing.
+      event.preventDefault();
+      // Matches the Start button exactly, Fullscreen / Fill Panel included.
+      toggleTransportPlayback();
+      break;
+    default:
+      // [UI-REDESIGN / Stage 3] Two letter shortcuts. F toggles Fill —
+      // this half enters, and handlePresentationKeydown's F exits — and L
+      // is Favorite. Both keys mean the same thing in both modes; only the
+      // direction of F differs, because that is what "toggle" means.
+      //
+      // preventDefault() keeps a stray letter out of Firefox's type-ahead
+      // find; the guards above have already ruled out text fields and
+      // keyboard-driven controls, and the repeat/modifier checks at the top
+      // of this function cover both keys.
+      if (event.key.toLowerCase() === "l") {
+        // Nothing on screen to favorite — the same condition that hides the
+        // transport's own ❤️ button. Same single path as that button:
+        // handleFavoriteToggle(), no separate favorite state or persistence.
+        if (favoriteBtn.classList.contains("hidden")) break;
+        event.preventDefault();
+        handleFavoriteToggle();
+        break;
+      }
+
+      if (event.key.toLowerCase() === "f") {
+        // Needs something to show. Entering PM on an empty library would
+        // just be a black screen with a toolbar.
+        if (!runtime.getState().currentItem) break;
+        event.preventDefault();
+        enterFillPanelDeliberately();
+        break;
+      }
+      break;
+  }
+}
+
+document.addEventListener("keydown", handleTransportKeydown);
 
 // ---- Ghost UI hover behavior ----------------------------------------------
 //
@@ -3281,7 +3789,32 @@ profile.subscribe(() => {
   // active Tag filter (Phase 6.3) — tagging/untagging the current item
   // from the Presentation panel can move it in or out of that set.
   if (viewMode === "favorites" || activeTagFilters.length > 0) {
-    reloadRuntime({ keepPlaying: runtime.getState().isPlaying });
+    // [UI-REDESIGN / Stage 3 fix]
+    // ROOT CAUSE of the reported jump: this reload used to be
+    // unconditional. Un-favoriting the current item while Favorites Only
+    // is active removes it from getVisibleItems(), so runtime.load() got a
+    // list that no longer contained it. With no preserveId to match, the
+    // runtime fell back to its default index and the player silently
+    // jumped to a different item — the user's own click threw away what
+    // they were looking at.
+    //
+    // So: when the current item is what just dropped out, defer the
+    // reload instead of cancelling it. Nothing is duplicated and favorites
+    // persistence is untouched — runtime.toggleFavorite() already wrote
+    // through to the Profile before this subscription ran. The item simply
+    // keeps playing until the user navigates away from it themselves, at
+    // which point flushPendingFilterReload() rebuilds the filtered
+    // sequence without it.
+    const { currentItem, currentIndex, isPlaying } = runtime.getState();
+    const currentStillVisible =
+      !currentItem || getVisibleItems().some((item) => item.id === currentItem.id);
+
+    if (currentStillVisible) {
+      reloadRuntime({ keepPlaying: isPlaying });
+    } else {
+      pendingFilterReloadIndex = currentIndex;
+      pendingFilterReloadItemId = currentItem.id;
+    }
   }
   renderPresentationTagsPanel(runtime.getState().currentItem);
 });
@@ -3494,7 +4027,11 @@ function applyLoadedPreferences(preferences) {
   skipDuplicatesInput.checked = playback.skipDuplicates;
   skipDuplicates = playback.skipDuplicates;
   loopInput.checked = playback.loopPlaylist;
-  fillInput.checked = playback.fillPanel;
+  // [UI-REDESIGN / Stage 3] `fillInput.checked = playback.fillPanel` retired
+  // with the checkbox. Restored like every other playback control:
+  // loadPreferences() has already defaulted this to true for records saved
+  // before the key existed, so an older stored record lands here as ON.
+  autoplayOnFillInput.checked = playback.autoplayOnFill;
 
   ghostRememberInput.checked = presentation.rememberGhostOpacity;
   const ghostPercent = presentation.rememberGhostOpacity
@@ -3520,6 +4057,13 @@ renderProfileSelector();
 // already read "—"), but explicit here so the boot sequence doesn't rely
 // on the markup default staying in sync with this function's logic.
 syncAssociateButtonVisibility();
+
+// [UI-REDESIGN / Stage 3 fix] Registered BEFORE render on purpose.
+// MediaRuntime notifies listeners in insertion order, so this one gets to
+// rebuild the list first and render() then draws the corrected state in the
+// same pass — rather than painting the stale sequence and correcting it a
+// frame later.
+runtime.subscribe(handlePendingFilterReloadOnAdvance);
 
 runtime.subscribe(render);
 

@@ -142,10 +142,12 @@ input {
    are pushed below; the brief keeps them in the rail only until Stage 3.
    The three moved elements are direct children of .controls-panel now
    because `order` applies to flex children only.
-   FUTURE: When Stage 3 removes the two sections below, orders 4 and 5 go
-   with them — 1..3 stay as-is. Anything new added to the rail still needs
-   its own explicit `order`, or it silently joins the unordered group at
-   the top. */
+   [UI-REDESIGN / Stage 3] Orders 4 and 5 are now gone, exactly as the note
+   above anticipated: `.playback-section` and `.slideshow-settings-section`
+   were removed from the rail once their controls existed beneath the
+   Player. The rail's final shape is the unordered group plus 1..3.
+   FUTURE: Anything new added to the rail still needs its own explicit
+   `order`, or it silently joins the unordered group at the top. */
 .rail-profile-summary {
   order: 1;
 }
@@ -156,14 +158,6 @@ input {
 
 .status-box {
   order: 3;
-}
-
-.playback-section {
-  order: 4;
-}
-
-.slideshow-settings-section {
-  order: 5;
 }
 
 /* [UI-REDESIGN / Stage 1B]
@@ -509,12 +503,16 @@ button:not(:disabled):hover,
   margin-bottom: 14px;
 }
 
-.control-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 10px;
-}
+/* [UI-REDESIGN / Stage 3]
+   WHAT: `.control-grid` retired. It only ever laid out the rail's 2x2
+   Slideshow button block (.control-grid.playback-grid), which no longer
+   exists — the same four buttons are now a single left-aligned flex row in
+   .player-transport-cluster below. `.playback-grid` never had a rule of its
+   own.
+   WHY: A 2x2 grid was right for a 340px rail and wrong under a wide Player,
+   where the approved composition is one horizontal cluster.
+   FUTURE: Nothing else in index.html carries either class — verified before
+   removal. */
 
 .clear-media-btn {
   width: 100%;
@@ -1134,6 +1132,124 @@ button:not(:disabled):hover,
   background: #000;
 }
 
+/* [UI-REDESIGN / Stage 3]
+   WHAT: The transport row beneath the Player — Favorite/Previous/Start/
+   Stop/Next left, Playback ⚙ and the counter right.
+   WHY: `position: relative` is load-bearing: it is the containing block for
+   the absolutely-positioned popover below, which is why the popover is a
+   child of this row rather than of the button's own group.
+   `flex-wrap` lets the two clusters stack at narrow widths instead of
+   overflowing — Stage 6 owns the real responsive pass, this just keeps it
+   from breaking before then.
+   FUTURE: The cluster's DOM order IS its visual order — no `order` values
+   here, deliberately, so the tab sequence matches what is on screen. */
+.player-transport-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.player-transport-cluster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.player-transport-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* The counter is a readout, not a control — muted and tabular so the
+   numbers do not jitter as the index changes during a slideshow. */
+.player-transport-meta #counter-text {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* [UI-REDESIGN / Stage 3]
+   WHAT: Pins the two meta buttons — Fill ⛶ and Playback ⚙ — to one line box.
+   WHY: They were already identical in CSS terms: both are `button.secondary`,
+   so both inherit the same min-height: 44px, padding: 12px 14px, radius,
+   border, weight and centering. Nothing distinguished them in the stylesheet.
+   The size difference came from the GLYPH. `⛶` (U+26F6) resolves to a
+   symbol/emoji fallback face whose intrinsic line box is taller than `⚙`
+   (U+2699) in the UI face, and min-height is a floor rather than a cap — so
+   the taller line box simply grew the button past 44px.
+   `line-height: 1` replaces that inherited line box with a predictable one,
+   and the explicit font-size keeps both glyphs rendering at the same scale
+   whichever face each resolves to. With border-box, 16px of content plus
+   12+12 padding and 2 of border lands under the 44px floor, so both settle
+   at exactly 44px. Everything else — padding, radius, border, hover, focus,
+   the aria-expanded treatment below — is inherited identically and left
+   alone.
+   No width is set: each button keeps its natural content width, per the
+   approved composition. Order (Fill ⛶ · Playback ⚙ · counter) is DOM order
+   with no `order` values involved.
+   FUTURE: Any further icon-bearing button added to this group needs to join
+   this selector, or it will size itself off its own glyph the same way. */
+.player-transport-meta .fill-panel-btn,
+.player-transport-meta .playback-settings-btn {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.playback-settings-btn[aria-expanded="true"] {
+  border-color: var(--neon-blue-glow);
+  color: var(--neon-blue);
+}
+
+/* [UI-REDESIGN / Stage 3]
+   WHAT: The Playback popover, anchored to the right edge of the transport
+   row and opening UPWARD from its trigger — the familiar YouTube settings
+   position.
+   WHY: `bottom: calc(100% + 8px)` is measured from the row's top edge, so
+   the panel grows up over the Player rather than down over the Gallery
+   grid. The transport cluster and Playback ⚙ itself stay fully visible and
+   clickable underneath it either way; what changes is that the media area
+   absorbs the overlap instead of the thumbnails, which keeps the popover
+   next to the control that opened it as it grows taller.
+   `z-index: 5` clears the two `z-index: 2` in-page overlays and stays far
+   below Presentation Mode's ghost UI. `max-width` plus `right: 0` keeps it
+   inside the panel at narrow widths rather than pushing a horizontal
+   scrollbar onto the page; anchoring to the row (not the viewport) is what
+   keeps it clear of the window edge at normal desktop widths.
+   FUTURE: Visibility is owned entirely by the `hidden` class that
+   openPlaybackPopover()/closePlaybackPopover() toggle. Do not add a second
+   visibility mechanism (an `[open]` attribute, an `.is-open` class) — one
+   of the two will drift out of sync with aria-expanded. */
+.playback-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 5;
+  width: 260px;
+  max-width: 100%;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(13, 20, 40, 0.98);
+  box-shadow: var(--shadow);
+}
+
+/* Both carried bottom margins that spaced them against the rail's dividers.
+   The checkbox stack is the popover's last child, so its trailing margin
+   would just read as lopsided padding; the interval row keeps a gap because
+   it still has the checkboxes below it. */
+.playback-popover .checkbox-stack {
+  margin-bottom: 0;
+}
+
+.playback-popover .form-row {
+  margin-bottom: 12px;
+}
+
 .viewer-empty,
 .gallery-empty {
   min-height: 180px;
@@ -1500,7 +1616,15 @@ hr {
    it stayed visibly on screen during Fill Panel. Presentation Mode has
    its own complete PM-UI toolbar (#presentation-controls) for
    navigation/favoriting; the ordinary header has no role here at all. */
+/* [UI-REDESIGN / Stage 3] .player-transport-row joins this rule for exactly
+   the reason stated above: it is ordinary Gallery chrome, and Presentation
+   Mode already provides its own transport in #presentation-controls.
+   Without this the new row would sit visibly below a 100vh stage during
+   Fill Panel, offering a second, redundant set of controls. The popover is
+   a child of the row so it is covered too, and enterFillMode() also closes
+   it so aria-expanded cannot be left stale behind the hide. */
 .simulated-fullscreen-viewer .viewer-header,
+.simulated-fullscreen-viewer .player-transport-row,
 .simulated-fullscreen-viewer #tags-filter-panel {
   display: none;
 }
