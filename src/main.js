@@ -299,6 +299,22 @@ function ensureGalleryWorkspaceVisible() {
   if (activeWorkspace !== "gallery") setActiveWorkspace("gallery");
 }
 
+// [UI-REDESIGN / Stage 1C]
+// WHAT: The same hand-off for the Settings workspace, which is where the
+// Profile section now lives.
+// WHY: The rail's "Associate with Profile" / "Change Profile" shortcut has
+// always been navigation-only — it opens the Profile disclosure, scrolls to
+// it, and focuses a control inside it. Now that the section sits in a
+// hidden panel, both scrollIntoView() and focus() would silently do
+// nothing, so the button would look dead. Same failure mode, and same fix,
+// as ensureGalleryWorkspaceVisible() above.
+// FUTURE: This is the ONLY sanctioned route from the rail to Profile
+// management. Do not answer a future "the rail should let me switch
+// profiles" request by adding a second selector to the rail.
+function ensureSettingsWorkspaceVisible() {
+  if (activeWorkspace !== "settings") setActiveWorkspace("settings");
+}
+
 WORKSPACES.forEach((entry, index) => {
   entry.tab.addEventListener("click", () => setActiveWorkspace(entry.name));
 
@@ -541,6 +557,9 @@ function syncAssociateButtonVisibility() {
 // caller — if Load Media ever needs more than a shortcut, that's a
 // scope change, not an extension of this helper.
 function expandAndScrollToProfileSection() {
+  // [UI-REDESIGN / Stage 1C] Must come first — everything below acts on an
+  // element inside the Settings workspace.
+  ensureSettingsWorkspaceVisible();
   if (profileSectionDetails && !profileSectionDetails.open) {
     profileSectionDetails.open = true;
   }
@@ -2902,6 +2921,12 @@ function renderTagsGrid() {
       label.className = "tag-chip tag-status-select";
       label.textContent = tag.name;
       label.classList.toggle("is-selected", selectedTagActivityId === tag.id);
+      // [UI-REDESIGN / Stage 1C] Same flag on the outer card so the selected
+      // treatment spans the whole tag, ✎/✕ cells included, instead of
+      // stopping at this button's edge. Presentational only — no listener,
+      // no state, and aria-pressed stays on the button that is actually
+      // pressed.
+      row.classList.toggle("is-selected", selectedTagActivityId === tag.id);
       label.setAttribute("aria-pressed", selectedTagActivityId === tag.id ? "true" : "false");
       label.addEventListener("click", () => {
         selectedTagActivityId = tag.id;

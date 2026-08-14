@@ -100,108 +100,6 @@
         <hr />
         </section>
  
-        <details class="profile-section">
-        <summary>Profile</summary>
- 
-        <p class="hint">
-          Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
-        </p>
- 
-        <div class="profile-current-row">
-          <label for="profile-select" class="profile-select-label">Profile</label>
-          <select id="profile-select"></select>
-          <button id="profile-associate-btn" class="secondary hidden" type="button" disabled>Associate Current Library</button>
-        </div>
- 
-        <div class="profile-create-row">
-          <input id="profile-create-input" type="text" placeholder="New profile name" maxlength="60" />
-          <button id="profile-create-btn" class="secondary" type="button">Save Profile</button>
-        </div>
- 
-        <p id="profile-active-status-text" class="hint" role="status"></p>
-
-        <hr class="profile-inline-hr" />
-
-        <!-- [PROFILE-SYNC]
-             WHAT: Compact status + controls for the Profile Sync Folder POC
-             — an optional cross-device mirror of the FULL Profile
-             collection into a user-chosen folder (ideally inside Google
-             Drive), layered on top of the IndexedDB persistence above.
-             WHY: "Choose the sync folder once, then mostly forget it
-             exists" — every element here is driven by ProfileSync's own
-             status (see renderProfileSync() in main.js), never hand-set,
-             so this can't drift out of sync with the real connection state.
-             FUTURE / DO-NOT-BREAK: This block must stay independent of the
-             media-source controls (FSA/legacy pickers) elsewhere in this
-             page — loading a different library must never show, hide, or
-             otherwise touch anything here. See profile-sync.js's header. -->
-        <div class="profile-sync-section" id="profile-sync-section">
-          <h3 class="profile-sync-heading">Profile Sync</h3>
-
-          <p id="profile-sync-status-text" class="hint" role="status">Status: Not configured</p>
-
-          <div class="control-stack">
-            <button id="profile-sync-choose-btn" class="secondary" type="button">Choose Google Drive Folder</button>
-            <button id="profile-sync-reconnect-btn" class="secondary hidden" type="button">Reconnect</button>
-            <div class="profile-sync-connected-row hidden" id="profile-sync-connected-row">
-              <button id="profile-sync-now-btn" class="secondary" type="button">Sync Now</button>
-              <button id="profile-sync-manage-toggle-btn" class="secondary" type="button" aria-expanded="false">Manage</button>
-            </div>
-          </div>
-
-          <div id="profile-sync-manage-panel" class="profile-sync-manage-panel hidden">
-            <button id="profile-sync-change-btn" class="secondary" type="button">Change Sync Folder</button>
-            <button id="profile-sync-disconnect-btn" class="danger" type="button">Disconnect Sync</button>
-          </div>
-
-          <div id="profile-sync-conflict-panel" class="profile-sync-conflict-panel hidden">
-            <p class="hint">Profile changed on another device.</p>
-            <div class="control-stack">
-              <button id="profile-sync-use-synced-btn" class="secondary" type="button">Use Synced Version</button>
-              <button id="profile-sync-keep-local-btn" class="secondary" type="button">Keep Local Version</button>
-            </div>
-          </div>
-        </div>
-
-        <hr class="profile-inline-hr" />
-
-        <details class="profile-import-export-section">
-        <summary>Import / Export</summary>
-
-        <div class="control-stack">
-          <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
-          <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
-          <button id="profile-import-replace-btn" class="secondary" type="button">Import Profile (Replace)</button>
-          <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
-          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
-               WHAT: Creates a brand-new, independent Profile pre-populated
-               from an exported .json, instead of merging/replacing into
-               whichever Profile is currently active.
-               WHY: Section 9 — "reuse another Profile as a starting point"
-               without two libraries ending up silently sharing one mutable
-               Profile. Built entirely from EXISTING primitives
-               (createProfile + switchProfile + importJSON(\"replace\")) —
-               no new Profile-storage mechanism.
-               FUTURE: The created Profile diverges independently from here
-               on — this is a one-time copy, not an ongoing link back to
-               the source file. -->
-          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Profile</button>
-          <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
-        </div>
-
-        <label class="compact-check wide-check">
-          <input id="profile-skip-missing-input" type="checkbox" />
-          <span>Only import entries for files currently loaded</span>
-        </label>
-
-        <p id="profile-status-text" class="hint" role="status"></p>
-        </details>
-
-        <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
-
-        <hr />
-        </details>
- 
         <section class="slideshow-settings-section">
  
         <div class="form-row interval-control">
@@ -496,7 +394,6 @@
       </section>
       </div>
 
-      <!-- Empty until Stage 1C adds the Automation Cookbook shell. -->
       <div
         id="workspace-cookbook"
         class="workspace-panel"
@@ -504,9 +401,44 @@
         tabindex="0"
         aria-labelledby="workspace-tab-cookbook"
         hidden
-      ></div>
+      >
+      <!-- [UI-REDESIGN / Stage 1C]
+           WHAT: The Automation Cookbook shell — a titled empty state and
+           nothing else. There is no Recipe engine, no persistence, no
+           schema, no trigger/action/delay model, and deliberately not one
+           control that implies otherwise.
+           WHY: The workspace has to exist now because every panel ships in
+           static markup (see #workspace-gallery). An honest empty state is
+           the only thing that can go in it without inventing a feature: a
+           disabled "New Recipe" button or a fake sample row would be a
+           promise the code cannot keep, and would have to be un-built
+           later. #cookbook-recipe-list is the reserved mount point.
+           These are the only two cookbook-* ids so far and no JavaScript
+           reads either one yet.
+           FUTURE: Cookbook Recipes are GLOBAL APPLICATION DATA, not Profile
+           data — they must never enter Profile export/import/merge/replace
+           or ProfileStore, unless a later approved architecture explicitly
+           changes that rule. Do not extend the automation-* namespace here;
+           that prefix belongs to Presentation Mode's Loop Automations. -->
+      <section class="panel cookbook-panel">
+        <h2>Automation Cookbook</h2>
 
-      <!-- Empty until Stage 1C moves the existing Profile section here. -->
+        <p id="cookbook-intro" class="hint">
+          Reusable named Recipes will be created and managed here. This workspace is a
+          placeholder — the Cookbook engine is a later feature phase and none of it is
+          built yet.
+        </p>
+
+        <div id="cookbook-recipe-list" class="cookbook-empty-state">
+          <p class="cookbook-empty-title">No Recipes yet</p>
+          <p class="hint">
+            Presentation Mode's existing Loop Automations are unaffected and stay where
+            they are, inside Presentation Mode.
+          </p>
+        </div>
+      </section>
+      </div>
+
       <div
         id="workspace-settings"
         class="workspace-panel"
@@ -514,7 +446,129 @@
         tabindex="0"
         aria-labelledby="workspace-tab-settings"
         hidden
-      ></div>
+      >
+      <!-- [UI-REDESIGN / Stage 1C]
+           WHAT: The Profile section, moved here intact from the left rail —
+           same elements, same ids, same listeners, same storage calls, same
+           import/export schema, same confirmation flows. Unlike Tags it
+           stays a <details>, because main.js captures it via
+           querySelector(".profile-section") and sets `.open` in
+           expandAndScrollToProfileSection(); unwrapping it would make that
+           assignment a no-op on a plain <section>. It now ships with the
+           `open` attribute so the workspace does not open onto a collapsed
+           disclosure — nothing ever sets `.open = false`, and the expand
+           helper already no-ops when it is open.
+           WHY: Profiles are supporting infrastructure, not a creative
+           workspace. Settings is where rare administration lives.
+           FUTURE: The rail must never grow a second Profile-management
+           implementation. Its Associate/Change shortcut is navigation only
+           — it calls expandAndScrollToProfileSection(), which now brings
+           this workspace forward first. Keep it that way. -->
+      <section class="panel settings-panel">
+        <h2>Settings</h2>
+
+        <details class="profile-section" open>
+        <summary>Profile</summary>
+
+        <p class="hint">
+          Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
+        </p>
+
+        <div class="profile-current-row">
+          <label for="profile-select" class="profile-select-label">Profile</label>
+          <select id="profile-select"></select>
+          <button id="profile-associate-btn" class="secondary hidden" type="button" disabled>Associate Current Library</button>
+        </div>
+
+        <div class="profile-create-row">
+          <input id="profile-create-input" type="text" placeholder="New profile name" maxlength="60" />
+          <button id="profile-create-btn" class="secondary" type="button">Save Profile</button>
+        </div>
+
+        <p id="profile-active-status-text" class="hint" role="status"></p>
+
+        <hr class="profile-inline-hr" />
+
+        <!-- [PROFILE-SYNC]
+             WHAT: Compact status + controls for the Profile Sync Folder POC
+             — an optional cross-device mirror of the FULL Profile
+             collection into a user-chosen folder (ideally inside Google
+             Drive), layered on top of the IndexedDB persistence above.
+             WHY: "Choose the sync folder once, then mostly forget it
+             exists" — every element here is driven by ProfileSync's own
+             status (see renderProfileSync() in main.js), never hand-set,
+             so this can't drift out of sync with the real connection state.
+             FUTURE / DO-NOT-BREAK: This block must stay independent of the
+             media-source controls (FSA/legacy pickers) elsewhere in this
+             page — loading a different library must never show, hide, or
+             otherwise touch anything here. See profile-sync.js's header. -->
+        <div class="profile-sync-section" id="profile-sync-section">
+          <h3 class="profile-sync-heading">Profile Sync</h3>
+
+          <p id="profile-sync-status-text" class="hint" role="status">Status: Not configured</p>
+
+          <div class="control-stack">
+            <button id="profile-sync-choose-btn" class="secondary" type="button">Choose Google Drive Folder</button>
+            <button id="profile-sync-reconnect-btn" class="secondary hidden" type="button">Reconnect</button>
+            <div class="profile-sync-connected-row hidden" id="profile-sync-connected-row">
+              <button id="profile-sync-now-btn" class="secondary" type="button">Sync Now</button>
+              <button id="profile-sync-manage-toggle-btn" class="secondary" type="button" aria-expanded="false">Manage</button>
+            </div>
+          </div>
+
+          <div id="profile-sync-manage-panel" class="profile-sync-manage-panel hidden">
+            <button id="profile-sync-change-btn" class="secondary" type="button">Change Sync Folder</button>
+            <button id="profile-sync-disconnect-btn" class="danger" type="button">Disconnect Sync</button>
+          </div>
+
+          <div id="profile-sync-conflict-panel" class="profile-sync-conflict-panel hidden">
+            <p class="hint">Profile changed on another device.</p>
+            <div class="control-stack">
+              <button id="profile-sync-use-synced-btn" class="secondary" type="button">Use Synced Version</button>
+              <button id="profile-sync-keep-local-btn" class="secondary" type="button">Keep Local Version</button>
+            </div>
+          </div>
+        </div>
+
+        <hr class="profile-inline-hr" />
+
+        <details class="profile-import-export-section">
+        <summary>Import / Export</summary>
+
+        <div class="control-stack">
+          <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
+          <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
+          <button id="profile-import-replace-btn" class="secondary" type="button">Import Profile (Replace)</button>
+          <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
+          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+               WHAT: Creates a brand-new, independent Profile pre-populated
+               from an exported .json, instead of merging/replacing into
+               whichever Profile is currently active.
+               WHY: Section 9 — "reuse another Profile as a starting point"
+               without two libraries ending up silently sharing one mutable
+               Profile. Built entirely from EXISTING primitives
+               (createProfile + switchProfile + importJSON(\"replace\")) —
+               no new Profile-storage mechanism.
+               FUTURE: The created Profile diverges independently from here
+               on — this is a one-time copy, not an ongoing link back to
+               the source file. -->
+          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Profile</button>
+          <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
+        </div>
+
+        <label class="compact-check wide-check">
+          <input id="profile-skip-missing-input" type="checkbox" />
+          <span>Only import entries for files currently loaded</span>
+        </label>
+
+        <p id="profile-status-text" class="hint" role="status"></p>
+        </details>
+
+        <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
+
+        </details>
+      </section>
+      </div>
       </div>
     </main>
   </div>

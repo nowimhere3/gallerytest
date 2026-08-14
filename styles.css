@@ -78,7 +78,9 @@ input {
 .controls-panel h2,
 .viewer-panel h2,
 .gallery-panel h2,
-.tags-section h2 {
+.tags-section h2,
+.settings-panel h2,
+.cookbook-panel h2 {
   margin-top: 0;
 }
 
@@ -108,10 +110,13 @@ input {
    FUTURE: The rail's remaining sections still depend on explicit `order`.
    Anything added there needs its own `order`, or it silently jumps to the
    top of the panel with the other unordered elements. */
-.profile-section {
-  order: 4;
-}
-
+/* [UI-REDESIGN / Stage 1C]
+   WHAT: `.profile-section { order: 4 }` retired with the Profile section's
+   move to the Settings workspace. The two summary rules below stay — unlike
+   Tags, Profile is still a <details> with a <summary>.
+   WHY: `order` only ever positioned it among the flex children of
+   .controls-panel, which it is no longer a child of. The rail's remaining
+   sections still depend on explicit `order`; see the Stage 1B note above. */
 .profile-section summary {
   cursor: pointer;
   font-size: 1.5em;
@@ -498,6 +503,21 @@ button:not(:disabled):hover,
 
 /* Profile Selector / Creation (Phase 8.3) — deliberately styled to match
    .tag-create-row above rather than introducing a new visual language. */
+
+/* [UI-REDESIGN / Stage 1C]
+   WHAT: A width cap on the two Profile form rows, matching the one Stage 1B
+   put on .tag-create-row.
+   WHY: Both rows use `flex: 1 1 …` on their field, which was sized for a
+   340px rail. In the ~1000px Settings workspace the profile <select> and
+   the "New profile name" input would otherwise stretch the full panel
+   width. Width adaptation forced by the move — no ids, no behavior, no
+   markup involved.
+   FUTURE: Stage 5 owns final fidelity here. */
+.profile-current-row,
+.profile-create-row {
+  max-width: 620px;
+}
+
 .profile-current-row {
   display: flex;
   align-items: center;
@@ -554,6 +574,38 @@ button:not(:disabled):hover,
   border: 0;
   border-top: 1px solid var(--border);
   margin: 14px 0;
+}
+
+/* [UI-REDESIGN / Stage 1C]
+   WHAT: The Automation Cookbook empty state. Reuses .panel and .hint rather
+   than introducing a new visual language.
+   WHY: Dashed rather than solid border, and no accent colour, so it reads
+   as "nothing here yet" instead of as a card containing something. The
+   whole point of this workspace right now is to be honest about being
+   empty; styling it like a real feature would undo that.
+   FUTURE: #cookbook-recipe-list is the mount point for real Recipe rows.
+   When they arrive, this becomes the zero-state branch, not the container. */
+.cookbook-empty-state {
+  max-width: 620px;
+  margin-top: 16px;
+  padding: 20px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: rgba(9, 16, 29, 0.4);
+}
+
+.cookbook-empty-title {
+  margin: 0 0 6px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.cookbook-empty-state .hint {
+  margin: 0;
+}
+
+#cookbook-intro {
+  max-width: 620px;
 }
 
 /* [PROFILE-SYNC] Deliberately reuses .control-stack/.hint/.danger/.secondary
@@ -740,8 +792,26 @@ button:not(:disabled):hover,
   background: rgba(30, 60, 140, 0.18);
 }
 
-/* The rename input is a plain flex child with no hit-target duty, so the
-   editing variant keeps the original inset on the row. */
+/* [UI-REDESIGN / Stage 1C]
+   WHAT: The selected-tag treatment, moved onto .tag-chip-row — the outer
+   card — from the inner .tag-chip button (which keeps only the neon text
+   colour; see button.tag-status-select.is-selected below).
+   WHY: The Stage 1B hit-target fix stretched .tag-chip to fill the pill up
+   to the action cluster, so the button's own background tint drew the
+   selected state across most of the card and then stopped dead at the ✎/✕
+   cells. The state belongs to the tag, not to one control inside it, so it
+   is painted on the element that actually bounds the tag. The ✎/✕ buttons
+   keep their own opaque background and border, so they stay legible as
+   distinct controls on top of the tint rather than dissolving into it.
+   FUTURE: Selected state stays on the row. Do not re-add a background to
+   any child to represent it — that is what caused this. */
+.tag-chip-row.is-selected {
+  border-color: var(--neon-blue-glow);
+  background: rgba(0, 210, 255, 0.12);
+}
+
+/* Listed after .is-selected so renaming a selected tag shows the editing
+   treatment; the two classes are not applied together today. */
 .tag-chip-row.is-editing {
   padding: 6px 6px 6px 12px;
   border-color: rgba(70, 130, 255, 0.7);
@@ -758,8 +828,10 @@ button:not(:disabled):hover,
 }
 
 /* Fills the pill from its inner left edge to the action cluster, full
-   height. The radius matches the row's inner corners so .is-selected's
-   background tint does not square off the rounded left end. */
+   height. The radius matches the row's inner corners so the focus ring
+   follows the card's rounded left end instead of cutting across it.
+   (Stage 1C moved the selected background off this button onto the row —
+   this element intentionally paints no background of its own.) */
 .tag-chip-row > .tag-chip {
   flex: 1 1 auto;
   align-self: stretch;
@@ -991,9 +1063,10 @@ button.tag-status-select {
   text-align: left;
 }
 
+/* [UI-REDESIGN / Stage 1C] Text colour only — the background half of this
+   rule moved to .tag-chip-row.is-selected, which spans the whole card. */
 button.tag-status-select.is-selected {
   color: var(--neon-blue);
-  background: rgba(0, 210, 255, 0.1);
 }
 
 .gallery-jump-group .filter-btn {
