@@ -4157,3 +4157,154 @@ window.__bgProfileIdentityAudit = async function (options = {}) {
 
   return report;
 };
+
+// ======================================================================
+// [TEMP-PROFILE-SYNC-INTEGRITY-DIAG] — READ-ONLY. REMOVE AFTER DEBUGGING.
+// ----------------------------------------------------------------------
+// Runs the REAL production Profile Sync validation + fingerprint logic
+// (profile-sync.js's private readCollectionFromFolder/computeFingerprint,
+// exposed via the temporary __diagnoseSyncFolder export) against the
+// CURRENTLY-CONFIGURED sync folder — without triggering any reconcile,
+// write, or Auto-Sync pass.
+//
+// It loads the saved handle straight from its own store (loadSyncConfig),
+// exactly like __iaSyncFolderShape above, and only queryPermission (never a
+// prompt). Nothing here mutates the folder, IndexedDB, or Profile state.
+//
+// Invoke from DevTools console:   await __psSyncIntegrityDiag()
+window.__psSyncIntegrityDiag = async function () {
+  let loadSyncConfig, __diagnoseSyncFolder;
+  try {
+    ({ loadSyncConfig } = await import("./storage/profile-sync-store.js"));
+    ({ __diagnoseSyncFolder } = await import("./profile/profile-sync.js"));
+  } catch (error) {
+    console.error("[psSyncIntegrityDiag] Could not load production modules.", error);
+    return { available: false, reason: String(error && error.name) };
+  }
+
+  let config;
+  try {
+    config = await loadSyncConfig();
+  } catch (error) {
+    return { available: false, reason: `could not read sync config: ${String(error && error.name)}` };
+  }
+  if (!config || !config.handle) {
+    console.warn("[psSyncIntegrityDiag] No sync folder is configured on this installation.");
+    return { available: true, configured: false };
+  }
+
+  const handle = config.handle;
+  let permission;
+  try {
+    permission = await handle.queryPermission({ mode: "readwrite" });
+  } catch (error) {
+    return { available: true, configured: true, folderName: config.folderName, permission: "error" };
+  }
+  if (permission !== "granted") {
+    console.warn(`[psSyncIntegrityDiag] Permission for the sync folder is "${permission}" — grant it via the normal Sync UI first (no prompt is raised here).`);
+    return { available: true, configured: true, folderName: config.folderName, permission };
+  }
+
+  const diag = await __diagnoseSyncFolder(handle);
+
+  const report = {
+    available: true,
+    configured: true,
+    folderName: config.folderName || handle.name,
+    permission,
+    ...diag,
+  };
+
+  console.log("%c[psSyncIntegrityDiag] read-only — nothing was modified.", "font-weight:bold");
+  console.log("Folder:", report.folderName);
+  console.log("1. Production validation status :", report.productionStatus);
+  console.log("2. Manifest fingerprint         :", report.manifestFingerprint);
+  console.log("3. Recomputed (production) hash  :", report.recomputedFingerprint);
+  console.log("4. Fingerprints match           :", report.fingerprintsMatch);
+  console.log("5. Validation stage / reason    :", report.validationStage, "—", report.validationReason);
+  console.log("6. Profile IDs                  :", report.profileIds);
+  console.log("   Files resolved               :", report.profileFilesResolved);
+  console.log("   Files missing/invalid        :", report.profileFilesMissingOrInvalid);
+  console.log("Full report object returned — use copy(await __psSyncIntegrityDiag()) or JSON.stringify it.");
+
+  return report;
+};
+
+// ======================================================================
+// [TEMP-PROFILE-SYNC-RECOVERY] — GUARDED ONE-SHOT REPAIR. REMOVE AFTER INCIDENT.
+// ----------------------------------------------------------------------
+// Manually-invoked ONLY. Rewrites one fresh sync generation to the
+// configured folder from the authoritative LOCAL ProfileStore collection,
+// using the production write/validate helpers (see __repairSyncFolderFromCollection
+// in profile-sync.js). Nothing here runs on load, init, or Sync Now.
+//
+// Two-step by design:
+//   await __psRepairSyncFolder()                  -> DRY RUN. Reads + guards +
+//                                                    prints exactly what WOULD
+//                                                    be written. Writes NOTHING.
+//   await __psRepairSyncFolder("REPAIR_FROM_LOCAL") -> actually writes, then
+//                                                    verifies via production read-back.
+const PS_RECOVERY_TOKEN = "REPAIR_FROM_LOCAL";
+window.__psRepairSyncFolder = async function (confirmToken) {
+  const commit = confirmToken === PS_RECOVERY_TOKEN;
+
+  let loadSyncConfig, __repairSyncFolderFromCollection;
+  try {
+    ({ loadSyncConfig } = await import("./storage/profile-sync-store.js"));
+    ({ __repairSyncFolderFromCollection } = await import("./profile/profile-sync.js"));
+  } catch (error) {
+    console.error("[psRepairSyncFolder] Could not load production modules.", error);
+    return { available: false, reason: String(error && error.name) };
+  }
+
+  let config;
+  try {
+    config = await loadSyncConfig();
+  } catch (error) {
+    return { available: false, reason: `could not read sync config: ${String(error && error.name)}` };
+  }
+  if (!config || !config.handle) {
+    console.warn("[psRepairSyncFolder] No sync folder is configured on this installation.");
+    return { available: true, configured: false };
+  }
+
+  // Authoritative local source of truth — normal ProfileStore read only.
+  let localCollection;
+  try {
+    localCollection = await profile.getFullCollection();
+  } catch (error) {
+    console.error("[psRepairSyncFolder] Could not read the local Profile collection.", error);
+    return { available: true, configured: true, reason: `getFullCollection failed: ${String(error && error.name)}` };
+  }
+
+  const report = await __repairSyncFolderFromCollection(config.handle, localCollection, { commit });
+  report.folderName = config.folderName || config.handle.name;
+  report.tokenAccepted = commit;
+
+  console.log(
+    commit
+      ? "%c[psRepairSyncFolder] COMMIT requested — production write + read-back verification."
+      : "%c[psRepairSyncFolder] DRY RUN — no write performed. Pass \"REPAIR_FROM_LOCAL\" to commit.",
+    "font-weight:bold",
+  );
+  console.log("Folder:", report.folderName);
+  console.log("Pre-write remote status/stage :", report.preWriteRemoteStatus, "/", report.preWriteRemoteStage);
+  console.log("Pre-write remote manifest fp   :", report.preWriteRemoteManifestFingerprint);
+  console.log("Pre-write remote recomputed fp :", report.preWriteRemoteRecomputedFingerprint);
+  console.log("Local authoritative fingerprint:", report.localFingerprint);
+  if (report.localSummary) console.table(report.localSummary);
+  if (report.abortReason) console.warn("Abort reason:", report.abortReason);
+  if (commit) {
+    console.log("Write completed        :", report.writeCompleted);
+    console.log("Read-back status       :", report.readBackStatus);
+    console.log("Read-back fingerprint  :", report.readBackFingerprint);
+    console.log("Fingerprint match      :", report.fingerprintMatch);
+    console.log("Expected profile IDs   :", report.expectedProfileIds);
+    console.log("Resolved profile IDs   :", report.resolvedProfileIds);
+    console.log("Profile IDs match      :", report.profileIdsMatch);
+  }
+  console.log(`%cRESULT: ${report.result}`, `font-weight:bold;color:${report.result === "PASS" ? "#0a7" : "#c33"}`);
+  console.log("Full report object returned — use copy(await __psRepairSyncFolder(...)) or JSON.stringify it.");
+
+  return report;
+};

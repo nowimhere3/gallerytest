@@ -731,3 +731,323 @@ export class ProfileSync {
     this.#emit();
   }
 }
+
+// ======================================================================
+// [TEMP-PROFILE-SYNC-INTEGRITY-DIAG] — READ-ONLY. REMOVE AFTER DEBUGGING.
+// ----------------------------------------------------------------------
+// WHY THIS LIVES HERE: readCollectionFromFolder(), computeFingerprint(),
+// parseProfileFile() and the manifest constants/validators above are all
+// module-private. Exposing this wrapper FROM INSIDE the module lets a
+// diagnostic exercise the EXACT production functions Profile Sync itself
+// runs during #reconcileImpl — no algorithm is copied or reimplemented.
+//
+// It is strictly observational:
+//   - only reads (getFileHandle/getFile/text, create:false lookups)
+//   - never writes the folder, never touches IndexedDB, never reconciles,
+//     never calls syncNow / resolveConflict / replaceAllProfiles.
+//
+// Requirement mapping (see task):
+//   1. productionStatus        — real readCollectionFromFolder() verdict
+//   2. manifestFingerprint     — fingerprint string read from manifest.json
+//   3. recomputedFingerprint   — real computeFingerprint(collection)
+//   4. fingerprintsMatch       — (2) === (3)
+//   5. validationStage/Reason  — where "invalid" originates, re-walked with
+//                                the SAME private helpers production uses
+//   6. profileIds / profileFiles — what the manifest references & resolves
+export async function __diagnoseSyncFolder(dirHandle) {
+  const out = {
+    productionStatus: null,
+    manifestFingerprint: null,
+    recomputedFingerprint: null,
+    fingerprintsMatch: null,
+    validationStage: null,
+    validationReason: null,
+    profileIds: null,
+    profileFilesResolved: null,
+    profileFilesMissingOrInvalid: null,
+  };
+
+  if (!dirHandle) {
+    out.validationStage = "no-handle";
+    out.validationReason = "No sync-folder handle was provided.";
+    return out;
+  }
+
+  // ---- (1) Authoritative production verdict --------------------------
+  // This is the identical call #reconcileImpl uses to derive remote.status.
+  let remote;
+  try {
+    remote = await readCollectionFromFolder(dirHandle);
+  } catch (error) {
+    out.productionStatus = "threw";
+    out.validationStage = "readCollectionFromFolder-threw";
+    out.validationReason = String((error && error.name) || error);
+    return out;
+  }
+  out.productionStatus = remote.status;
+
+  if (remote.status === "valid") {
+    out.validationStage = "passed";
+    out.manifestFingerprint = remote.fingerprint;                       // (2)
+    out.recomputedFingerprint = await computeFingerprint(remote.collection); // (3) real production hash
+    out.fingerprintsMatch = out.recomputedFingerprint === remote.fingerprint; // (4)
+    out.profileIds = remote.collection.map((e) => e.id);               // (6)
+    out.profileFilesResolved = out.profileIds.map((id) => `profiles/${id}.json`);
+    out.profileFilesMissingOrInvalid = [];
+    return out;
+  }
+
+  if (remote.status === "empty") {
+    out.validationStage = "no-manifest";
+    out.validationReason = `manifest.json not found in "${dirHandle.name}" (production returned "empty").`;
+    return out;
+  }
+
+  // ---- remote.status === "invalid": pinpoint the failing stage -------
+  // Re-walk the SAME stages readCollectionFromFolder walks, using the SAME
+  // module-private helpers/constants, so we can report WHICH stage tripped
+  // (production collapses them all to a bare "invalid") AND still run the
+  // REAL computeFingerprint against whatever profile files DO resolve, to
+  // compare it with the on-disk manifest fingerprint.
+  let manifestText;
+  try {
+    const manifestHandle = await dirHandle.getFileHandle(MANIFEST_FILE_NAME);
+    manifestText = await (await manifestHandle.getFile()).text();
+  } catch (error) {
+    out.validationStage = "read-manifest";
+    out.validationReason = `Could not read ${MANIFEST_FILE_NAME}: ${String((error && error.name) || error)}`;
+    return out;
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestText);
+  } catch (error) {
+    out.validationStage = "parse-manifest-json";
+    out.validationReason = `manifest.json is not valid JSON: ${String((error && error.message) || error)}`;
+    return out;
+  }
+
+  const shapeProblems = [];
+  if (!isPlainObject(manifest)) shapeProblems.push("manifest is not a plain object");
+  else {
+    if (manifest.kind !== MANIFEST_KIND) shapeProblems.push(`kind !== "${MANIFEST_KIND}" (got ${JSON.stringify(manifest.kind)})`);
+    if (!Array.isArray(manifest.profileIds)) shapeProblems.push("profileIds is not an array");
+    if (typeof manifest.fingerprint !== "string") shapeProblems.push("fingerprint is not a string");
+  }
+  if (isPlainObject(manifest) && typeof manifest.fingerprint === "string") {
+    out.manifestFingerprint = manifest.fingerprint; // (2) — capture whatever the manifest claims
+  }
+  if (Array.isArray(manifest.profileIds)) {
+    out.profileIds = manifest.profileIds; // (6)
+  }
+  if (shapeProblems.length) {
+    out.validationStage = "manifest-shape";
+    out.validationReason = shapeProblems.join("; ");
+    return out;
+  }
+
+  // Empty-collection manifest branch (production computes fingerprint of []).
+  if (manifest.profileIds.length === 0) {
+    out.recomputedFingerprint = await computeFingerprint([]); // (3)
+    out.fingerprintsMatch = out.recomputedFingerprint === manifest.fingerprint; // (4)
+    out.validationStage = out.fingerprintsMatch ? "passed-empty" : "fingerprint-mismatch-empty";
+    out.profileFilesResolved = [];
+    out.profileFilesMissingOrInvalid = [];
+    return out;
+  }
+
+  let profilesDir;
+  try {
+    profilesDir = await dirHandle.getDirectoryHandle(PROFILES_DIR_NAME);
+  } catch (error) {
+    out.validationStage = "open-profiles-dir";
+    out.validationReason = `Could not open "${PROFILES_DIR_NAME}/": ${String((error && error.name) || error)}`;
+    return out;
+  }
+
+  const collection = [];
+  const resolved = [];
+  const failed = [];
+  for (const id of manifest.profileIds) {
+    if (typeof id !== "string" || !id) {
+      failed.push({ id: JSON.stringify(id), reason: "profileId is not a non-empty string" });
+      continue;
+    }
+    try {
+      const fileHandle = await profilesDir.getFileHandle(`${id}.json`);
+      const text = await (await fileHandle.getFile()).text();
+      collection.push(parseProfileFile(text)); // real production parser/validator
+      resolved.push(`profiles/${id}.json`);
+    } catch (error) {
+      failed.push({ id, file: `profiles/${id}.json`, reason: String((error && error.message) || (error && error.name) || error) });
+    }
+  }
+  out.profileFilesResolved = resolved;
+  out.profileFilesMissingOrInvalid = failed;
+
+  if (failed.length) {
+    out.validationStage = "read-or-parse-profile-file";
+    out.validationReason = `${failed.length} of ${manifest.profileIds.length} referenced profile file(s) missing/unparseable — see profileFilesMissingOrInvalid.`;
+    // Do NOT compute a fingerprint over a partial collection; production
+    // would already have bailed here, and a partial hash would be misleading.
+    return out;
+  }
+
+  // All files resolved: run the REAL production hash and compare with the
+  // manifest — this is the exact mismatch that yields "invalid" on a torn
+  // write, and the number the user's manual reproduction must be checked against.
+  out.recomputedFingerprint = await computeFingerprint(collection); // (3)
+  out.fingerprintsMatch = out.recomputedFingerprint === manifest.fingerprint; // (4)
+  out.validationStage = out.fingerprintsMatch ? "unexpected-pass" : "fingerprint-mismatch";
+  out.validationReason = out.fingerprintsMatch
+    ? "All stages passed on re-walk despite production 'invalid' — re-run; likely a concurrent mid-write when production read it."
+    : "Manifest fingerprint does not match the fingerprint recomputed from the referenced profile files.";
+  return out;
+}
+
+// ======================================================================
+// [TEMP-PROFILE-SYNC-RECOVERY] — GUARDED ONE-SHOT REPAIR. REMOVE AFTER INCIDENT.
+// ----------------------------------------------------------------------
+// WHAT: Rewrites ONE complete fresh sync generation into the configured
+// folder from an authoritative LOCAL collection (ProfileStore.getFullCollection),
+// using the EXACT production helpers writeCollectionToFolder() +
+// computeFingerprint() + readCollectionFromFolder() — no algorithm copied,
+// no manifest hand-patching. Profiles-first, manifest-last is already
+// guaranteed by writeCollectionToFolder ([SAFE-SYNC-WRITE] above).
+//
+// This is NOT reconcile/conflict logic and NOT wired into init/#reconcile/
+// syncNow — it never runs on page load or normal Sync Now. It only writes
+// when a caller both (a) passes commit:true AND (b) the remote is STILL in
+// the exact invalid/fingerprint-mismatch state we diagnosed, pinned by the
+// two known fingerprints below. Any drift → ABORT, write nothing.
+//
+// Pinned expected remote state at time of diagnosis (see incident notes):
+const RECOVERY_EXPECTED_REMOTE_MANIFEST_FP =
+  "c1c3f1acb5dfd2bcac319527665227a23a81d974fd504c6f124aa4aa0c8f2736";
+const RECOVERY_EXPECTED_REMOTE_RECOMPUTED_FP =
+  "fed5199cd24485a7fe5a1fd0bb68d822d504a1466b1234fffa86c5727f5b9a9b";
+
+export async function __repairSyncFolderFromCollection(dirHandle, localCollection, { commit = false } = {}) {
+  const report = {
+    committed: false,
+    aborted: true,
+    abortReason: null,
+    // pre-write
+    preWriteRemoteStatus: null,
+    preWriteRemoteStage: null,
+    preWriteRemoteManifestFingerprint: null,
+    preWriteRemoteRecomputedFingerprint: null,
+    localFingerprint: null,
+    localSummary: null,
+    // post-write (only populated on commit)
+    writeCompleted: false,
+    readBackStatus: null,
+    readBackFingerprint: null,
+    fingerprintMatch: null,
+    expectedProfileIds: null,
+    resolvedProfileIds: null,
+    profileIdsMatch: null,
+    result: "ABORTED",
+  };
+
+  // ---- Guard 1: handle present ---------------------------------------
+  if (!dirHandle) {
+    report.abortReason = "No sync-folder handle provided.";
+    return report;
+  }
+
+  // ---- Guard 2: readwrite permission currently granted (no prompt) ---
+  let permission;
+  try {
+    permission = await dirHandle.queryPermission({ mode: "readwrite" });
+  } catch (error) {
+    report.abortReason = `queryPermission threw: ${String((error && error.name) || error)}`;
+    return report;
+  }
+  if (permission !== "granted") {
+    report.abortReason = `Permission is "${permission}", not "granted". Grant via the normal Sync UI first.`;
+    return report;
+  }
+
+  // ---- Guard 3: production read-only validation FIRST ----------------
+  // Uses the same real readCollectionFromFolder()/computeFingerprint() path
+  // (via __diagnoseSyncFolder) so the pre-write state is production-truth.
+  const before = await __diagnoseSyncFolder(dirHandle);
+  report.preWriteRemoteStatus = before.productionStatus;
+  report.preWriteRemoteStage = before.validationStage;
+  report.preWriteRemoteManifestFingerprint = before.manifestFingerprint;
+  report.preWriteRemoteRecomputedFingerprint = before.recomputedFingerprint;
+
+  // ---- Guard 4: remote must STILL be exactly the diagnosed state -----
+  if (before.productionStatus !== "invalid") {
+    report.abortReason = `Remote is now "${before.productionStatus}", not "invalid" — state changed since diagnosis. Aborting.`;
+    return report;
+  }
+  if (before.validationStage !== "fingerprint-mismatch") {
+    report.abortReason = `Remote invalid reason is now "${before.validationStage}", not "fingerprint-mismatch" — aborting.`;
+    return report;
+  }
+  if (before.manifestFingerprint !== RECOVERY_EXPECTED_REMOTE_MANIFEST_FP) {
+    report.abortReason = "Remote manifest fingerprint no longer matches the diagnosed value — remote changed. Aborting.";
+    return report;
+  }
+  if (before.recomputedFingerprint !== RECOVERY_EXPECTED_REMOTE_RECOMPUTED_FP) {
+    report.abortReason = "Remote recomputed fingerprint no longer matches the diagnosed value — remote changed. Aborting.";
+    return report;
+  }
+
+  // ---- Guard 5: authoritative LOCAL collection present ---------------
+  if (!Array.isArray(localCollection) || localCollection.length === 0) {
+    report.abortReason = "Local authoritative collection is empty or not an array — refusing to write.";
+    return report;
+  }
+
+  // ---- Local fingerprint + pre-write summary (real production hash) --
+  report.localFingerprint = await computeFingerprint(localCollection);
+  report.localSummary = localCollection.map((e) => ({
+    id: e.id,
+    name: e.name,
+    itemCount: e.items ? Object.keys(e.items).length : 0,
+    tagCount: Array.isArray(e.tags) ? e.tags.length : 0,
+  }));
+  report.expectedProfileIds = localCollection.map((e) => e.id);
+
+  // ---- Confirmation gate: no commit token => dry run, write NOTHING --
+  if (!commit) {
+    report.aborted = false;
+    report.result = "DRY-RUN (no write). Pass the confirmation token to commit.";
+    return report;
+  }
+
+  // ---- WRITE (production helper only; profiles-first, manifest-last) --
+  try {
+    await writeCollectionToFolder(dirHandle, localCollection, report.localFingerprint);
+    report.writeCompleted = true;
+  } catch (error) {
+    report.aborted = false;
+    report.abortReason = `writeCollectionToFolder threw: ${String((error && error.message) || error)}`;
+    report.result = "FAIL (write threw)";
+    return report;
+  }
+
+  // ---- VERIFY via the real production read path ----------------------
+  const after = await readCollectionFromFolder(dirHandle);
+  report.readBackStatus = after.status;
+  report.readBackFingerprint = after.status === "valid" ? after.fingerprint : null;
+  report.resolvedProfileIds = after.status === "valid" ? after.collection.map((e) => e.id) : null;
+
+  const idsMatch =
+    after.status === "valid" &&
+    report.resolvedProfileIds.length === report.expectedProfileIds.length &&
+    [...report.expectedProfileIds].sort().join(" ") === [...report.resolvedProfileIds].sort().join(" ");
+  report.profileIdsMatch = idsMatch;
+  report.fingerprintMatch = after.status === "valid" && after.fingerprint === report.localFingerprint;
+
+  const pass = after.status === "valid" && report.fingerprintMatch && idsMatch;
+  report.committed = true;
+  report.aborted = false;
+  report.result = pass ? "PASS" : "FAIL (post-write validation)";
+  // Per incident rules: never attempt a second write automatically on failure.
+  return report;
+}
