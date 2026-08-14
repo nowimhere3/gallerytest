@@ -181,6 +181,12 @@ const galleryGrid = document.getElementById("gallery-grid");
 const galleryJumpInput = document.getElementById("gallery-jump-input");
 const galleryJumpModeFindBtn = document.getElementById("gallery-jump-mode-find-btn");
 const galleryJumpModePlayBtn = document.getElementById("gallery-jump-mode-play-btn");
+// [UI-REDESIGN / Stage 4]
+const galleryJumpUseCurrentBtn = document.getElementById("gallery-jump-use-current-btn");
+const nowPlayingStrip = document.getElementById("now-playing-strip");
+const nowPlayingName = document.getElementById("now-playing-name");
+const nowPlayingStopBtn = document.getElementById("now-playing-stop-btn");
+const nowPlayingReturnBtn = document.getElementById("now-playing-return-btn");
 
 // [UI-REDESIGN / Stage 1A]
 // WHAT: The workspace shell's four tabs and four panels, captured here
@@ -291,6 +297,20 @@ function setActiveWorkspace(name, { focusTab = false } = {}) {
   });
 
   if (focusTab) target.tab.focus();
+
+  // [UI-REDESIGN / Stage 4] The one deliberate exception to the "no side
+  // effects" rule above, and worth stating plainly rather than hiding.
+  // The now-playing strip is a function of WHICH workspace is active, so it
+  // genuinely cannot be kept correct without a call here — its runtime
+  // subscription only ever hears about playback, never about navigation.
+  // This stays safe because syncNowPlayingStrip() is read-only: it inspects
+  // runtime state and activeWorkspace and toggles one `hidden` attribute. It
+  // touches no runtime, filter, profile or library state and calls no render
+  // function, so the guarantees in the comment above still hold.
+  // FUTURE: This must remain the only such call, and it must stay read-only.
+  // Anything that needs to MUTATE state on workspace activation still
+  // belongs in its own subscriber, not here.
+  syncNowPlayingStrip();
 }
 
 // [UI-REDESIGN / Stage 1A]
@@ -306,6 +326,26 @@ function setActiveWorkspace(name, { focusTab = false } = {}) {
 // control into the calling workspace to avoid the problem.
 function ensureGalleryWorkspaceVisible() {
   if (activeWorkspace !== "gallery") setActiveWorkspace("gallery");
+}
+
+// [UI-REDESIGN / Stage 4]
+// WHAT: Shows the now-playing strip only while a slideshow is running AND
+// the user is looking at something other than Gallery.
+// WHY: Both halves of that condition matter. In Gallery the Player and its
+// transport are already on screen, so the strip would be noise; away from
+// Gallery there is otherwise no sign playback is still running and no way to
+// stop it without navigating back first.
+// It derives everything from state it is given and holds none of its own —
+// no "is the strip showing" flag, no cached filename. That is why it is safe
+// to call from both the runtime subscription and setActiveWorkspace().
+// FUTURE: Read-only. If this ever needs to CHANGE playback, route through an
+// existing runtime action the way #now-playing-stop-btn routes to
+// runtime.stop() — never add playback logic here.
+function syncNowPlayingStrip(state = runtime.getState()) {
+  const shouldShow = state.isPlaying && activeWorkspace !== "gallery";
+  nowPlayingStrip.hidden = !shouldShow;
+  if (!shouldShow) return;
+  nowPlayingName.textContent = state.currentItem ? state.currentItem.name : "";
 }
 
 // [UI-REDESIGN / Stage 1C]
@@ -1580,9 +1620,38 @@ function renderTagsFilterGrid() {
     const isActive = activeTagFilters.includes(tag.id);
     btn.classList.toggle("active", isActive);
     btn.setAttribute("aria-pressed", isActive ? "true" : "false");
-    btn.addEventListener("click", () => toggleTagFilter(tag.id));
+    // [UI-REDESIGN / Stage 4 fix] Belt and braces. toggleTagFilter() re-runs
+    // this render, which clears tagsFilterGrid — removing a focused chip
+    // already sends focus to <body> on its own. The explicit release keeps
+    // the behavior true by intent rather than by that side effect, so a
+    // future change to how the grid re-renders cannot quietly reintroduce
+    // the stuck-focus bug.
+    btn.addEventListener("click", (event) => {
+      toggleTagFilter(tag.id);
+      releaseFocusAfterPointerActivation(event);
+    });
     tagsFilterGrid.appendChild(btn);
   });
+
+  renderTagsFilterToggleLabel();
+}
+
+// [UI-REDESIGN / Stage 4]
+// WHAT: Keeps the closed Tag button honest about how many tags are active.
+// WHY: The approved label is "Any tag" — but that is only true while none
+// are selected. Leaving it fixed would have the button claim no filtering
+// while it was filtering. This is a READOUT of activeTagFilters and nothing
+// else: it selects nothing, clears nothing, and is never the source of what
+// is filtered.
+// FUTURE: Multi-select and AND-combination are the point of this filter. A
+// count is shown rather than a single tag name precisely so the label can
+// never imply only one tag can be active.
+function renderTagsFilterToggleLabel() {
+  const count = activeTagFilters.length;
+  tagsFilterToggleBtn.textContent = count === 0
+    ? "Any tag ▼"
+    : `${count} tag${count === 1 ? "" : "s"} ▼`;
+  tagsFilterToggleBtn.classList.toggle("active", count > 0);
 }
 
 function toggleTagsFilterPanel() {
@@ -1642,6 +1711,14 @@ playbackSettingsBtn.addEventListener("click", (event) => {
   // this click just opened.
   event.stopPropagation();
   togglePlaybackPopover();
+  // [UI-REDESIGN / Stage 4 fix] Same regression, same cause: a pointer click
+  // left this button focused, and the :focus-visible latch then swallowed
+  // the Player's shortcuts. Released only once the popover is CLOSED — while
+  // it is open, isPlaybackPopoverOpen() already withholds the shortcuts on
+  // purpose, and the controls inside need an undisturbed focus flow. A
+  // keyboard user is exempt (detail === 0), so Escape's focus return and
+  // Space/Enter on the trigger are unaffected.
+  if (!isPlaybackPopoverOpen()) releaseFocusAfterPointerActivation(event);
 });
 
 // Outside-click close. Bound once at module scope, and cheap when closed:
@@ -2439,7 +2516,21 @@ function setGalleryJumpMode(mode) {
   galleryJumpModePlayBtn.setAttribute("aria-pressed", mode === "play" ? "true" : "false");
 }
 
+// [UI-REDESIGN / Stage 4] The find highlight is now TEMPORARY: it fades
+// itself after a few seconds rather than sitting on the card indefinitely.
+// It marks "here is what you searched for", which stops being true once the
+// user has seen it — and a permanent marker competes with the active-card
+// border for meaning, which is the same confusion the yellow recolour fixes.
+// The existing clear paths (a new jump, a gallery rebuild) still apply; this
+// only adds a third.
+const GALLERY_FIND_HIGHLIGHT_MS = 4000;
+let galleryJumpHighlightTimer = null;
+
 function clearGalleryJumpTarget() {
+  if (galleryJumpHighlightTimer !== null) {
+    window.clearTimeout(galleryJumpHighlightTimer);
+    galleryJumpHighlightTimer = null;
+  }
   if (galleryJumpTargetIndex !== null) {
     galleryCardEls[galleryJumpTargetIndex]?.classList.remove("gallery-jump-highlight");
   }
@@ -2509,11 +2600,38 @@ function performGalleryJump() {
       galleryJumpTargetIndex = zeroBasedIndex;
       card.scrollIntoView({ behavior: "smooth", block: "center" });
       card.classList.add("gallery-jump-highlight");
+      // [UI-REDESIGN / Stage 4] Self-clearing — see clearGalleryJumpTarget().
+      // Routed through that same function so there is one teardown path, and
+      // so the timer handle and the index can never disagree.
+      galleryJumpHighlightTimer = window.setTimeout(
+        () => clearGalleryJumpTarget(),
+        GALLERY_FIND_HIGHLIGHT_MS
+      );
     }
   }
 
   galleryJumpInput.value = "";
 }
+
+// [UI-REDESIGN / Stage 4]
+// WHAT: Populates the jump input with the current media's 1-based position
+// in the current visible/filtered sequence.
+// WHY: Deliberately inert beyond that — it does not navigate, load or
+// scroll. The user still chooses Find Below or Load in Player, which is the
+// whole point: it removes the transcription step, not the decision.
+// The number comes straight from runtime.getState().currentIndex, the same
+// sequence performGalleryJump() validates against, so this introduces no
+// second numbering system.
+function useCurrentGalleryPosition() {
+  const state = runtime.getState();
+  if (!state.hasItems) return;
+  galleryJumpInput.value = String(state.currentIndex + 1);
+  // Focus so the next action is a keystroke away, and because a field that
+  // silently changed under the user should be the thing they are looking at.
+  galleryJumpInput.focus();
+}
+
+galleryJumpUseCurrentBtn.addEventListener("click", () => useCurrentGalleryPosition());
 
 galleryJumpModeFindBtn.addEventListener("click", () => {
   setGalleryJumpMode("find");
@@ -2543,6 +2661,10 @@ function syncControls(state) {
   // item — the same condition the `F` shortcut checks, kept here so the
   // button and the shortcut agree about when Fill is available.
   fillPanelBtn.disabled = !state.currentItem;
+
+  // [UI-REDESIGN / Stage 4] There is no position to copy without items, and
+  // useCurrentGalleryPosition() guards on the same flag.
+  galleryJumpUseCurrentBtn.disabled = !hasItems;
 
   overlayPrevBtn.disabled = !canNavigate;
   overlayNextBtn.disabled = !canNavigate;
@@ -2575,6 +2697,10 @@ function render(state) {
   buildViewer(state);
   syncControls(state);
   updateGalleryJumpPlaceholder(state);
+  // [UI-REDESIGN / Stage 4] Catches the playback half of the strip's
+  // condition — starting, stopping, and advancing to a new filename. The
+  // workspace half is caught by setActiveWorkspace().
+  syncNowPlayingStrip(state);
 }
 
 // ---- Event wiring ---------------------------------------------------------
@@ -2666,14 +2792,73 @@ autoplayOnFillInput.addEventListener("change", () => {
   savePlaybackPreferences({ autoplayOnFill: autoplayOnFillInput.checked });
 });
 
-allMediaBtn.addEventListener("click", () => setViewMode("all"));
-favoritesOnlyBtn.addEventListener("click", () => setViewMode("favorites"));
+// [UI-REDESIGN / Stage 4 fix]
+// WHAT: Releases focus from a Gallery filter control after a POINTER
+// activation, so the ordinary Player gets its keyboard shortcuts back
+// immediately. Keyboard activations are left completely alone.
+//
+// ROOT CAUSE this addresses: clicking one of these buttons leaves it as
+// document.activeElement. isKeyboardFocusedControl() then tests
+// :focus-visible, which the browser re-evaluates from recent input
+// modality rather than fixing at focus time — so the moment the user
+// pressed a key afterwards, the still-focused button began matching
+// :focus-visible and swallowed ArrowLeft/ArrowRight/Space/F for as long as
+// it held focus. (L was already exempt from that guard, which is exactly
+// why L kept working and nothing else did.)
+//
+// `event.detail` is what separates the two cases, and it is the reason this
+// does not cost any keyboard accessibility: a real pointer click reports
+// detail > 0, while a click synthesized by Enter or Space on a focused
+// button reports detail === 0. So a keyboard user who Tabs to a filter and
+// presses Space keeps focus, keeps the focus ring, and keeps every native
+// interaction; only the mouse user — who has no use for focus sitting on
+// the button they just released — gives it up.
+//
+// FUTURE: This is deliberately NOT a global blur-on-click. It is attached
+// to the specific Gallery filter controls named below, because they are the
+// ones that sit between the user and the Player they are filtering. Do not
+// generalize it into a document-level handler, and do not weaken
+// isKeyboardFocusedControl() itself — that guard is what keeps Space from
+// stealing a tabbed-to button's activation and arrows from stealing the
+// workspace tablist.
+function releaseFocusAfterPointerActivation(event) {
+  // Keyboard-synthesized click — the user is driving this control from the
+  // keyboard and must keep it.
+  if (event.detail === 0) return;
+  event.currentTarget?.blur?.();
+}
 
-typeAllBtn.addEventListener("click", () => setTypeFilter("all"));
-typeImagesBtn.addEventListener("click", () => setTypeFilter("image"));
-typeVideosBtn.addEventListener("click", () => setTypeFilter("video"));
+allMediaBtn.addEventListener("click", (event) => {
+  setViewMode("all");
+  releaseFocusAfterPointerActivation(event);
+});
+favoritesOnlyBtn.addEventListener("click", (event) => {
+  setViewMode("favorites");
+  releaseFocusAfterPointerActivation(event);
+});
 
-tagsFilterToggleBtn.addEventListener("click", () => toggleTagsFilterPanel());
+typeAllBtn.addEventListener("click", (event) => {
+  setTypeFilter("all");
+  releaseFocusAfterPointerActivation(event);
+});
+typeImagesBtn.addEventListener("click", (event) => {
+  setTypeFilter("image");
+  releaseFocusAfterPointerActivation(event);
+});
+typeVideosBtn.addEventListener("click", (event) => {
+  setTypeFilter("video");
+  releaseFocusAfterPointerActivation(event);
+});
+
+// The Tag dropdown's own trigger. Blurring does not close the panel and does
+// not touch its aria-expanded — the panel stays exactly as
+// toggleTagsFilterPanel() left it. A keyboard user operating the dropdown is
+// untouched (detail === 0), which is what "do not interfere while it is
+// actively open and being keyboard-operated" requires.
+tagsFilterToggleBtn.addEventListener("click", (event) => {
+  toggleTagsFilterPanel();
+  releaseFocusAfterPointerActivation(event);
+});
 
 prevBtn.addEventListener("click", () => goToPreviousMedia());
 nextBtn.addEventListener("click", () => goToNextMedia());
@@ -2736,6 +2921,14 @@ playBtn.addEventListener("click", () => startPlaybackFromTransport());
 
 // [UI-REDESIGN / Stage 3] Same shared entry path as the `F` shortcut.
 fillPanelBtn.addEventListener("click", () => enterFillPanelDeliberately());
+
+// [UI-REDESIGN / Stage 4] The now-playing strip's two controls. Both are
+// distinct elements calling EXISTING functions — runtime.stop() is the same
+// call #stop-btn makes, and ensureGalleryWorkspaceVisible() already existed
+// for cross-workspace hand-offs. Neither re-implements anything, and no id
+// is cloned.
+nowPlayingStopBtn.addEventListener("click", () => runtime.stop());
+nowPlayingReturnBtn.addEventListener("click", () => ensureGalleryWorkspaceVisible());
 
 stopBtn.addEventListener("click", () => runtime.stop());
 
@@ -2815,11 +3008,20 @@ overlayExitBtn.addEventListener("click", () => {
   exitFillMode();
 });
 
-overlaySettingsBtn.addEventListener("click", () => {
+// [UI-REDESIGN / Stage 4] Extracted verbatim from this button's own click
+// handler so the ⚙ button and the `T` shortcut share ONE toggle path rather
+// than two copies that can drift. The two closes are load-bearing and came
+// with it: only one pop-out makes sense open at a time, so opening the Tags
+// row closes the Automations editor and the Ghost popunder first.
+// FUTURE: Any new way to open this row calls this — never toggle
+// presentationSettings' class directly.
+function togglePresentationSettingsPanel() {
   closeAutomationEditor();
   closeGhostPopunder();
   presentationSettings.classList.toggle("hidden");
-});
+}
+
+overlaySettingsBtn.addEventListener("click", () => togglePresentationSettingsPanel());
 
 ghostToggleBtn.addEventListener("click", () => {
   toggleGhostPopunder();
@@ -3059,19 +3261,58 @@ function handlePresentationKeydown(event) {
       }
 
       if (key === "l") {
-        // Favorite keeps the focused-control guard it was approved with: it
-        // is an ordinary action rather than an escape hatch, so a PM control
-        // genuinely being driven from the keyboard should still win. Only
-        // the exit above needs to be unconditional.
-        if (isKeyboardFocusedControl(document.activeElement)) break;
+        // ROOT CAUSE of the reported regression, and why the focused-control
+        // guard is gone from this branch too.
+        //
+        // isKeyboardFocusedControl() tests :focus-visible, which the browser
+        // re-evaluates from recent input modality rather than fixing at
+        // focus time. Clicking a Tag chip in the PM Settings/Tags row leaves
+        // that button focused; the moment the user then touches the
+        // keyboard it starts matching :focus-visible, and L was swallowed
+        // for as long as that button held focus. Exactly the latching that
+        // broke F two rounds ago — L was left exposed to it because the
+        // instruction then was not to change L.
+        //
+        // Favoriting is a per-item action with no keyboard meaning on a Tag
+        // chip, a toolbar button or anything else it could collide with, so
+        // there is nothing for a focus guard to protect. Text entry is the
+        // only real conflict, and it is handled below.
+        //
+        // isTextEntryTarget() rather than relying solely on the
+        // isTypingTarget() check above: it additionally covers
+        // [role="textbox"], and scoping it to this branch means PM's
+        // Escape/Arrow/Space keep the exact guard they have always had.
+        if (isTextEntryTarget(document.activeElement)) break;
         // Nothing on screen to favorite — same condition that hides the
         // overlay's own Favorite button (see the render path). Routed
         // through handleFavoriteToggle(), the exact function both Favorite
         // buttons call, so there is one Favorite path and one persistence
-        // path rather than a keyboard-specific copy.
+        // path rather than a keyboard-specific copy. Note it touches no
+        // panel state — using L never closes Tags/Settings.
         if (overlayFavoriteBtn.classList.contains("hidden")) break;
         event.preventDefault();
         handleFavoriteToggle();
+        break;
+      }
+
+      if (key === "t") {
+        // [UI-REDESIGN / Stage 4] Opens/closes the PM Tags row — the exact
+        // same togglePresentationSettingsPanel() the ⚙ button calls, so
+        // there is one panel path, one set of class changes, and one rule
+        // about which sibling pop-outs get closed. Nothing here duplicates
+        // that logic and nothing here touches a Tag.
+        //
+        // No focused-control guard, for the same reason as F and L: a Tag
+        // chip left focused by a pointer click must not suppress the key
+        // (see the L branch for the :focus-visible latching explanation).
+        // Text entry is the one real conflict — this is what lets a tag
+        // name containing "t" be typed normally.
+        //
+        // PM-only by instruction: the ordinary Player deliberately has no
+        // T binding yet.
+        if (isTextEntryTarget(document.activeElement)) break;
+        event.preventDefault();
+        togglePresentationSettingsPanel();
         break;
       }
       break;
@@ -3180,7 +3421,17 @@ function handleTransportKeydown(event) {
   // and keeps Space on a tabbed-to ❤️ toggling Favorite. A control merely
   // left focused by a mouse click does NOT block; see
   // isKeyboardFocusedControl().
-  if (isKeyboardFocusedControl(document.activeElement)) return;
+  //
+  // [UI-REDESIGN / Stage 4 fix] L is exempt, matching its PM counterpart.
+  // The guard exists to stop the transport stealing keys a focused control
+  // needs — Space activates a button, arrows drive the tablist — but no
+  // control anywhere in this app does anything with L, so there is nothing
+  // for it to protect, and leaving it in meant a Tag chip or filter button
+  // that merely held focus could suppress Favorite (see the PM branch for
+  // the full :focus-visible latching explanation). Text entry is the one
+  // genuine conflict and is already excluded on the line above.
+  // F, Space and the arrows are deliberately unaffected.
+  if (event.key.toLowerCase() !== "l" && isKeyboardFocusedControl(document.activeElement)) return;
 
   switch (event.key) {
     case "ArrowLeft":

@@ -16,6 +16,11 @@
      saturation/brightness family, just blue. Used for "selected tag". */
   --neon-blue: #00d2ff;
   --neon-blue-glow: rgba(0, 210, 255, 0.55);
+  /* [UI-REDESIGN / Stage 4] The Find Below target colour. Deliberately warm
+     and outside the blue/purple selection family (--accent / --accent-2) so
+     "found" can never be mistaken for "selected". */
+  --find-yellow: #ffd23f;
+  --find-yellow-glow: rgba(255, 210, 63, 0.45);
 }
 
 * {
@@ -1321,11 +1326,141 @@ button.tag-status-select.is-selected {
   border-color: var(--danger);
 }
 
-/* Persistent target border for Find in Gallery. It is distinct from the
-   active-card border, which continues to track the Viewer's current item. */
+/* [UI-REDESIGN / Stage 4]
+   WHAT: The Find Below target state, now YELLOW.
+   WHY: It claimed to be "distinct from the active-card border" while using
+   var(--accent-2) — the exact colour .gallery-card.active uses below. The
+   two states were indistinguishable, which defeated the point of a find
+   marker: you could not tell "the item I searched for" from "the item that
+   is loaded". Yellow sits outside the blue/purple selection language
+   entirely, so the two can never be confused again.
+   The glow is what carries it at a glance while scrolling; the outline
+   alone reads as just another border at thumbnail size.
+   FUTURE: Yellow means "found", blue/purple means "selected". Do not give
+   the find state an accent colour, and do not give selection a warm one. */
 .gallery-card.gallery-jump-highlight {
-  outline: 4px solid var(--accent-2);
+  outline: 4px solid var(--find-yellow);
   outline-offset: 3px;
+  box-shadow: 0 0 0 2px var(--find-yellow-glow), 0 0 18px var(--find-yellow-glow);
+}
+
+/* [UI-REDESIGN / Stage 4]
+   WHAT: The filter row, now the first thing in the Gallery panel.
+   WHY: It carries the same .toolbar-filter-group children it had in the
+   viewer header, so the groups themselves need no new styling — this only
+   provides the row that used to come from .viewer-header-main. Wraps rather
+   than overflows, since three groups plus their buttons do not fit a narrow
+   panel on one line.
+   FUTURE: Stage 6 owns the responsive pass. */
+.gallery-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin-bottom: 14px;
+}
+
+/* [UI-REDESIGN / Stage 4 polish]
+   WHAT: Turns the Gallery filter groups into true segmented controls —
+   joined, sharing one hairline, with only the outer corners rounded.
+   WHY: Scoped to .gallery-filter-row on purpose. `.filter-btn` and
+   `.filter-toggle` are also used by the Gallery jump row and the Tag
+   filter chips, which are NOT segmented and must keep their existing
+   separated look, so none of this may leak out of this row.
+   Purely visual: no element, id, handler, selected state or keyboard
+   behavior is touched. `.active` remains the single source of selected
+   state — this only changes how it is painted.
+   FUTURE: The Tag group holds one button, so it picks up both the
+   first-child and last-child radii and renders as an ordinary standalone
+   dropdown. That is intended — do not add a special case for it. */
+.gallery-filter-row .filter-toggle {
+  gap: 0;
+}
+
+.gallery-filter-row .filter-btn {
+  /* position/z-index exist for the seam: the active segment lifts its own
+     border above its neighbours' so the blue edge is never half-covered. */
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font-size: 0.9rem;
+  /* Same lesson as the transport's icon buttons: `♥` and `▼` resolve to
+     symbol faces whose intrinsic line box is taller than the label text's,
+     and min-height is a floor rather than a cap — without this the glyph
+     segments would sit taller than their plain-text neighbours. */
+  line-height: 1;
+}
+
+/* Pulls each segment onto its neighbour's border so the pair shares one
+   1px line instead of stacking two. */
+.gallery-filter-row .filter-btn:not(:first-child) {
+  margin-left: -1px;
+}
+
+.gallery-filter-row .filter-btn:first-child {
+  border-top-left-radius: 10px;
+  border-bottom-left-radius: 10px;
+}
+
+.gallery-filter-row .filter-btn:last-child {
+  border-top-right-radius: 10px;
+  border-bottom-right-radius: 10px;
+}
+
+/* Only the active segment takes the fill. The border becomes accent rather
+   than the base rule's `transparent`, which in a joined group would punch a
+   visible gap in the shared hairline. */
+.gallery-filter-row .filter-btn.active {
+  border-color: var(--accent);
+  z-index: 1;
+}
+
+/* The global button hover lifts by 1px. That is right for a standalone
+   button and wrong here — one segment rising out of a joined group breaks
+   the seam — so hover is expressed as a background shift instead. */
+.gallery-filter-row .filter-btn:hover {
+  transform: none;
+}
+
+.gallery-filter-row .filter-btn:not(.active):hover {
+  background: var(--panel);
+}
+
+/* [UI-REDESIGN / Stage 4]
+   The now-playing strip. Reuses .panel's surface language rather than
+   introducing a new one — it is a quiet status bar, not a second transport.
+   `min-width: 0` on the name is what permits the ellipsis; a flex item
+   otherwise refuses to shrink below its content, and the two controls must
+   stay hittable however long a filename is.
+   Visibility is the `hidden` ATTRIBUTE set by syncNowPlayingStrip(), matching
+   how the workspace panels do it — not the app's `.hidden` class. */
+.now-playing-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(18, 25, 51, 0.92);
+  box-shadow: var(--shadow);
+}
+
+.now-playing-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.now-playing-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
 }
 
 .gallery-grid {
@@ -1622,10 +1757,14 @@ hr {
    Without this the new row would sit visibly below a 100vh stage during
    Fill Panel, offering a second, redundant set of controls. The popover is
    a child of the row so it is covered too, and enterFillMode() also closes
-   it so aria-expanded cannot be left stale behind the hide. */
-.simulated-fullscreen-viewer .viewer-header,
-.simulated-fullscreen-viewer .player-transport-row,
-.simulated-fullscreen-viewer #tags-filter-panel {
+   it so aria-expanded cannot be left stale behind the hide.
+   [UI-REDESIGN / Stage 4] `.viewer-header` and `#tags-filter-panel` dropped
+   from this selector: Stage 4 removed the viewer panel's header outright and
+   moved the tag panel into .gallery-panel, which
+   `.simulated-fullscreen-layout .gallery-panel { display: none }` below
+   already hides wholesale during Fill Panel. The transport row is the only
+   thing left inside the viewer panel that needs hiding. */
+.simulated-fullscreen-viewer .player-transport-row {
   display: none;
 }
 

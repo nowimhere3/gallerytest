@@ -263,48 +263,20 @@
         aria-labelledby="workspace-tab-gallery"
       >
       <section id="viewer-panel" class="panel viewer-panel">
-        <div class="viewer-header">
-          <div class="viewer-header-main">
-            <h2>Gallery</h2>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">View</span>
-              <div class="filter-toggle" role="group" aria-label="Library filter">
-                <button id="all-media-btn" class="filter-btn active" type="button">All</button>
-                <button id="favorites-only-btn" class="filter-btn" type="button">♥ Favorites</button>
-              </div>
-            </div>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">Type</span>
-              <div class="filter-toggle" role="group" aria-label="Media type filter">
-                <button id="type-all-btn" class="filter-btn active" type="button">All</button>
-                <button id="type-images-btn" class="filter-btn" type="button">Images</button>
-                <button id="type-videos-btn" class="filter-btn" type="button">Videos</button>
-              </div>
-            </div>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">Tags</span>
-              <div class="filter-toggle" role="group" aria-label="Tag filter">
-                <button id="tags-filter-toggle-btn" class="filter-btn" type="button" aria-haspopup="true" aria-expanded="false">Tags ▼</button>
-              </div>
-            </div>
-          </div>
-          <!-- [UI-REDESIGN / Stage 3] #favorite-btn and #counter-text both
-               left this header for the transport row beneath the Player —
-               see .player-transport-row below. Favorite is a per-item
-               action and the counter is a position readout; both belong
-               with the transport, not among the library filters. -->
-        </div>
- 
-        <!-- Phase 6.3 — Gallery Tag Filtering. Grows horizontally first
-             (responsive multi-column grid), vertically only as a last
-             resort, so the media grid below shifts down as little as
-             possible — the "large multi-row dropdown" the original
-             Automation UI ran into and was later refactored away from. -->
-        <div id="tags-filter-panel" class="tags-filter-panel hidden">
-          <p id="tags-filter-empty" class="hint">No tags yet — create some in Gallery Settings.</p>
-          <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
-        </div>
- 
+        <!-- [UI-REDESIGN / Stage 4]
+             WHAT: This panel's entire .viewer-header is gone — the redundant
+             "Gallery" <h2> above the media stage, and the three filter
+             groups that sat beside it. The heading is deleted outright; the
+             filters MOVED, intact, into the Gallery panel below the
+             transport (see .gallery-filter-row there). #tags-filter-panel
+             went with them, since it is that Tag button's disclosure.
+             WHY: The approved Gallery hierarchy is Player -> transport ->
+             filters -> navigation -> thumbnails. Filters above the Player
+             put library-wide controls in front of the media they do not act
+             on, and the heading labelled a panel whose whole job is to show
+             media. The Player is now visually dedicated to media.
+             FUTURE: Do not reintroduce a heading here. The workspace tab
+             already names this view. -->
         <div id="viewer-empty" class="viewer-empty">
           Choose files or a folder to begin.
         </div>
@@ -478,12 +450,90 @@
       </section>
  
       <section class="panel gallery-panel">
+      <!-- [UI-REDESIGN / Stage 4]
+           WHAT: The filter row, moved here from above the Player. Same three
+           groups, same ids, same listeners, same filtering pipeline — only
+           the visible LABELS changed: "View" -> "Show", "Tags" -> "Tag",
+           and the neutral options now read "All media" / "Any type" /
+           "Any tag" so each group states what it does when it is not
+           narrowing anything.
+           WHY: "View" was ambiguous — it is reserved for a possible future
+           grid/list choice — and the row belongs with the thumbnails it
+           filters rather than in front of the Player.
+           Semantics are untouched. In particular the Tag filter remains
+           MULTI-select and AND-combining (an item must carry every active
+           tag; see filterMedia/activeTagFilters). The button reading "Any
+           tag" is the empty state, not a reduction to single-select.
+           FUTURE: Relabelling here must never become relabelling in
+           main.js. setViewMode("all"|"favorites") and setTypeFilter are
+           still the only vocabulary the filter pipeline knows. -->
+      <div class="gallery-filter-row">
+        <!-- [UI-REDESIGN / Stage 4 polish] The visible "Show" label is
+             removed — "All media / ♥ Favorites" already says what the group
+             does. The group keeps role="group" and its aria-label, so the
+             accessible name is unchanged; only the redundant visible text
+             is gone. -->
+        <div class="toolbar-filter-group">
+          <div class="filter-toggle" role="group" aria-label="Library filter">
+            <button id="all-media-btn" class="filter-btn active" type="button">All media</button>
+            <button id="favorites-only-btn" class="filter-btn" type="button">♥ Favorites</button>
+          </div>
+        </div>
+        <div class="toolbar-filter-group">
+          <span class="toolbar-filter-label">Type</span>
+          <div class="filter-toggle" role="group" aria-label="Media type filter">
+            <button id="type-all-btn" class="filter-btn active" type="button">Any type</button>
+            <button id="type-images-btn" class="filter-btn" type="button">Images</button>
+            <button id="type-videos-btn" class="filter-btn" type="button">Videos</button>
+          </div>
+        </div>
+        <div class="toolbar-filter-group">
+          <span class="toolbar-filter-label">Tag</span>
+          <div class="filter-toggle" role="group" aria-label="Tag filter">
+            <!-- Label text is rewritten by renderTagsFilterToggleLabel() in
+                 main.js to report how many tags are active — "Any tag" only
+                 while none are. Purely a readout of activeTagFilters; it
+                 never changes what is selected. -->
+            <button id="tags-filter-toggle-btn" class="filter-btn" type="button" aria-haspopup="true" aria-expanded="false">Any tag ▼</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Phase 6.3 — Gallery Tag Filtering. Grows horizontally first
+           (responsive multi-column grid), vertically only as a last
+           resort, so the media grid below shifts down as little as
+           possible — the "large multi-row dropdown" the original
+           Automation UI ran into and was later refactored away from.
+           [UI-REDESIGN / Stage 4] Moved from the viewer panel with the Tag
+           button it belongs to; unchanged otherwise. -->
+      <div id="tags-filter-panel" class="tags-filter-panel hidden">
+        <p id="tags-filter-empty" class="hint">No tags yet — create some in the Tagging workspace.</p>
+        <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
+      </div>
+
+      <!-- [UI-REDESIGN / Stage 4 polish]
+           WHAT: Separates the filter row above from the Gallery command row
+           below, per the approved mockup.
+           WHY: A plain <hr> deliberately — the existing element already
+           carries the app's divider token (border-top: 1px solid
+           var(--border), margin: 18px 0), which is the same rule the left
+           rail's dividers use. No new class and no new CSS, so there is one
+           divider language rather than two that can drift apart.
+           It sits BELOW #tags-filter-panel, not above it, so the Tag
+           button's disclosure stays grouped with the filters it belongs to
+           when open, and the line simply moves down to accommodate it.
+           As a block child of .gallery-panel it spans the panel's content
+           width on its own; nothing needs to force that.
+           FUTURE: Presentational only — no id, nothing in main.js addresses
+           it. -->
+      <hr />
+
       <div class="viewer-header">
         <div class="viewer-header-main">
           <h2>Gallery</h2>
           <span id="gallery-count">0 items</span>
         </div>
- 
+
         <!-- Phase 1 — Gallery Media Navigation. Human-readable 1-based
              numbering ("400" = the 400th item in the current
              Gallery-visible sequence), same set the runtime/filter
@@ -510,6 +560,25 @@
             class="gallery-jump-input"
             aria-label="Media number to jump to"
           />
+          <!-- [UI-REDESIGN / Stage 4]
+               WHAT: Fills the box with the current media's 1-based position
+               in the CURRENT visible/filtered sequence — the same sequence
+               the input already validates against.
+               WHY: The position was previously only visible as the input's
+               placeholder, so acting on it meant reading it and retyping it.
+               FUTURE: This populates and nothing else. It must never
+               navigate, load, or scroll — Find Below and Load in Player
+               remain the only actions, and this deliberately leaves the
+               choice between them to the user. It also introduces no
+               numbering of its own: the value comes straight from
+               runtime.getState().currentIndex. -->
+          <button
+            id="gallery-jump-use-current-btn"
+            class="secondary gallery-jump-use-current-btn"
+            type="button"
+            title="Fill in the current media's position in this filtered view (does not navigate or load)"
+            disabled
+          >Use Current</button>
           <span class="gallery-jump-separator">then →</span>
           <button
             id="gallery-jump-mode-find-btn"
@@ -769,10 +838,38 @@
         </details>
       </section>
       </div>
+
+      <!-- [UI-REDESIGN / Stage 4]
+           WHAT: The now-playing strip. Appears only while a slideshow is
+           running AND the user has navigated away from the Gallery
+           workspace. Shows the current filename, a Stop, and a way back.
+           WHY: Leaving Gallery mid-playback otherwise gives no sign that
+           anything is still running and no way to stop it without first
+           navigating back.
+           This is the ONE place in the redesign that creates a second
+           control surface for an existing runtime action, so it is
+           deliberately minimal and deliberately does NOT clone any id.
+           #now-playing-stop-btn is a distinct element that calls the same
+           runtime.stop() the transport's #stop-btn calls — one runtime
+           action reached from two places, never two implementations.
+           #now-playing-return-btn calls the existing
+           ensureGalleryWorkspaceVisible().
+           A sibling of the workspace panels rather than a child of one, so
+           it survives whichever workspace is showing.
+           FUTURE: Keep this to status plus Stop plus Return. It is not a
+           second transport — do not grow Previous/Next/Favorite here. Any
+           control added must call an existing runtime function rather than
+           re-implementing one. -->
+      <div id="now-playing-strip" class="now-playing-strip" hidden>
+        <span class="now-playing-label">Now playing</span>
+        <span id="now-playing-name" class="now-playing-name"></span>
+        <button id="now-playing-stop-btn" class="secondary" type="button">Stop</button>
+        <button id="now-playing-return-btn" class="secondary" type="button">Return to Gallery</button>
+      </div>
       </div>
     </main>
   </div>
- 
+
   <div id="presentation-controls" class="presentation-controls hidden" tabindex="0" aria-label="Presentation controls">
     <div class="presentation-controls-bar">
       <button id="overlay-favorite-btn" class="overlay-btn overlay-btn-favorite hidden" type="button" aria-label="Toggle favorite">♡</button>
