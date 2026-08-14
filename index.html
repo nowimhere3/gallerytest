@@ -34,7 +34,13 @@
           <span class="rail-identity-name">Browser Gallery</span>
         </div>
 
-        <h2>Load Media</h2>
+        <!-- [UI-REDESIGN / Stage 5] "Load Media" -> "Libraries", and
+             restyled from a panel <h2> to the small uppercase section label
+             the approved composition uses. It stays an <h2> so the rail's
+             heading structure is unchanged for assistive tech — this is a
+             type treatment, not a demotion. The name matches the rail IA,
+             which calls this section Libraries. -->
+        <h2 class="rail-section-label">Libraries</h2>
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
              WHAT: Collapses the legacy Choose Files/Choose Folder controls
@@ -168,6 +174,11 @@
              to Clear Media — the pairing is deliberate, since Clear Media's
              effect is reported here. -->
         <div class="status-box">
+          <!-- [UI-REDESIGN / Stage 5] The composition labels this block.
+               Presentational only — the rows below already carry their own
+               <strong> labels, so this adds a heading, not a second
+               readout. -->
+          <p class="status-box-title">Live Status</p>
           <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
           <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
           <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
@@ -281,7 +292,14 @@
           Choose files or a folder to begin.
         </div>
  
-        <div id="viewer-stage" class="viewer-stage hidden"></div>
+        <!-- [UI-REDESIGN / Stage 5] tabindex="-1" makes the stage a
+             programmatic focus target — reachable by script, never by Tab,
+             so the tab order is unchanged. Activating a Gallery card with
+             the keyboard moves focus here, which is what hands the Player
+             shortcuts back without making the user Shift+Tab through
+             thousands of cards. It is not a button and carries no role, so
+             the shortcut guards treat it as neutral ground. -->
+        <div id="viewer-stage" class="viewer-stage hidden" tabindex="-1" aria-label="Player"></div>
 
         <!-- [UI-REDESIGN / Stage 3]
              WHAT: The transport row, directly beneath the Player. Every
@@ -474,17 +492,27 @@
              accessible name is unchanged; only the redundant visible text
              is gone. -->
         <div class="toolbar-filter-group">
+          <!-- [UI-REDESIGN / Stage 5] aria-pressed added to all five filter
+               buttons. The selected segment was communicated only by the
+               blue fill, so a screen-reader user got no indication of which
+               filter was active. Kept in sync by setViewMode()/
+               setTypeFilter() alongside the .active class they already set —
+               same call, no second source of truth.
+               aria-pressed rather than a radiogroup on purpose: it matches
+               what the Tag chips and the Find/Load buttons already use, and
+               it does not change the keyboard model these buttons have
+               always had. -->
           <div class="filter-toggle" role="group" aria-label="Library filter">
-            <button id="all-media-btn" class="filter-btn active" type="button">All media</button>
-            <button id="favorites-only-btn" class="filter-btn" type="button">♥ Favorites</button>
+            <button id="all-media-btn" class="filter-btn active" type="button" aria-pressed="true">All media</button>
+            <button id="favorites-only-btn" class="filter-btn" type="button" aria-pressed="false">♥ Favorites</button>
           </div>
         </div>
         <div class="toolbar-filter-group">
           <span class="toolbar-filter-label">Type</span>
           <div class="filter-toggle" role="group" aria-label="Media type filter">
-            <button id="type-all-btn" class="filter-btn active" type="button">Any type</button>
-            <button id="type-images-btn" class="filter-btn" type="button">Images</button>
-            <button id="type-videos-btn" class="filter-btn" type="button">Videos</button>
+            <button id="type-all-btn" class="filter-btn active" type="button" aria-pressed="true">Any type</button>
+            <button id="type-images-btn" class="filter-btn" type="button" aria-pressed="false">Images</button>
+            <button id="type-videos-btn" class="filter-btn" type="button" aria-pressed="false">Videos</button>
           </div>
         </div>
         <div class="toolbar-filter-group">
@@ -494,7 +522,10 @@
                  main.js to report how many tags are active — "Any tag" only
                  while none are. Purely a readout of activeTagFilters; it
                  never changes what is selected. -->
-            <button id="tags-filter-toggle-btn" class="filter-btn" type="button" aria-haspopup="true" aria-expanded="false">Any tag ▼</button>
+            <!-- [UI-REDESIGN / Stage 5] aria-controls added — the button
+                 announced that it opens something but never said what, so
+                 assistive tech had no path from the trigger to the panel. -->
+            <button id="tags-filter-toggle-btn" class="filter-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="tags-filter-panel">Any tag ▼</button>
           </div>
         </div>
       </div>
@@ -506,7 +537,10 @@
            Automation UI ran into and was later refactored away from.
            [UI-REDESIGN / Stage 4] Moved from the viewer panel with the Tag
            button it belongs to; unchanged otherwise. -->
-      <div id="tags-filter-panel" class="tags-filter-panel hidden">
+      <!-- [UI-REDESIGN / Stage 5] role/aria-label added: the panel is the
+           Tag button's disclosure and is now a named region its
+           aria-controls can point at, rather than an anonymous div. -->
+      <div id="tags-filter-panel" class="tags-filter-panel hidden" role="group" aria-label="Filter by tag">
         <p id="tags-filter-empty" class="hint">No tags yet — create some in the Tagging workspace.</p>
         <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
       </div>
@@ -860,7 +894,12 @@
            second transport — do not grow Previous/Next/Favorite here. Any
            control added must call an existing runtime function rather than
            re-implementing one. -->
-      <div id="now-playing-strip" class="now-playing-strip" hidden>
+      <!-- [UI-REDESIGN / Stage 5] role="status" + aria-live="polite": the
+           strip appears on its own when playback continues past a workspace
+           switch, and a region that appears unannounced is invisible to a
+           screen-reader user. Polite rather than assertive — it is context,
+           not an alert, and must not interrupt. -->
+      <div id="now-playing-strip" class="now-playing-strip" role="status" aria-live="polite" hidden>
         <span class="now-playing-label">Now playing</span>
         <span id="now-playing-name" class="now-playing-name"></span>
         <button id="now-playing-stop-btn" class="secondary" type="button">Stop</button>

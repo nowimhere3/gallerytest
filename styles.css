@@ -102,6 +102,52 @@ input {
   color: var(--text);
 }
 
+/* [UI-REDESIGN / Stage 5]
+   WHAT: The rail's section-label type treatment, applied to the Libraries
+   heading.
+   WHY: The approved composition uses a small uppercase label here, not a
+   panel-sized heading. It shares the .rail-profile-summary-label treatment
+   deliberately, so the two rail sections read as the same kind of thing.
+   The element stays an <h2>; only its appearance changes. */
+.rail-section-label {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Same label treatment inside the green status box, which sets its own
+   colour and monospace family — so this only needs the shape, and inherits
+   the terminal language from its parent. */
+.status-box-title {
+  margin: 0 0 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* [UI-REDESIGN / Stage 5]
+   Clear Media as an outlined danger button rather than a filled one, per the
+   composition. It is destructive and permanently visible, so it should read
+   as available-but-not-inviting; a solid red block competes with the Start
+   button for the eye. The border and text still carry the danger colour, so
+   nothing about its severity is softened.
+   Scoped through .controls-panel deliberately: `button.danger` further down
+   this file is (0,1,1) and would otherwise win on both specificity and
+   source order, leaving the fill in place. */
+.controls-panel .clear-media-btn {
+  background: transparent;
+  color: #ff8a9b;
+  border-color: #6b202b;
+}
+
+.controls-panel .clear-media-btn:not(:disabled):hover {
+  background: rgba(107, 32, 43, 0.28);
+}
+
 .layout {
   display: grid;
   grid-template-columns: 340px 1fr;
@@ -277,10 +323,39 @@ input {
   border-color: var(--border);
 }
 
+/* [UI-REDESIGN / Stage 5]
+   WHAT: One visible focus indicator for every interactive control, not just
+   the workspace tabs and panels that already had one.
+   WHY: Nothing in this stylesheet suppresses the UA outline, so focus was
+   technically visible — but as a thin default ring on a near-black surface
+   it was very hard to see, and it differed from the deliberate neon ring the
+   tabs use. A keyboard user should get the same unmistakable indicator
+   everywhere.
+   :focus-visible rather than :focus so a pointer click does not paint a ring
+   on a button the user has already released — the same modality distinction
+   the shortcut guards rely on.
+   FUTURE: Add new interactive elements to this selector. Never suppress the
+   outline to tidy a layout; adjust outline-offset instead. */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible,
+.button-like:focus-within,
 .workspace-tab:focus-visible,
 .workspace-panel:focus-visible {
   outline: 2px solid var(--neon-blue);
   outline-offset: 2px;
+}
+
+/* Segments sit flush against each other, so an offset ring would be clipped
+   by the neighbour it overlaps. Pulling it inside keeps the whole ring
+   visible, and the raised z-index keeps it above both neighbours. */
+.gallery-filter-row .filter-btn:focus-visible {
+  outline-offset: -2px;
+  z-index: 2;
 }
 
 .workspace-panel {
@@ -1129,6 +1204,24 @@ button:not(:disabled):hover,
   position: relative;
 }
 
+/* [UI-REDESIGN / Stage 5 fix]
+   The visible focus indication for a deliberate hand-off to the Player.
+   Keyed to `.is-focus-handoff`, which focusPlayerStage() sets and the stage's
+   own blur listener clears, rather than to `:focus-visible` or plain `:focus`:
+   - `:focus-visible` alone would not paint after a POINTER activation (the
+     browser reports pointer modality), so "Return to Gallery" clicked with the
+     mouse would move focus with nothing on screen to show it.
+   - plain `:focus` would over-paint: a `tabindex="-1"` element is focusable by
+     click, so clicking the media itself would ring the whole stage.
+   Same ring as the global :focus-visible rule near the top of this file, so
+   the indicator is the one the rest of the app already teaches.
+   FUTURE: Do not widen this to interactive controls. Everything else in this
+   app deliberately uses :focus-visible so a mouse click paints no ring. */
+.viewer-stage.is-focus-handoff:focus {
+  outline: 2px solid var(--neon-blue);
+  outline-offset: 2px;
+}
+
 .viewer-stage img,
 .viewer-stage video {
   width: 100%;
@@ -1163,6 +1256,23 @@ button:not(:disabled):hover,
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* [UI-REDESIGN / Stage 5]
+   WHAT: Start is the only filled button in the transport; its neighbours are
+   secondary.
+   WHY: The approved composition gives the cluster one primary action. Start
+   already inherits the accent fill from the base `button` rule, so it needs
+   nothing — what was missing is that Previous/Stop/Next were competing with
+   it at the same weight. This demotes them to the same .secondary treatment
+   used everywhere else in the app; no element, id or handler is involved.
+   Favorite keeps its own .favorite-toggle styling and is excluded. */
+.player-transport-cluster > #prev-btn,
+.player-transport-cluster > #stop-btn,
+.player-transport-cluster > #next-btn {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
 }
 
 .player-transport-meta {
@@ -1443,6 +1553,21 @@ button.tag-status-select.is-selected {
   border-radius: 12px;
   background: rgba(18, 25, 51, 0.92);
   box-shadow: var(--shadow);
+}
+
+/* [UI-REDESIGN / Stage 5 fix]
+   The rule the comment above assumed was already in force. `[hidden]`'s
+   `display: none` lives in the UA stylesheet, and ANY author declaration
+   outranks the UA origin regardless of specificity — so `.now-playing-strip`'s
+   own `display: flex` was silently defeating the `hidden` attribute
+   syncNowPlayingStrip() sets, and the strip never actually hid. That is what
+   left #now-playing-return-btn focused and on screen after "Return to
+   Gallery", which in turn latched :focus-visible and killed the Player
+   shortcuts. Identical one-liner, identical reason, as `.workspace-panel[hidden]`.
+   FUTURE: Any element whose visibility is the `hidden` ATTRIBUTE needs this
+   companion rule the moment it is given a `display` of its own. */
+.now-playing-strip[hidden] {
+  display: none;
 }
 
 .now-playing-label {

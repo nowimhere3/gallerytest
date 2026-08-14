@@ -1493,9 +1493,32 @@ let pendingFilterReloadItemId = null;
 function flushPendingFilterReload() {
   if (pendingFilterReloadIndex === null) return;
 
-  // Read before reloadRuntime(), which clears this by design (see its own
-  // note) — otherwise the clamp below would have nothing to clamp.
+  // Read before either path below clears them (see reloadRuntime's note).
   const previousIndex = pendingFilterReloadIndex;
+  const droppedItemId = pendingFilterReloadItemId;
+
+  // [UI-REDESIGN / Stage 5 fix] Prefer removing just the one item that
+  // stopped matching the filter, rather than rebuilding the whole list.
+  //
+  // ROOT CAUSE this replaces: reloadRuntime() -> runtime.load() ->
+  // #resetHistory(), which collapses visit history to the current index.
+  // With Shuffle on (the default) previous() walks that history, so Back
+  // died at the refresh point and everything before the un-loved item became
+  // unreachable — the sequence behaved as if it began at the next item.
+  // removeItemById() does the same list change while remapping history by
+  // index, so the items visited before the removal stay reachable in the
+  // same order, with the removed one simply skipped.
+  //
+  // It also makes setCurrentIndex()'s own #resetHistory() unnecessary here,
+  // which was the second place the history was being thrown away.
+  pendingFilterReloadIndex = null;
+  pendingFilterReloadItemId = null;
+
+  if (droppedItemId && runtime.removeItemById(droppedItemId)) return;
+
+  // Fallback for anything removeItemById could not account for — the id is
+  // no longer in the runtime's list at all, or more than this one item
+  // changed. Same behavior as before this fix.
   reloadRuntime({ keepPlaying: runtime.getState().isPlaying });
 
   const { total } = runtime.getState();
@@ -1530,6 +1553,26 @@ function handlePendingFilterReloadOnAdvance(state) {
   if (!current) return;
   if (current.id === pendingFilterReloadItemId) return;
 
+  // [UI-REDESIGN / Stage 5 fix] THE INTEGRATED ROOT CAUSE of the surviving
+  // history truncation.
+  //
+  // flushPendingFilterReload() was taught to use removeItemById(), but this
+  // path — every way of leaving the dropped item that is NOT the Previous/
+  // Next buttons — still went through reloadRuntime() -> load() ->
+  // #resetHistory(). That covers the slideshow auto-advancing off the item,
+  // a video ending, and clicking a Gallery thumbnail. So in a real session
+  // the deferral was very often resolved HERE rather than in the flush, the
+  // history was wiped, and Back hit a wall at the refresh point — which is
+  // exactly why the isolated runtime test passed while the browser did not.
+  //
+  // Same primitive, same reasons. Clearing the pending state first makes the
+  // re-entrant call this emit triggers a no-op.
+  const droppedItemId = pendingFilterReloadItemId;
+  pendingFilterReloadIndex = null;
+  pendingFilterReloadItemId = null;
+
+  if (droppedItemId && runtime.removeItemById(droppedItemId)) return;
+
   reloadRuntime({ preserveId: current.id, keepPlaying: state.isPlaying });
 }
 
@@ -1555,6 +1598,11 @@ function setViewMode(mode) {
   viewMode = mode;
   allMediaBtn.classList.toggle("active", mode === "all");
   favoritesOnlyBtn.classList.toggle("active", mode === "favorites");
+  // [UI-REDESIGN / Stage 5] aria-pressed set from the same expression as
+  // .active, on the same line-for-line basis, so the visual state and the
+  // announced state cannot drift.
+  allMediaBtn.setAttribute("aria-pressed", mode === "all" ? "true" : "false");
+  favoritesOnlyBtn.setAttribute("aria-pressed", mode === "favorites" ? "true" : "false");
   viewModeText.textContent = mode === "all" ? "All Media" : "Favorites Only";
 
   // viewMode is already updated above, so this reflects the mode being
@@ -1571,6 +1619,10 @@ function setTypeFilter(type) {
   typeAllBtn.classList.toggle("active", type === "all");
   typeImagesBtn.classList.toggle("active", type === "image");
   typeVideosBtn.classList.toggle("active", type === "video");
+  // [UI-REDESIGN / Stage 5] See setViewMode() above — same pairing.
+  typeAllBtn.setAttribute("aria-pressed", type === "all" ? "true" : "false");
+  typeImagesBtn.setAttribute("aria-pressed", type === "image" ? "true" : "false");
+  typeVideosBtn.setAttribute("aria-pressed", type === "video" ? "true" : "false");
 
   // Shuffle, Presentation, and Slideshow all draw from whatever
   // getVisibleItems() hands to runtime.load() below — there's no separate
@@ -1661,6 +1713,51 @@ function toggleTagsFilterPanel() {
     tagsFilterPanel.classList.contains("hidden") ? "false" : "true"
   );
 }
+
+// [UI-REDESIGN / Stage 5]
+// WHAT: Completes the Tag filter disclosure's keyboard and pointer
+// behavior — Escape closes and returns focus to the trigger, and an outside
+// click closes it.
+// WHY: It was openable but only closable by clicking its own trigger again.
+// A keyboard user who tabbed into the panel had no way out except tabbing
+// back through it, and Escape — which every other disclosure in this app
+// honours — did nothing. This is the accessibility completion the brief
+// asks for, deliberately modelled on the Playback popover so the two
+// disclosures behave identically rather than each having their own rules.
+// FUTURE: closeTagsFilterPanel() is the single close path. Do not hide the
+// panel directly, or aria-expanded will go stale.
+function isTagsFilterPanelOpen() {
+  return !tagsFilterPanel.classList.contains("hidden");
+}
+
+// `returnFocus` is the keyboard path only: Escape must put focus back on the
+// trigger, while an outside click must not steal it back from wherever the
+// user just chose to click.
+function closeTagsFilterPanel({ returnFocus = false } = {}) {
+  if (!isTagsFilterPanelOpen()) return;
+  tagsFilterPanel.classList.add("hidden");
+  tagsFilterToggleBtn.setAttribute("aria-expanded", "false");
+  if (returnFocus) tagsFilterToggleBtn.focus();
+}
+
+document.addEventListener("click", (event) => {
+  if (!isTagsFilterPanelOpen()) return;
+  if (tagsFilterPanel.contains(event.target)) return;
+  // The trigger runs its own toggle; letting this handler also fire would
+  // close what that click just opened.
+  if (tagsFilterToggleBtn.contains(event.target)) return;
+  closeTagsFilterPanel();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!isTagsFilterPanelOpen()) return;
+  // Presentation Mode's Escape means "leave Fill" and is registered first;
+  // this panel belongs to the ordinary Gallery, which PM covers entirely.
+  if (fillModeActive) return;
+  event.preventDefault();
+  closeTagsFilterPanel({ returnFocus: true });
+});
 
 // ---- Playback popover ---------------------------------------------------
 //
@@ -2352,10 +2449,48 @@ function fullRebuildGallery(state) {
     card.appendChild(thumb);
     card.appendChild(meta);
 
-    card.addEventListener("click", () => {
+    card.addEventListener("click", (event) => {
       clearGalleryJumpTarget();
-      runtime.setCurrentIndex(index);
+      // [UI-REDESIGN / Stage 5 fix] THE call that was destroying history.
+      // setCurrentIndex() reset it unconditionally, and it runs BEFORE the
+      // pending-removal handler resolves — so by the time removeItemById()
+      // ran there was nothing left for it to remap. Picking a thumbnail is
+      // navigation within the current sequence, not the start of a new one,
+      // so the pick is appended as the newest entry and everything visited
+      // earlier stays reachable by Previous.
+      runtime.setCurrentIndex(index, { keepHistory: true });
       viewerPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+      // [UI-REDESIGN / Stage 5 fix] Gallery cards are real <button> elements
+      // (see createElement above), so activating one leaves it focused and
+      // the :focus-visible latch then swallowed ArrowLeft/ArrowRight/Space/F
+      // — L kept working only because it is exempt from that guard.
+      //
+      // Picking a card means "load this and let me drive the Player", so
+      // both activation routes hand the keyboard over — but they need
+      // different treatment:
+      //
+      // Pointer: just release. The user's hand is on the mouse and focus on
+      // the card they already let go of serves nobody.
+      //
+      // Keyboard: blurring into nowhere would strand the user at the top of
+      // the document, and Shift+Tabbing back out of a grid of thousands of
+      // cards is not a route anyone would take. Focus MOVES to the viewer
+      // stage instead — a genuine target rather than an absence — which both
+      // frees the shortcuts and truthfully represents having gone from
+      // choosing a card to controlling the Player. The stage takes focus via
+      // tabindex="-1", so this changes nothing about Tab order.
+      //
+      // [UI-REDESIGN / Stage 5 fix] Routed through focusPlayerStage() rather
+      // than calling viewerStage.focus() here, so this and the now-playing
+      // strip's Return share ONE hand-off path — same target, same visible
+      // ring, no chance of the two drifting apart. Behavior here is unchanged
+      // apart from the ring now being explicit instead of depending on the
+      // browser's modality heuristic.
+      if (event.detail === 0) {
+        focusPlayerStage();
+      } else {
+        releaseFocusAfterPointerActivation(event);
+      }
     });
 
     galleryGrid.appendChild(card);
@@ -2637,9 +2772,19 @@ galleryJumpModeFindBtn.addEventListener("click", () => {
   setGalleryJumpMode("find");
   performGalleryJump();
 });
-galleryJumpModePlayBtn.addEventListener("click", () => {
+galleryJumpModePlayBtn.addEventListener("click", (event) => {
   setGalleryJumpMode("play");
   performGalleryJump();
+  // [UI-REDESIGN / Stage 5 fix] Load in Player hands the user back to the
+  // Player — so it must hand the keyboard back too. Without this the button
+  // kept focus, and the :focus-visible latch then swallowed
+  // ArrowLeft/ArrowRight/Space/F until the user clicked elsewhere.
+  //
+  // Deliberately NOT applied to Find Below or Use Current: those leave the
+  // user working in the command row, where the controls keeping focus is
+  // correct. Pointer-only, as everywhere else — a keyboard activation
+  // (detail === 0) keeps its focus and its ring.
+  releaseFocusAfterPointerActivation(event);
 });
 galleryJumpInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
@@ -2828,6 +2973,38 @@ function releaseFocusAfterPointerActivation(event) {
   event.currentTarget?.blur?.();
 }
 
+// [UI-REDESIGN / Stage 5 fix]
+// WHAT: The single way anything hands the keyboard to the Player. Moves focus
+// to #viewer-stage — the neutral, tabindex="-1" target Stage 5 already added
+// for exactly this — and marks it so the focus is actually VISIBLE.
+// WHY (the marker class): the stage is only ever focused by script, and after
+// a POINTER activation the browser reports pointer modality and withholds
+// :focus-visible, so the Stage 5 `[tabindex]:focus-visible` ring would not
+// paint and focus would move with no sign of it. A plain `.viewer-stage:focus`
+// rule is not the answer either: a tabindex="-1" element IS focusable by
+// click, so clicking the media itself would then paint a ring nobody asked
+// for. The class is set only on this deliberate hand-off and cleared on blur,
+// which keeps the ring exactly on the hand-off and nowhere else.
+// The blur listener is on the stage ELEMENT — there is deliberately no
+// document-level focus/blur handler anywhere in this app.
+// FUTURE: Any future "give the Player the keyboard back" control must call
+// THIS rather than viewerStage.focus() directly, or it will move focus
+// invisibly for mouse users.
+function focusPlayerStage() {
+  // focus() is a silent no-op on a display:none element, and .hidden is
+  // `display: none !important`. The caller has already brought the Gallery
+  // workspace forward; this covers the remaining case of a stage with nothing
+  // mounted on it, where there is no Player to hand anything to.
+  if (viewerStage.classList.contains("hidden")) return false;
+  viewerStage.classList.add("is-focus-handoff");
+  viewerStage.focus();
+  return true;
+}
+
+viewerStage.addEventListener("blur", () => {
+  viewerStage.classList.remove("is-focus-handoff");
+});
+
 allMediaBtn.addEventListener("click", (event) => {
   setViewMode("all");
   releaseFocusAfterPointerActivation(event);
@@ -2928,7 +3105,43 @@ fillPanelBtn.addEventListener("click", () => enterFillPanelDeliberately());
 // for cross-workspace hand-offs. Neither re-implements anything, and no id
 // is cloned.
 nowPlayingStopBtn.addEventListener("click", () => runtime.stop());
-nowPlayingReturnBtn.addEventListener("click", () => ensureGalleryWorkspaceVisible());
+
+// [UI-REDESIGN / Stage 5 fix]
+// ROOT CAUSE of "shortcuts die after Return": this handler used to be
+// `() => ensureGalleryWorkspaceVisible()` and nothing else, so activating it
+// left #now-playing-return-btn as document.activeElement with no route back to
+// the Player. It looked survivable because syncNowPlayingStrip() sets the
+// strip's `hidden` attribute on the way out, which should have taken the
+// focused button out of the layout and dropped focus to <body> — but
+// `.now-playing-strip { display: flex }` is an AUTHOR rule and `[hidden]`'s
+// `display: none` is a UA rule, and author beats UA outright. The strip never
+// actually hid, the button kept focus, and on the next keypress it began
+// matching :focus-visible, so isKeyboardFocusedControl() swallowed
+// ArrowLeft/ArrowRight/Space/F. (See the matching `.now-playing-strip[hidden]`
+// rule in styles.css, which is the other half of this fix and the same
+// one-liner `.workspace-panel[hidden]` already carries.)
+//
+// The fix is not a stronger guard — it is an explicit hand-off. Returning is
+// an unambiguous statement that the user has left the Tag workflow and is back
+// in the media context, so focus MOVES to the Player rather than merely being
+// released. Both activation routes get it, deliberately: unlike a Gallery
+// filter button (pointer = release, keyboard = keep), there is nothing left to
+// keep here — the control the user activated is on its way off screen either
+// way, so blurring a keyboard user into nowhere would strand them at the top
+// of the document.
+//
+// Order is load-bearing: Gallery must come forward FIRST, because #viewer-stage
+// lives inside that panel and focus() does nothing on a display:none element.
+// Neither call touches runtime state, so playback continues untouched — no
+// restart, no stop, no seek.
+nowPlayingReturnBtn.addEventListener("click", (event) => {
+  ensureGalleryWorkspaceVisible();
+  // Nothing mounted on the stage to receive the keyboard (the strip is only
+  // shown while playing, so this is a defensive branch). Releasing focus is
+  // still strictly better than leaving it on a button that just left the
+  // layout, and it is what keeps the shortcuts free in that case.
+  if (!focusPlayerStage()) event.currentTarget?.blur?.();
+});
 
 stopBtn.addEventListener("click", () => runtime.stop());
 
@@ -2956,12 +3169,34 @@ clearBtn.addEventListener("click", () => {
   syncAssociateButtonVisibility();
 });
 
-favoriteBtn.addEventListener("click", () => {
+favoriteBtn.addEventListener("click", (event) => {
   handleFavoriteToggle();
+  // [UI-REDESIGN / Stage 5 fix] The transport ❤️ is a <button> that stays in
+  // place after use — syncControls() only updates its class and glyph, never
+  // replaces it — so a pointer click left it holding focus, and the
+  // :focus-visible latch then swallowed ArrowLeft/ArrowRight/Space/F. L kept
+  // working only because it is exempt from that guard: the same fingerprint
+  // as every earlier instance.
+  //
+  // Favoriting is a per-item action taken WHILE watching the Player, not a
+  // hand-off to somewhere else, so the pointer path just releases focus
+  // rather than moving it — the user's attention is already on the media.
+  // Keyboard activation (detail === 0) keeps focus and its ring, so Tab-to-
+  // heart-then-Space still toggles Favorite and stays put.
+  //
+  // Nothing about persistence, the deferred Favorites-filter removal, or the
+  // preserved history is touched — this runs after handleFavoriteToggle()
+  // and only moves focus.
+  releaseFocusAfterPointerActivation(event);
 });
 
 // -- overlay / fill-panel controls --
 
+// [UI-REDESIGN / Stage 5] The PM ❤️ deliberately gets NO focus release.
+// handlePresentationKeydown() never consults isKeyboardFocusedControl() —
+// verified — so a focused PM control cannot suppress PM shortcuts, and
+// blurring here would only take focus away from a toolbar the user is
+// actively clicking through.
 overlayFavoriteBtn.addEventListener("click", () => {
   handleFavoriteToggle();
 });
@@ -3777,7 +4012,16 @@ profile.subscribe(() => {
   const prunedTagFilters = activeTagFilters.filter((id) => validTagIds.has(id));
   if (prunedTagFilters.length !== activeTagFilters.length) {
     activeTagFilters = prunedTagFilters;
-    reloadRuntime({ keepPlaying: runtime.getState().isPlaying });
+    // [UI-REDESIGN / Stage 5 fix] preserveId added — the same gap fixed in
+    // the item-focused subscription below. Dropping a deleted tag from the
+    // filter set widens the visible list, so the current item is almost
+    // always still in it; without preserveId, load()'s index reset threw the
+    // user to item 1 for a change that did not concern the item they were
+    // looking at.
+    reloadRuntime({
+      preserveId: runtime.getState().currentItem?.id,
+      keepPlaying: runtime.getState().isPlaying,
+    });
   }
   renderTagsFilterGrid();
 });
@@ -4061,7 +4305,25 @@ profile.subscribe(() => {
       !currentItem || getVisibleItems().some((item) => item.id === currentItem.id);
 
     if (currentStillVisible) {
-      reloadRuntime({ keepPlaying: isPlaying });
+      // [UI-REDESIGN / Stage 5 fix]
+      // ROOT CAUSE of the "tagging jumps the player" report, and the other
+      // half of the bug the Stage 3 note above only fixed for the dropped-out
+      // case. MediaRuntime.load() ends with
+      //     this.#currentIndex = this.#items.length ? 0 : -1;
+      // so EVERY reload resets to the first item unless something puts the
+      // index back. The dropped-out branch below was taught to do that;
+      // this branch never was, so tagging an item that stayed perfectly
+      // visible still rebuilt the list and landed on item 1.
+      //
+      // preserveId is the existing mechanism for exactly this — the same one
+      // skipDuplicates' live toggle and the deferred flush already use. We
+      // have just proven the item is in `visible`, so its findIndex cannot
+      // miss.
+      //
+      // This is deliberately NOT a Favorites-specific patch: it is on the
+      // shared branch, so it covers a Tag-filtered view and PM/Fill exactly
+      // the same way, and it introduces no Tag state of its own.
+      reloadRuntime({ preserveId: currentItem?.id, keepPlaying: isPlaying });
     } else {
       pendingFilterReloadIndex = currentIndex;
       pendingFilterReloadItemId = currentItem.id;
