@@ -2530,3 +2530,395 @@ hr {
     font-size: 1rem;
   }
 }
+
+/* ==========================================================================
+   [UI-REDESIGN / Stage 6] Responsive / mobile transformation
+   ==========================================================================
+   WHAT: Everything below turns the desktop shell into the narrow-screen
+   shell — compact header, the left rail as a Controls bottom sheet, a
+   Player-first stack, and single-column workspaces.
+   WHY: It is one block at the end of the file, and one breakpoint (980px),
+   on purpose. 980px is where .layout already dropped to a single column, so
+   it is the width at which the rail stops being a side column and has to
+   become something else; introducing a second, nearby breakpoint would mean
+   a band where the rail is neither. Being last in the file means these rules
+   win ties against the desktop rules they replace without needing inflated
+   selectors to do it.
+   Nothing here duplicates a control. Every element styled below is the SAME
+   element the desktop uses, restyled — which is why there is no mobile-only
+   id anywhere in this block except the four genuinely new ones (the header,
+   its context readout, the drawer handle, its close button and the scrim).
+   FUTURE: Keep this the only shell breakpoint. If a future change needs a
+   third layout, add it here rather than scattering @media blocks next to
+   each component — the interactions between the drawer, Fill Panel and the
+   workspace stack are only reviewable when they sit together. */
+
+/* Desktop default: the mobile chrome does not exist. Declared OUTSIDE the
+   media query so these elements are hidden even in browsers that never
+   evaluate it, rather than flashing on first paint. */
+.mobile-app-header,
+.controls-scrim,
+.controls-drawer-close-btn {
+  display: none;
+}
+
+/* [UI-REDESIGN / Stage 6]
+   The Fill Panel rule the mobile header's HTML comment refers to, and the
+   exception the Stage 2 note at the top of this file anticipated: this
+   header is the one element above main.layout, so the
+   `.simulated-fullscreen-layout ...` rules that strip the rest of the Gallery
+   chrome cannot reach it. Keyed to `.simulated-fullscreen` (which
+   enterFillMode() puts on .app-shell) rather than the layout class, because
+   the header is a SIBLING of main.layout, not a descendant.
+   FUTURE: Any further app-level chrome added above main.layout needs its own
+   line here, or it will render on top of Presentation Mode. */
+.simulated-fullscreen .mobile-app-header,
+.simulated-fullscreen .controls-scrim {
+  display: none;
+}
+
+@media (max-width: 980px) {
+  /* Reclaims the horizontal margin the desktop body padding spends; at 360px
+     36px of padding is a tenth of the viewport. */
+  body {
+    padding: 10px;
+  }
+
+  /* --- Compact app header ------------------------------------------------
+     Sticky rather than fixed: it scrolls with the document's flow but pins at
+     the top, so the Controls handle and the current context are always one
+     thumb away without permanently reserving viewport height the way a fixed
+     header does. z-index 30 clears the in-page overlays (2) and the Playback
+     popover (5) and stays far below the drawer (41) and Presentation Mode. */
+  .mobile-app-header {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(13, 20, 40, 0.98);
+    box-shadow: var(--shadow);
+  }
+
+  .mobile-app-mark {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    border: 1px solid var(--neon-blue-glow);
+    border-radius: 8px;
+    color: var(--neon-blue);
+    font-weight: 700;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+  }
+
+  /* The context line yields all remaining space and truncates — a long
+     profile name must never push the Controls handle off the strip. */
+  .mobile-context-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .mobile-controls-btn {
+    display: inline-flex;
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+
+  /* --- The rail as a Controls bottom sheet -------------------------------
+     One element, two layouts. `position: fixed` takes the rail out of
+     .layout's flow entirely, which is what leaves .media-content — and so the
+     Player — at the top of the page in the loaded state.
+     `visibility: hidden` is load-bearing and not decoration: a drawer that is
+     merely translated off screen keeps every control inside it in the tab
+     order, so a keyboard user would tab into an invisible rail. visibility
+     removes them, and is restored a frame's worth of transition ahead of the
+     slide so the sheet is never announced as hidden while visibly open.
+     FUTURE: Do not swap this for `display: none` — the transform transition
+     needs a rendered box. Do not swap it for opacity alone, which leaves the
+     controls focusable. */
+  .controls-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 41;
+    max-height: 85vh;
+    overflow-y: auto;
+    border-radius: 18px 18px 0 0;
+    border-bottom: none;
+    padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    transform: translateY(100%);
+    visibility: hidden;
+    transition: transform 0.22s ease, visibility 0.22s;
+  }
+
+  .controls-panel.is-drawer-open {
+    transform: none;
+    visibility: visible;
+  }
+
+  .controls-drawer-close-btn {
+    display: inline-flex;
+    align-self: flex-end;
+    order: -1;
+    min-height: 44px;
+    margin-bottom: 8px;
+  }
+
+  .controls-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(2, 5, 14, 0.62);
+  }
+
+  /* `hidden` is the attribute the drawer functions toggle; .controls-scrim's
+     own `display: block` is an author rule and would otherwise defeat the UA
+     `[hidden]` rule outright. Same one-liner, same reason, as
+     `.workspace-panel[hidden]` and `.now-playing-strip[hidden]`. */
+  .controls-scrim[hidden] {
+    display: none;
+  }
+
+  /* --- Empty state: loading is the priority, not an empty Player ---------
+     With nothing loaded there is no Player worth putting first, so the rail
+     reverts to an ordinary block at the top of the page — Load, Recent
+     Libraries and the legacy pickers are then the first thing on screen, and
+     the Controls handle that would open an already-visible panel is hidden.
+     `.app-has-media` is set by buildViewer() in main.js from the same
+     decision that shows or hides the Player, so the two can never disagree.
+     FUTURE: This is the empty state's whole treatment. Do not add a
+     mobile-only "Load media" button — the real controls are already here. */
+  /* `:not(.simulated-fullscreen)` is not decoration. `:not()` contributes its
+     argument's specificity, so this selector is (0,3,0) and would otherwise
+     outrank `.simulated-fullscreen-layout .controls-panel` (0,2,0) — putting
+     the whole rail back on screen during Fill Panel whenever nothing was
+     loaded. Excluding PM here is cheaper and clearer than inflating that
+     rule to match. */
+  .app-shell:not(.app-has-media):not(.simulated-fullscreen) .controls-panel {
+    position: static;
+    z-index: auto;
+    max-height: none;
+    overflow-y: visible;
+    border-radius: var(--radius);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 18px;
+    transform: none;
+    visibility: visible;
+  }
+
+  .app-shell:not(.app-has-media) .mobile-controls-btn,
+  .app-shell:not(.app-has-media) .controls-drawer-close-btn {
+    display: none;
+  }
+
+  .app-shell:not(.app-has-media) .viewer-empty {
+    min-height: 96px;
+  }
+
+  /* --- Player-first stack ------------------------------------------------
+     The approved narrow stack is header -> context -> Player -> transport ->
+     workspace tabs -> active workspace. The Player (#viewer-panel) and the
+     thumbnail half (.gallery-panel) are children of #workspace-gallery, one
+     level below the tab bar, so `order` alone cannot interleave them with it.
+     `display: contents` promotes those two to flex items of .media-content
+     for the duration of the narrow layout, and the orders below then place
+     the tab bar between them. Nothing moves in the DOM and no workspace is
+     rebuilt.
+     `:not([hidden])` matters: the promoted element must go back to being an
+     ordinary box the moment it is hidden, or `.workspace-panel[hidden]`'s
+     `display: none` would be outranked by this ID selector and a hidden
+     Gallery would leak its children onto the page.
+     `.layout:not(.simulated-fullscreen-layout)` keeps this out of Fill Panel,
+     where `.simulated-fullscreen-layout #workspace-gallery { display: flex }`
+     must keep winning.
+     KNOWN LIMIT: a `display: contents` element generates no box, so the
+     `.workspace-panel:focus-visible` ring cannot paint on #workspace-gallery
+     while it is promoted. The panel is still focusable and still in the
+     accessibility tree; only its own ring is missing, and every control
+     inside it keeps its own. This is narrow-screen only.
+     FUTURE: If a third element is ever added inside #workspace-gallery it
+     needs an `order` here too, or it will land at order 0 — above the
+     Player. */
+  .layout:not(.simulated-fullscreen-layout) #workspace-gallery:not([hidden]) {
+    display: contents;
+  }
+
+  /* Deliberately NO child combinator on any of these. `display: contents`
+     changes box generation only — it does not change the DOM — so
+     #viewer-panel's parent is still #workspace-gallery and
+     `.media-content > #viewer-panel` would match nothing. The elements are
+     flex ITEMS of .media-content while promoted, which is all `order` needs;
+     matching them is a separate question and has to be done by identity.
+     `order` on an element that is not a flex item is inert, so these are
+     harmless in every other layout state. */
+  #viewer-panel {
+    order: 1;
+  }
+
+  .workspace-nav {
+    order: 2;
+  }
+
+  .gallery-panel,
+  .workspace-panel {
+    order: 3;
+  }
+
+  .now-playing-strip {
+    order: 4;
+  }
+
+  /* The tab bar is the anchor of the narrow layout — it stays put while the
+     workspace beneath it scrolls. `top` matches the sticky header's height so
+     the two stack rather than overlap. */
+  .workspace-nav {
+    position: sticky;
+    top: 60px;
+    z-index: 20;
+  }
+
+  /* Auto margins consume free space, which a scrolling tablist may not have —
+     when the tabs overflow, `margin-left: auto` collapses to 0 and Settings
+     sits flush against Automations with no visual break. An explicit gap
+     keeps the utility tab distinguishable at every width. */
+  .workspace-tab-utility {
+    margin-left: 12px;
+  }
+
+  .workspace-tab {
+    padding: 8px 14px;
+    min-height: 44px;
+  }
+
+  /* --- Player and transport ---------------------------------------------- */
+  .panel {
+    padding: 14px;
+  }
+
+  /* The transport is the one row that must never wrap into a second line at
+     the cost of the meta controls: the cluster takes the width it needs and
+     the meta group drops beneath it, rather than Fill/Playback being pushed
+     off the right edge. */
+  .player-transport-row {
+    align-items: stretch;
+  }
+
+  .player-transport-cluster {
+    flex: 1 1 100%;
+  }
+
+  .player-transport-cluster > button {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
+
+  .player-transport-meta {
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+
+  /* The popover becomes a bottom sheet: at these widths a 260px panel
+     anchored to the right edge of the transport row either overhangs the
+     viewport or covers the media it belongs to. Same element, same `hidden`
+     class, same open/close functions — only the box changes.
+     z-index 42 puts it above the Controls drawer, which is the correct
+     stacking whenever both could be open. */
+  .playback-popover {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    z-index: 42;
+    width: auto;
+    max-width: none;
+    border-radius: 18px 18px 0 0;
+    padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+
+  /* --- Gallery filters and navigation ------------------------------------ */
+  .gallery-filter-row {
+    gap: 10px;
+  }
+
+  .viewer-header {
+    align-items: flex-start;
+  }
+
+  /* --- Single-column workspaces ------------------------------------------ */
+  .tags-grid,
+  .media-picker-row {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-current-row,
+  .tag-create-row {
+    flex-wrap: wrap;
+  }
+
+  /* Touch-target floor for the controls a phone user actually drives. Applied
+     by location rather than blanket-applied to `button`, so the deliberately
+     small in-panel chips (tag status selects, the automation mini steppers)
+     keep their own sizing. */
+  .controls-panel button,
+  .controls-panel .button-like,
+  .workspace-panel .control-stack button,
+  .now-playing-strip button {
+    min-height: 44px;
+  }
+
+  /* Long readouts and inputs must not push a horizontal scrollbar onto the
+     document; anything that can overflow scrolls inside its own box. */
+  .gallery-jump-group,
+  .cookbook-panel,
+  .settings-panel {
+    max-width: 100%;
+  }
+
+  .now-playing-strip {
+    flex-wrap: wrap;
+  }
+}
+
+/* Phone: the tab bar loses its sticky offset because the header's own height
+   drops, and the transport meta group stops trying to hold one line. */
+@media (max-width: 480px) {
+  .workspace-nav {
+    top: 56px;
+  }
+
+  .player-transport-meta {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .mobile-context-text {
+    font-size: 0.8rem;
+  }
+}
+
+/* [UI-REDESIGN / Stage 6] The drawer and the popover are the only animated
+   surfaces this redesign introduces; both are dismissible motion across the
+   whole viewport, which is exactly what this preference exists to suppress.
+   They still open and close — only the slide is removed. */
+@media (prefers-reduced-motion: reduce) {
+  .controls-panel {
+    transition: none;
+  }
+}

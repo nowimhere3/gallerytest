@@ -20,8 +20,80 @@
          FUTURE: The mark is a PLACEHOLDER. Replacing it with real branding
          means swapping the two spans' contents, not reintroducing a
          topbar. -->
+
+    <!-- [UI-REDESIGN / Stage 6]
+         WHAT: The compact app header for narrow screens — identity mark,
+         a live library/profile context line, and the `Controls` button that
+         opens the rail as a bottom sheet. Hidden entirely on desktop and
+         during Fill Panel; it is the only element in this app that lives
+         above main.layout.
+         WHY: On narrow screens the left rail becomes a drawer, which takes
+         identity and the association summary off screen with it. Those two
+         things are exactly the persistent context a phone user still needs,
+         so a compact strip carries them and the handle that opens the rest.
+         It sits ABOVE main.layout deliberately: it is app chrome, not a
+         workspace, and putting it inside the grid would mean giving it a
+         column span in every layout state.
+         The Stage 2 note above warns that anything placed here falls outside
+         the Fill Panel rules that hide the rest of the chrome — so this
+         element has its own `.simulated-fullscreen .mobile-app-header` rule
+         in styles.css. That rule is not optional.
+         FUTURE: This is CONTEXT ONLY plus one drawer handle. Do not grow a
+         second transport, a second Load control, or a mobile-only copy of
+         anything in the rail here — the rail itself is what opens. -->
+    <header id="mobile-app-header" class="mobile-app-header">
+      <span class="mobile-app-mark" aria-hidden="true">BG</span>
+      <!-- [UI-REDESIGN / Stage 6]
+           WHAT: A READOUT that mirrors #associated-text, the rail's
+           association value.
+           WHY: It is a second display of one value, never a second source of
+           it — syncMobileContextSummary() in main.js reads the rail element's
+           own text and is called from syncAssociateButtonVisibility(), the
+           single function that already owns that state. There is no separate
+           stored value and no second code path that can compute a different
+           answer.
+           FUTURE: If this ever needs more context, mirror another EXISTING
+           readout the same way. Do not derive association state here. -->
+      <p id="mobile-context-text" class="mobile-context-text">Profile: —</p>
+      <button
+        id="mobile-controls-btn"
+        class="secondary mobile-controls-btn"
+        type="button"
+        aria-expanded="false"
+        aria-controls="controls-panel"
+      >Controls</button>
+    </header>
+
+    <!-- [UI-REDESIGN / Stage 6]
+         WHAT: The dimming scrim behind the Controls drawer.
+         WHY: A separate element rather than a ::before on the drawer, because
+         it must sit BELOW the drawer and ABOVE everything else, and it takes
+         the outside-click that closes it. Its `hidden` attribute is toggled by
+         the same two functions that open/close the drawer, so it cannot be
+         left on screen without the sheet.
+         FUTURE: Keep this presentational. It is a click target and a dimmer;
+         it must never hold controls. -->
+    <div id="controls-scrim" class="controls-scrim" hidden></div>
+
     <main class="layout">
-      <section class="panel controls-panel">
+      <section id="controls-panel" class="panel controls-panel">
+        <!-- [UI-REDESIGN / Stage 6]
+             WHAT: The drawer's own close control, shown only while the rail is
+             a bottom sheet.
+             WHY: A bottom sheet needs a visible, thumb-reachable dismissal —
+             Escape and the scrim are the keyboard and pointer routes, but
+             neither is discoverable on a touch device. `order: -1` in CSS
+             places it above the rail's unordered identity group, per the
+             Stage 2 note that every rail child needs an explicit order.
+             FUTURE: This closes the drawer and nothing else. It must never
+             become a "done"/"apply" button — the rail's controls each act
+             immediately, exactly as they do on desktop. -->
+        <button
+          id="controls-drawer-close-btn"
+          class="secondary controls-drawer-close-btn"
+          type="button"
+        >Close</button>
+
         <!-- [UI-REDESIGN / Stage 2]
              WHAT: Compact identity placeholder — [BG] Browser Gallery.
              WHY: Replaces the removed topbar per the approved rail IA.

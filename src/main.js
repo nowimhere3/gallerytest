@@ -67,6 +67,15 @@ const THUMB_LAZY_ROOT_MARGIN = "400px 0px";
 const appShell = document.querySelector(".app-shell");
 const layoutEl = document.querySelector(".layout");
 
+// [UI-REDESIGN / Stage 6] The narrow-screen shell's own elements. Captured
+// here with everything else — they are static markup like the rest, never
+// created on first use, so the module-scope capture rule is unchanged.
+const mobileContextText = document.getElementById("mobile-context-text");
+const mobileControlsBtn = document.getElementById("mobile-controls-btn");
+const controlsPanel = document.getElementById("controls-panel");
+const controlsDrawerCloseBtn = document.getElementById("controls-drawer-close-btn");
+const controlsScrim = document.getElementById("controls-scrim");
+
 const fileInput = document.getElementById("file-input");
 const folderInput = document.getElementById("folder-input");
 const legacyPickerDetails = document.getElementById("legacy-picker-details");
@@ -297,6 +306,22 @@ function setActiveWorkspace(name, { focusTab = false } = {}) {
   });
 
   if (focusTab) target.tab.focus();
+
+  // [UI-REDESIGN / Stage 6]
+  // WHAT: Brings the selected tab fully into view in the horizontally
+  // scrolling tablist.
+  // WHY: On narrow screens the four tabs overflow, so arrowing from Gallery to
+  // Settings could select a tab that is off screen — the roving tabindex moves
+  // and nothing appears to happen. `inline: "nearest"` scrolls the tablist by
+  // the minimum needed and `block: "nearest"` makes the vertical axis a no-op
+  // when the bar is already visible, so this never yanks the page around on
+  // desktop, where the tabs do not overflow and the call does nothing at all.
+  // This does not violate the "no side effects" rule above: scrolling a
+  // scroll container is not application state — no runtime, filter, profile or
+  // library value is touched, and nothing here is persisted.
+  // FUTURE: Keep it to scrollIntoView. Do not grow focus or selection logic
+  // here; that belongs in the loop that owns the tabs.
+  target.tab.scrollIntoView({ inline: "nearest", block: "nearest" });
 
   // [UI-REDESIGN / Stage 4] The one deliberate exception to the "no side
   // effects" rule above, and worth stating plainly rather than hiding.
@@ -594,6 +619,10 @@ function syncAssociateButtonVisibility() {
     fsaAssociateBtnLabel.textContent = associated ? "Change Profile" : "Associate with Profile";
   }
   updateAssociatedStatusRow();
+  // [UI-REDESIGN / Stage 6] Ordered after updateAssociatedStatusRow() on
+  // purpose — the compact header mirrors that function's output, so it must
+  // read the row only once the row is current.
+  syncMobileContextSummary();
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -1837,6 +1866,127 @@ document.addEventListener("keydown", (event) => {
   closePlaybackPopover({ returnFocus: true });
 });
 
+// ---- Controls drawer (narrow screens) -----------------------------------
+//
+// [UI-REDESIGN / Stage 6]
+// WHAT: Open/close for the left rail when it is a bottom sheet. The drawer IS
+// #controls-panel — the same rail the desktop shows as a column. There is no
+// mobile copy of Libraries, association, Clear Media or Live Status, and no
+// mobile-only handler: every control inside keeps the listener it already had.
+// WHY: This file therefore owns exactly three things — one class on the rail,
+// one `hidden` attribute on the scrim, and one aria-expanded on the trigger.
+// It deliberately does not know the breakpoint: CSS decides whether the rail
+// is a column or a sheet, and on desktop the trigger is display:none so none
+// of this can be reached. That is why there is no width check here.
+// FUTURE: closeControlsDrawer() is the ONLY close path — the close button, the
+// scrim, Escape, entering Fill Panel and growing past the breakpoint all route
+// through it. Never toggle the class or the scrim directly, or aria-expanded
+// goes stale. If this ever needs a focus trap, add it here rather than giving
+// the drawer its own keydown handler somewhere else.
+function isControlsDrawerOpen() {
+  return controlsPanel.classList.contains("is-drawer-open");
+}
+
+function openControlsDrawer() {
+  if (isControlsDrawerOpen()) return;
+  // The Playback popover is also a bottom sheet at these widths, and it
+  // stacks ABOVE the drawer — leaving it open would put a panel belonging to
+  // the Player on top of the rail. Closing it through its own single close
+  // path (never by hiding it here) is also what keeps the two from both
+  // answering one Escape: they can no longer both be open.
+  closePlaybackPopover();
+  controlsPanel.classList.add("is-drawer-open");
+  controlsScrim.hidden = false;
+  mobileControlsBtn.setAttribute("aria-expanded", "true");
+  // Focus moves INTO the sheet, to its first control. Without this a keyboard
+  // or screen-reader user is left on a trigger that now sits behind a scrim,
+  // with the thing they opened unannounced. The close button is first in the
+  // drawer's visual order (CSS `order: -1`) as well as being the way out, so
+  // it is the honest landing point.
+  controlsDrawerCloseBtn.focus();
+}
+
+// `returnFocus` follows the same rule as the Playback popover and the Tag
+// filter panel: Escape and the close button put focus back on the trigger,
+// while an outside click must not steal it from wherever the user just chose
+// to click.
+function closeControlsDrawer({ returnFocus = false } = {}) {
+  if (!isControlsDrawerOpen()) return;
+  controlsPanel.classList.remove("is-drawer-open");
+  controlsScrim.hidden = true;
+  mobileControlsBtn.setAttribute("aria-expanded", "false");
+  if (returnFocus) mobileControlsBtn.focus();
+}
+
+mobileControlsBtn.addEventListener("click", (event) => {
+  // Same reason as the Playback popover's trigger: without this the click
+  // continues to the document listener below, which reads it as an outside
+  // click and closes what this click just opened.
+  event.stopPropagation();
+  if (isControlsDrawerOpen()) {
+    closeControlsDrawer();
+  } else {
+    openControlsDrawer();
+  }
+});
+
+controlsDrawerCloseBtn.addEventListener("click", () => {
+  closeControlsDrawer({ returnFocus: true });
+});
+
+// Outside-click close, covering the scrim and the sticky header alike. One
+// document-level listener rather than a scrim-specific one: a click on the
+// scrim bubbles here anyway, and the header — which the sheet does not cover —
+// would need this listener regardless. Cheap when closed: isControlsDrawerOpen()
+// short-circuits before any DOM walking, same as the popover's.
+document.addEventListener("click", (event) => {
+  if (!isControlsDrawerOpen()) return;
+  if (controlsPanel.contains(event.target)) return;
+  if (mobileControlsBtn.contains(event.target)) return;
+  closeControlsDrawer();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!isControlsDrawerOpen()) return;
+  // Presentation Mode's Escape means "leave Fill" and takes precedence; the
+  // drawer belongs to the ordinary shell, which PM covers entirely. Same
+  // deference the Tag filter panel shows.
+  if (fillModeActive) return;
+  event.preventDefault();
+  closeControlsDrawer({ returnFocus: true });
+});
+
+// [UI-REDESIGN / Stage 6]
+// WHAT: Closes the drawer when the viewport grows past the shell breakpoint.
+// WHY: The `is-drawer-open` class is meaningless on desktop — the rail is a
+// column there and the CSS ignores it — but the scrim is NOT inside the media
+// query's control, and aria-expanded would stay "true" on a button the user
+// can no longer see. Rotating a tablet or dragging a window across 980px is a
+// real path into that state.
+// The literal 980 here must stay in step with the single shell breakpoint in
+// styles.css; it is the one place JS knows the number, and it only ever
+// CLOSES, so a drift would degrade to a stale scrim rather than a broken
+// layout.
+// FUTURE: If the breakpoint moves, move it here too. Do not add a second
+// query — this is not a place to start branching layout in JavaScript.
+const shellBreakpointQuery = window.matchMedia("(max-width: 980px)");
+shellBreakpointQuery.addEventListener("change", (event) => {
+  if (!event.matches) closeControlsDrawer();
+});
+
+// [UI-REDESIGN / Stage 6]
+// WHAT: Mirrors the rail's association readout into the compact header.
+// WHY: It reads #associated-text rather than recomputing anything, so the
+// header cannot disagree with the rail: there is one writer
+// (updateAssociatedStatusRow) and this runs immediately after it, from the
+// single function that already owns both.
+// FUTURE: Add context by mirroring another existing readout the same way.
+// Never let this derive association, profile or library state itself.
+function syncMobileContextSummary() {
+  mobileContextText.textContent = `Profile: ${associatedText.textContent}`;
+}
+
 function syncVideoLoopControl() {
   const enabled = videoLoopInput.checked;
   videoLoopControl.classList.toggle("is-enabled", enabled);
@@ -2065,6 +2215,11 @@ function enterFillMode() {
   // here keeps aria-expanded honest and matches how exitFillMode() closes
   // the ghost popunder and the automation panel.
   closePlaybackPopover();
+  // [UI-REDESIGN / Stage 6] Same reasoning, one stage later: Fill Panel hides
+  // the rail by CSS, but the scrim is a body-level sibling that those rules do
+  // not reach, and aria-expanded would stay "true" on a hidden trigger.
+  // Routing through the single close path keeps both honest.
+  closeControlsDrawer();
   appShell.classList.add("simulated-fullscreen");
   layoutEl.classList.add("simulated-fullscreen-layout");
   viewerPanel.classList.add("simulated-fullscreen-viewer");
@@ -2191,6 +2346,30 @@ function clearViewerNode() {
 
 function buildViewer(state) {
   const { currentItem: item, isPlaying, hasItems, hasVisibleItems } = state;
+
+  // [UI-REDESIGN / Stage 6]
+  // WHAT: One class on .app-shell recording whether the Player currently has
+  // anything to show.
+  // WHY: The narrow layout needs to answer "is there a Player worth putting
+  // first?" in CSS, and the honest answer is exactly the condition the three
+  // branches below already use to show or hide #viewer-stage. Deriving it here
+  // from the same `state` — rather than setting a flag inside each branch —
+  // is what stops the class and the stage from ever disagreeing. It is
+  // presentational only: nothing reads it back in JavaScript.
+  // FUTURE: If a fourth viewer branch is ever added, this expression must
+  // learn about it. It belongs at the top of THIS function, next to the
+  // branches it summarises — do not move it to a subscriber.
+  const playerHasMedia = Boolean(item) && !(hasItems && !hasVisibleItems);
+  appShell.classList.toggle("app-has-media", playerHasMedia);
+
+  // Clear Media lives INSIDE the drawer, so using it is the one way to go from
+  // "drawer open" to "empty state" in a single action. The empty state renders
+  // the rail as an ordinary inline panel and hides its close button, which
+  // would leave the scrim up over the whole page with nothing left to dismiss
+  // it. Closing here is a no-op in every other case: the drawer cannot be
+  // opened while empty (its trigger is hidden too), and this never fires while
+  // media is present.
+  if (!playerHasMedia) closeControlsDrawer();
 
   // Items are loaded, but every one of them is hidden (Success Criteria
   // Scenario 7) — show a specific message rather than the empty-library
