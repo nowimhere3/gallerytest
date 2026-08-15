@@ -4636,6 +4636,17 @@ function renderProfileSync() {
     case "offline":
       line = `Offline — saved locally. Changes will sync when available.${status.message ? ` (${status.message})` : ""}`;
       break;
+    // [PHASE-6-SYNC-V2]
+    // [STAGE-B-VERIFIED-PUBLISH]
+    // [WHY: a publish that failed read-back verification must never fall
+    //  through to the `default` branch below, which renders "✓ Connected …
+    //  Last sync: <time>" — the precise false reassurance this stage exists to
+    //  remove. ProfileSync's own message is used verbatim because it is the
+    //  only thing that knows WHICH verification failed; this switch must not
+    //  paraphrase it into something more comforting.]
+    case "verify-failed":
+      line = `Sync not completed — ${status.message}`;
+      break;
     case "connected":
     default:
       line = `✓ Connected — "${status.folderName}" · Auto Sync: ON · Last sync: ${

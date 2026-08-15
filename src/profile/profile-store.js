@@ -23,6 +23,16 @@ import {
   generateProfileId,
   DEFAULT_PROFILE_NAME,
 } from "./indexeddb.js";
+// [PHASE-6-SYNC-V2]
+// [STAGE-B-SNAPSHOT-INTEGRITY]
+// [WHY: every value this store hands OUT for hashing, saving or writing must be
+//  detached from the live in-memory Map/array it came from. The shallow copies
+//  that used to serve this purpose left nested objects (tag.tagActivity,
+//  record.tags, masterFolder) aliased, so a mutation arriving during an async
+//  save or sync write silently changed data that had already been
+//  fingerprinted. takeSnapshot() is the single boundary that guarantee lives
+//  behind — see profile-snapshot.js.]
+import { takeSnapshot } from "./profile-snapshot.js";
 
 // Bumped from 1 -> 2 for Multi-Profile Foundation (Phase 8.1): exported
 // profiles now also carry profileId/profileName/masterFolder. This is
@@ -416,6 +426,10 @@ export class ProfileStore {
    * is always at least as fresh as IndexedDB); every other profile is read
    * fresh from IndexedDB, since this instance never holds their data in
    * memory.
+   *
+   * The returned collection is a fully detached snapshot (and, in development,
+   * deeply frozen): a caller may hold it across any number of awaits and it
+   * will not change underneath them. Callers must not mutate it.
    */
   async getFullCollection() {
     await this.#ready;
@@ -449,7 +463,16 @@ export class ProfileStore {
         tags: data.tags,
       });
     }
-    return results;
+
+    // [PHASE-6-SYNC-V2][STAGE-B-SNAPSHOT-INTEGRITY]
+    // [WHY: this is the collection Profile Sync fingerprints and then, several
+    //  awaits later, serializes to disk. It must be one immutable logical
+    //  state for that whole span, or the files written stop matching the
+    //  fingerprint published alongside them. One takeSnapshot() over the
+    //  finished array covers the active profile's live in-memory records AND
+    //  every nested field of every other profile, including fields added long
+    //  after this line was written.]
+    return takeSnapshot(results);
   }
 
   /**
@@ -561,6 +584,12 @@ export class ProfileStore {
     }
   }
 
+  // [PHASE-6-SYNC-V2][STAGE-B-SNAPSHOT-INTEGRITY]
+  // [WHY: this assembles the shape only — it is NOT the detachment boundary,
+  //  and its shallow copies must never be relied on as one. Every caller wraps
+  //  its result in takeSnapshot(), which is what actually severs the nested
+  //  references. The shallow copy is kept purely as defence in depth so a live
+  //  record object cannot escape even momentarily.]
   #snapshotItems() {
     const items = {};
     for (const [path, record] of this.#recordsByPath.entries()) {
@@ -570,10 +599,17 @@ export class ProfileStore {
   }
 
   #persist() {
-    const snapshot = {
+    // [PHASE-6-SYNC-V2][STAGE-B-SNAPSHOT-INTEGRITY]
+    // [WHY: this snapshot is built synchronously but written asynchronously,
+    //  behind a queue that may drain several mutations later. Without a real
+    //  detachment it shares tag.tagActivity (and any future nested field) with
+    //  live state, so the row that eventually lands in IndexedDB is not the row
+    //  this mutation intended to save. Same defect class as the sync-write
+    //  corruption, with a shorter window.]
+    const snapshot = takeSnapshot({
       items: this.#snapshotItems(),
       tags: this.#tags.map((tag) => ({ ...tag })),
-    };
+    });
 
     // Captured NOW (synchronously, at the moment of the mutation that
     // triggered this save) rather than read lazily once the async chain
@@ -927,13 +963,20 @@ export class ProfileStore {
 
   // ---- Export ------------------------------------------------------------
 
+  // [PHASE-6-SYNC-V2][STAGE-B-SNAPSHOT-INTEGRITY]
+  // [WHY: export is the third place a live record used to escape behind a
+  //  shallow copy. Nothing today holds this result across an await, so it has
+  //  never corrupted a file — but leaving one aliased exit open is how the
+  //  boundary erodes, and routing it through the same takeSnapshot() keeps
+  //  "no live Profile reference leaves this class" a rule with no exceptions
+  //  to remember.]
   toJSON() {
     const items = {};
     for (const [path, record] of this.#recordsByPath.entries()) {
       items[path] = { ...record };
     }
 
-    return {
+    return takeSnapshot({
       schemaVersion: SCHEMA_VERSION,
       kind: KIND,
       exportedAt: new Date().toISOString(),
@@ -948,7 +991,7 @@ export class ProfileStore {
       masterFolder: this.#masterFolder,
       items,
       tags: this.#tags.map((tag) => ({ ...tag })),
-    };
+    });
   }
 
   exportText() {

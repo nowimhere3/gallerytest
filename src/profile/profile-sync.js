@@ -27,6 +27,18 @@
 //  - Do NOT resolve a genuine conflict (see [PROFILE-SYNC-BASELINE] below)
 //    automatically, ever, no matter how tempting a timestamp-based
 //    shortcut looks. That decision is explicitly reserved for the user.
+//
+// [PHASE-6-SYNC-V2]
+// [STAGE-B-VERIFIED-PUBLISH]
+// [WHY: a write ATTEMPT is not a successful sync. This module previously
+//  computed a fingerprint, wrote the files, and accepted that fingerprint as
+//  the baseline without ever reading back what actually landed — so a
+//  generation whose files did not match its own manifest could become the
+//  accepted baseline, and did. Publishing is now write -> read back ->
+//  recompute -> compare, and the baseline advances only on equality. This
+//  whole-collection transport is still the Sync V1 design and is scheduled for
+//  replacement; Stage B's job is to make it incapable of blessing an
+//  internally inconsistent generation while that replacement is built.]
 import { loadSyncConfig, saveSyncConnection, updateSyncMeta, clearSyncConfig } from "../storage/profile-sync-store.js";
 import { DEFAULT_PROFILE_NAME } from "./indexeddb.js";
 
@@ -91,7 +103,10 @@ function collectionFingerprintPayload(collection) {
     .map(profileFingerprintPayload);
 }
 
-async function computeFingerprint(collection) {
+// Exported for the Stage B regression harness (tools/test-sync-publish.mjs),
+// which must assert against the REAL fingerprint algorithm rather than a second
+// copy of it that could drift. Nothing in the app imports it.
+export async function computeFingerprint(collection) {
   const text = JSON.stringify(collectionFingerprintPayload(collection));
 
   if (typeof crypto !== "undefined" && crypto.subtle && typeof crypto.subtle.digest === "function") {
@@ -169,7 +184,7 @@ function parseProfileFile(text) {
  * committing the manifest — see writeCollectionToFolder below). Any of
  * these must be treated as "cannot trust this," never partially applied.
  */
-async function readCollectionFromFolder(dirHandle) {
+export async function readCollectionFromFolder(dirHandle) {
   let manifestText;
   try {
     const manifestHandle = await dirHandle.getFileHandle(MANIFEST_FILE_NAME);
@@ -247,6 +262,15 @@ async function readCollectionFromFolder(dirHandle) {
 // a crash between those two steps must always leave the PREVIOUS valid
 // representation (manifest + its referenced files) intact, never a
 // half-updated one with nothing to recover to.
+//
+// [PHASE-6-SYNC-V2]
+// [STAGE-B-VERIFIED-PUBLISH]
+// [WHY: this function now only WRITES. Removing obsolete per-profile files —
+//  the one irreversible part of publishing — moved out to
+//  removeObsoleteProfileFiles() below so the caller can withhold it until the
+//  generation has been read back and verified. Deleting files on the strength
+//  of a publish we could not verify is how an unverifiable pass turns into
+//  actual data loss.]
 async function writeCollectionToFolder(dirHandle, collection, fingerprint) {
   const profilesDir = await dirHandle.getDirectoryHandle(PROFILES_DIR_NAME, { create: true });
 
@@ -278,12 +302,20 @@ async function writeCollectionToFolder(dirHandle, collection, fingerprint) {
   };
   await manifestWritable.write(JSON.stringify(manifestPayload, null, 2));
   await manifestWritable.close();
+}
 
-  // Best-effort cleanup of files for profiles no longer in the collection
-  // (e.g. a deleted Profile). Never fatal: an orphaned file left behind by
-  // a failure here references nothing the manifest points at, and the next
-  // successful full write cleans it up anyway.
+// Best-effort cleanup of files for profiles no longer in the collection
+// (e.g. a deleted Profile). Never fatal: an orphaned file left behind by a
+// failure here references nothing the manifest points at, and the next
+// successful full write cleans it up anyway.
+//
+// [PHASE-6-SYNC-V2][STAGE-B-VERIFIED-PUBLISH]
+// [WHY: called only AFTER read-back verification succeeds. These deletes are
+//  the single irreversible step in a publish, so they must never run on the
+//  strength of a generation we could not confirm we actually wrote.]
+async function removeObsoleteProfileFiles(dirHandle, collection) {
   try {
+    const profilesDir = await dirHandle.getDirectoryHandle(PROFILES_DIR_NAME, { create: true });
     const currentIds = new Set(collection.map((entry) => entry.id));
     for await (const [name, handle] of profilesDir.entries()) {
       if (handle.kind !== "file" || !name.endsWith(".json")) continue;
@@ -511,7 +543,7 @@ export class ProfileSync {
       } else if (choice === "keep-local") {
         const localCollection = await this.#profile.getFullCollection();
         const localFingerprint = await computeFingerprint(localCollection);
-        await this.#writeLocal(localCollection, localFingerprint);
+        await this.#publishVerified(localCollection, localFingerprint);
       }
     } catch (error) {
       console.error("[PROFILE-SYNC] Could not resolve the sync conflict.", error);
@@ -531,6 +563,12 @@ export class ProfileSync {
       autoSync: this.#autoSync,
       lastSyncAt: this.#lastSyncAt,
       message: this.#message,
+      // [PHASE-6-SYNC-V2][STAGE-B-VERIFIED-PUBLISH]
+      // [WHY: exposed read-only so "did this pass actually advance the
+      //  baseline?" is observable — by the Stage B regression harness, and by
+      //  the read-only console audit already in main.js. No UI renders it; it
+      //  is state, not a string for a user to read.]
+      baselineFingerprint: this.#baselineFingerprint,
     };
   }
 
@@ -605,6 +643,17 @@ export class ProfileSync {
     this.#status = "syncing";
     this.#emit();
 
+    // [PHASE-6-SYNC-V2]
+    // [STAGE-B-SNAPSHOT-INTEGRITY]
+    // [WHY: `localCollection` is captured ONCE here and is an immutable
+    //  snapshot (ProfileStore#getFullCollection detaches and, in development,
+    //  freezes it). Everything downstream — the fingerprint below, the remote
+    //  comparison, and the files eventually written — must read that same
+    //  object. Re-reading the store further down, or holding a value that is
+    //  still aliased to live state, is what let a mutation arriving during the
+    //  read/write awaits change the bytes written without changing the
+    //  fingerprint published beside them. Do not re-fetch the collection later
+    //  in this pass.]
     const localCollection = await this.#profile.getFullCollection();
     const localFingerprint = await computeFingerprint(localCollection);
 
@@ -635,7 +684,7 @@ export class ProfileSync {
       // is why an "empty" remote never gets applied onto local anywhere in
       // this file. Covers first connection AND a folder that was cleared
       // out after a previous successful sync.
-      await this.#writeLocal(localCollection, localFingerprint);
+      await this.#publishVerified(localCollection, localFingerprint);
       return;
     }
 
@@ -659,7 +708,7 @@ export class ProfileSync {
         return;
       }
       if (!remoteMeaningful) {
-        await this.#writeLocal(localCollection, localFingerprint);
+        await this.#publishVerified(localCollection, localFingerprint);
         return;
       }
       this.#enterConflict();
@@ -682,7 +731,7 @@ export class ProfileSync {
     }
     if (remoteMatchesBaseline && !localMatchesBaseline) {
       // Only the local side changed.
-      await this.#writeLocal(localCollection, localFingerprint);
+      await this.#publishVerified(localCollection, localFingerprint);
       return;
     }
     // Both sides changed independently since the last successful sync, and
@@ -690,9 +739,52 @@ export class ProfileSync {
     this.#enterConflict();
   }
 
-  async #writeLocal(collection, fingerprint) {
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-B-VERIFIED-PUBLISH]
+  // [WHY: the invariant this whole stage exists for — the state fingerprinted
+  //  must equal the state serialized must equal the state read back must equal
+  //  the state accepted as baseline. `collection` is an immutable snapshot (see
+  //  ProfileStore#getFullCollection) so links 1 and 2 hold by construction;
+  //  this method establishes 3 and 4 by re-reading the folder and recomputing
+  //  the fingerprint from the bytes that actually landed.]
+  //
+  // Two independent things are checked, and both must hold:
+  //   1. the published generation is INTERNALLY consistent — its files hash to
+  //      the fingerprint its own manifest advertises (readCollectionFromFolder
+  //      recomputes this, which is exactly the check that surfaced the
+  //      historical corruption);
+  //   2. that generation is OURS — it equals the fingerprint we intended. A
+  //      remote that is self-consistent but different means another writer
+  //      landed on top of ours; our publish did not survive, so it must not
+  //      become our baseline either.
+  //
+  // Returns true only if the baseline was advanced.
+  async #publishVerified(collection, fingerprint) {
     await writeCollectionToFolder(this.#dirHandle, collection, fingerprint);
+
+    let published;
+    try {
+      published = await readCollectionFromFolder(this.#dirHandle);
+    } catch (error) {
+      console.error("[PROFILE-SYNC] Could not read back the generation just written.", error);
+      this.#enterVerifyFailed("unreadable");
+      return false;
+    }
+
+    if (published.status !== "valid" || published.fingerprint !== fingerprint) {
+      console.error(
+        "[PROFILE-SYNC] Refusing to accept an unverified generation.",
+        { intended: fingerprint, readBack: published.status === "valid" ? published.fingerprint : published.status }
+      );
+      this.#enterVerifyFailed(published.status === "valid" ? "changed" : "unreadable");
+      return false;
+    }
+
+    // Verified — only now is the irreversible half of publishing allowed to
+    // run, and only now does the baseline advance.
+    await removeObsoleteProfileFiles(this.#dirHandle, collection);
     await this.#acceptBaseline(fingerprint);
+    return true;
   }
 
   async #applyRemote(remote) {
@@ -702,7 +794,31 @@ export class ProfileSync {
     } finally {
       this.#applyingRemote = false;
     }
+
+    // [PHASE-6-SYNC-V2][STAGE-B-VERIFIED-PUBLISH]
+    // [WHY: remote.fingerprint is already a VERIFIED read — readCollectionFromFolder
+    //  recomputed it from the actual files before returning "valid" — so
+    //  accepting it as the baseline does not bless anything unverified, and the
+    //  control flow is deliberately left alone here. What is NOT proven is that
+    //  the local adoption reproduced it exactly (replaceAllProfiles normalizes
+    //  a few fields, e.g. a missing name to DEFAULT_PROFILE_NAME). If it ever
+    //  diverges the next pass simply republishes, which is safe but wasteful —
+    //  so it is reported loudly rather than silently tolerated. Stage D replaces
+    //  this whole-collection adoption with per-fact application.]
     await this.#acceptBaseline(remote.fingerprint);
+
+    try {
+      const adopted = await this.#profile.getFullCollection();
+      const adoptedFingerprint = await computeFingerprint(adopted);
+      if (adoptedFingerprint !== remote.fingerprint) {
+        console.warn(
+          "[PROFILE-SYNC] Adopted collection does not reproduce the synced fingerprint; the next pass will republish.",
+          { synced: remote.fingerprint, adopted: adoptedFingerprint }
+        );
+      }
+    } catch (error) {
+      console.warn("[PROFILE-SYNC] Could not re-check the adopted collection (non-fatal).", error);
+    }
   }
 
   // [PROFILE-SYNC-BASELINE] The only place #baselineFingerprint is ever
@@ -728,6 +844,29 @@ export class ProfileSync {
   #enterConflict() {
     this.#status = "conflict";
     this.#message = null;
+    this.#emit();
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-B-VERIFIED-PUBLISH]
+  // [WHY: a publish that could not be verified must leave the installation in
+  //  a state that is truthful, non-destructive and recoverable. Specifically:
+  //  the baseline and lastSyncAt are NOT advanced (so the next pass still sees
+  //  the real divergence rather than a fabricated agreement), local Profile
+  //  data is not touched at all — it never was, since publishing only ever
+  //  reads it — and nothing is retried by rewriting data whose current state we
+  //  do not know. The next profile change or Sync Now runs a clean pass.]
+  //
+  // Deliberately NOT the "conflict" status: conflict means the user must choose
+  // between two versions, and this is not that. It is "we could not confirm the
+  // write, so nothing was accepted" — which auto-sync is allowed to retry on
+  // its own, and #onProfileChanged therefore does not suppress.
+  #enterVerifyFailed(reason) {
+    this.#status = "verify-failed";
+    this.#message =
+      reason === "changed"
+        ? "The synced folder changed while this device was writing, so nothing was accepted. Your changes are saved locally and will sync on the next attempt."
+        : "The synced folder could not be read back and verified after writing, so nothing was accepted. Your changes are saved locally.";
     this.#emit();
   }
 }
