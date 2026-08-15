@@ -353,6 +353,48 @@ function ensureGalleryWorkspaceVisible() {
   if (activeWorkspace !== "gallery") setActiveWorkspace("gallery");
 }
 
+// [UI-REDESIGN / Stage 6 fix]
+// WHAT: The one route for "the user explicitly asked to go to Gallery, so
+// hand the keyboard to the Player." Brings Gallery forward, then moves focus
+// to the Player stage via focusPlayerStage(). Returns whether the hand-off
+// actually happened.
+//
+// ROOT CAUSE this addresses: the now-playing strip's Return button had this
+// behavior (Stage 5) but the workspace tablist's Gallery tab did not — its
+// click handler was `() => setActiveWorkspace(entry.name)` and nothing else,
+// so the tab stayed document.activeElement. The tab carries role="tab", which
+// isKeyboardFocusedControl() matches, and :focus-visible latches on the next
+// keypress — so ArrowLeft/ArrowRight/Space/F were suppressed for as long as
+// the tab held focus, playing or stopped, from any workspace. (L kept working
+// because it is exempt from that guard.) The two routes had drifted apart;
+// they now share this function so they cannot drift again.
+//
+// Order is load-bearing: Gallery must come forward FIRST, because
+// #viewer-stage lives inside that panel and focus() is a silent no-op on a
+// display:none element.
+//
+// This touches no runtime, filter, profile, history or library state — it is
+// setActiveWorkspace() plus a focus move — so playback continues untouched.
+//
+// FUTURE: This is deliberately NOT wired to render(), boot, filter changes or
+// any runtime subscription. It is called ONLY on explicit ACTIVATION of a
+// user-facing "go to Gallery" control — pointer click or Enter/Space alike,
+// which is why callers do not filter on `event.detail`. Anything that focuses
+// the Player as a side effect of Gallery state updating would steal focus out
+// from under a user who is typing in Jump or tabbing the filters, and
+// anything wired to tablist NAVIGATION (Arrow/Home/End) would take the
+// keyboard away mid-arrow.
+function returnToGalleryAndFocusPlayer({ onNoPlayer } = {}) {
+  ensureGalleryWorkspaceVisible();
+  if (focusPlayerStage()) return true;
+  // Nothing mounted on the stage — no media loaded, or every item hidden.
+  // There is no Player to hand the keyboard to, so each caller decides what
+  // "sensible focus" means for the control the user just activated rather
+  // than focusing an empty, `.hidden` stage.
+  onNoPlayer?.();
+  return false;
+}
+
 // [UI-REDESIGN / Stage 4]
 // WHAT: Shows the now-playing strip only while a slideshow is running AND
 // the user is looking at something other than Gallery.
@@ -390,7 +432,40 @@ function ensureSettingsWorkspaceVisible() {
 }
 
 WORKSPACES.forEach((entry, index) => {
-  entry.tab.addEventListener("click", () => setActiveWorkspace(entry.name));
+  entry.tab.addEventListener("click", () => {
+    // [UI-REDESIGN / Stage 6 fix]
+    // Activating the Gallery tab is an explicit "take me back to the media",
+    // exactly like the now-playing strip's Return button, so it goes through
+    // the same hand-off. That includes activating Gallery while Gallery is
+    // already selected — ensureGalleryWorkspaceVisible() is a no-op then, and
+    // the hand-off is the entire point of the activation.
+    //
+    // Deliberately NOT split on `event.detail` the way the Gallery filter
+    // buttons are. That split exists where pointer and keyboard users want
+    // different outcomes (a tabbed-to filter must keep its focus and its
+    // ring). Here they want the SAME outcome: pressing Enter or Space on the
+    // Gallery tab is every bit as explicit a request for the media as
+    // clicking it, and a keyboard user who lands in Gallery with the Player
+    // shortcuts still suppressed is exactly the bug this fixes. So both
+    // activation routes hand the keyboard to the Player.
+    //
+    // What keeps the tablist usable is that this is the ACTIVATION handler,
+    // not the navigation one. Arrow/Home/End never reach it — they go through
+    // the keydown listener below, which calls setActiveWorkspace(...,
+    // { focusTab: true }) and leaves focus on the tab so arrowing onward
+    // keeps working. Only a deliberate Enter/Space/click gives the Player the
+    // keyboard.
+    //
+    // On the no-media path there is no fallback to run: the activation has
+    // already put focus on the tab and it stays there. No blur — dropping
+    // focus to <body> from a tab the user is still on is worse than leaving
+    // it where they put it, and for the keyboard user it would be a dead end.
+    if (entry.name === "gallery") {
+      returnToGalleryAndFocusPlayer();
+      return;
+    }
+    setActiveWorkspace(entry.name);
+  });
 
   entry.tab.addEventListener("keydown", (event) => {
     const lastIndex = WORKSPACES.length - 1;
@@ -3313,13 +3388,19 @@ nowPlayingStopBtn.addEventListener("click", () => runtime.stop());
 // lives inside that panel and focus() does nothing on a display:none element.
 // Neither call touches runtime state, so playback continues untouched — no
 // restart, no stop, no seek.
+//
+// [UI-REDESIGN / Stage 6 fix] The activate-then-hand-off body moved into
+// returnToGalleryAndFocusPlayer(), which the workspace tablist's Gallery tab
+// now shares. Behavior here is unchanged; the point is that the two explicit
+// "go to Gallery" controls can no longer drift apart. Only the no-Player
+// fallback differs, and it is passed in: this button is on its way off screen
+// either way, so releasing focus is strictly better than leaving it on a
+// control that just left the layout — whereas the Gallery tab stays put and
+// keeps its focus.
 nowPlayingReturnBtn.addEventListener("click", (event) => {
-  ensureGalleryWorkspaceVisible();
-  // Nothing mounted on the stage to receive the keyboard (the strip is only
-  // shown while playing, so this is a defensive branch). Releasing focus is
-  // still strictly better than leaving it on a button that just left the
-  // layout, and it is what keeps the shortcuts free in that case.
-  if (!focusPlayerStage()) event.currentTarget?.blur?.();
+  returnToGalleryAndFocusPlayer({
+    onNoPlayer: () => event.currentTarget?.blur?.(),
+  });
 });
 
 stopBtn.addEventListener("click", () => runtime.stop());
