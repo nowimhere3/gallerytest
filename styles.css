@@ -3476,8 +3476,8 @@ hr {
      reassurance, not an instruction. */
   .playback-sheet-note {
     display: block;
-    margin: 0 0 12px;
-    padding-top: 6px;
+    margin: 0 0 14px;
+    padding-top: 14px;
     color: var(--muted);
     font-size: 0.8rem;
   }

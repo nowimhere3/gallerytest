@@ -2078,6 +2078,77 @@ function renderTagsFilterGrid() {
   renderTagsFilterToggleLabel();
 }
 
+// ---- [UI-REDESIGN / STAGE 6] [TRANSIENT-FOCUS-SHORTCUT-RELEASE] ----------
+//
+// WHAT: ONE small mechanism, shared by every transient disclosure in this
+// app that returns focus to its own trigger on close — the Tags filter
+// panel below, the Playback popover/sheet, and the Folders drawer, all
+// further down this file. A Set of trigger elements currently in a "just
+// closed, Browser Gallery shortcut ownership is restored" grace period.
+//
+// WHY: closing any of the three correctly returns focus to its trigger —
+// that focus-return contract is REQUIRED and untouched by this. But
+// isKeyboardFocusedControl() (consulted by handleTransportKeydown()'s guard
+// further down) then correctly reports that trigger as keyboard-focused,
+// and has no way to tell "focus landed here because a close path just
+// returned it" from "the user tabbed here fresh, wanting to operate this
+// control" — those are otherwise IDENTICAL DOM state (same element, same
+// :focus-visible). Without this, every shortcut but L stayed suppressed for
+// as long as a just-closed trigger held focus, until the user clicked or
+// tabbed elsewhere.
+//
+// WHY one shared Set rather than three copies of a flag + blur listener +
+// guard exemption: the rule is identical for all three triggers —
+// "returned focus after a transient close means shortcut ownership is
+// restored, until focus genuinely leaves and re-enters the trigger." One
+// place expresses that rule; each surface's own open/close functions opt
+// its one trigger in or out at exactly the point they already touch focus,
+// and the guard below consults it once, for whichever trigger is currently
+// active. Nothing here is a second keyboard system or a new global key
+// listener — it only gates whether the EXISTING isKeyboardFocusedControl()
+// guard is allowed to fire while one specific, already-known element holds
+// focus, and it changes no shortcut's meaning.
+const transientTriggersReleased = new Set();
+
+// Call from a transient surface's OWN close function, at the same point it
+// may also return focus to its trigger. Safe to call unconditionally, even
+// when focus is NOT on the trigger (the outside-click case, which never
+// returns focus): hasTransientShortcutGracePeriod() below always re-checks
+// document.activeElement too, so an entry for a trigger that isn't
+// currently focused has no effect on anything.
+function releaseTransientTriggerFocus(trigger) {
+  transientTriggersReleased.add(trigger);
+}
+
+// Call from a transient surface's OWN open path, at the point it already
+// marks itself open. A fresh, deliberate open ends any leftover grace
+// period from a previous visit, so reopening and closing again always
+// reflects the MOST RECENT close, never a stale one.
+function clearTransientTriggerFocusRelease(trigger) {
+  transientTriggersReleased.delete(trigger);
+}
+
+// The one thing handleTransportKeydown()'s guard needs: true only while
+// `el` is BOTH the current active element AND still within its grace
+// period. A trigger that is in the Set but no longer focused (the user
+// tabbed away and onto something else entirely) correctly reports false.
+function hasTransientShortcutGracePeriod(el) {
+  return Boolean(el) && transientTriggersReleased.has(el);
+}
+
+// ONE shared listener, not one per trigger. `focusout` bubbles, so this
+// single document-level listener catches any of the three triggers losing
+// focus, without three separate element-level blur listeners to keep in
+// sync. This is what ends a trigger's grace period the moment the ambiguity
+// it exists for is gone: once focus actually leaves a trigger, a LATER
+// arrival back on it (a fresh Tab) is unambiguously the ordinary case and
+// must get the ordinary button-activation guard back, not this exemption.
+// Deleting an element that was never in the Set is a harmless no-op, so
+// this does not need to know which elements are triggers.
+document.addEventListener("focusout", (event) => {
+  transientTriggersReleased.delete(event.target);
+});
+
 // [UI-REDESIGN / Stage 4]
 // WHAT: Keeps the closed Tag button honest about how many tags are active.
 // WHY: The approved label is "Any tag" — but that is only true while none
@@ -2096,12 +2167,23 @@ function renderTagsFilterToggleLabel() {
   tagsFilterToggleBtn.classList.toggle("active", count > 0);
 }
 
+// [UI-REDESIGN / Stage 6 fix] The close branch now routes through
+// closeTagsFilterPanel() instead of toggling the class inline, so it is
+// ACTUALLY the single close path the FUTURE note below already claimed —
+// previously this toggle bypassed it, which meant a keyboard toggle-close
+// (Tab to the trigger, press Enter/Space) never reached
+// releaseTransientTriggerFocus() and stayed exempt from the fix below it.
+// The open branch clears any leftover grace period from a prior visit, the
+// same thing openPlaybackPopover()/openControlsDrawer() do at their own
+// open points.
 function toggleTagsFilterPanel() {
-  tagsFilterPanel.classList.toggle("hidden");
-  tagsFilterToggleBtn.setAttribute(
-    "aria-expanded",
-    tagsFilterPanel.classList.contains("hidden") ? "false" : "true"
-  );
+  if (isTagsFilterPanelOpen()) {
+    closeTagsFilterPanel();
+  } else {
+    tagsFilterPanel.classList.remove("hidden");
+    tagsFilterToggleBtn.setAttribute("aria-expanded", "true");
+    clearTransientTriggerFocusRelease(tagsFilterToggleBtn);
+  }
 }
 
 // [UI-REDESIGN / Stage 5]
@@ -2128,6 +2210,11 @@ function closeTagsFilterPanel({ returnFocus = false } = {}) {
   tagsFilterPanel.classList.add("hidden");
   tagsFilterToggleBtn.setAttribute("aria-expanded", "false");
   if (returnFocus) tagsFilterToggleBtn.focus();
+  // [UI-REDESIGN / Stage 6 fix] See [TRANSIENT-FOCUS-SHORTCUT-RELEASE] above
+  // toggleTagsFilterPanel() — this is now genuinely the single close path,
+  // so one call here covers every route into it (toggle, Escape, outside
+  // click).
+  releaseTransientTriggerFocus(tagsFilterToggleBtn);
 }
 
 document.addEventListener("click", (event) => {
@@ -2169,6 +2256,10 @@ function isPlaybackPopoverOpen() {
 }
 
 function openPlaybackPopover() {
+  // [UI-REDESIGN / Stage 6 fix] See [TRANSIENT-FOCUS-SHORTCUT-RELEASE] near
+  // the Tags filter panel above — a fresh open ends any "just closed" grace
+  // period left over from a previous visit.
+  clearTransientTriggerFocusRelease(playbackSettingsBtn);
   playbackSettingsPopover.classList.remove("hidden");
   playbackSettingsBtn.setAttribute("aria-expanded", "true");
   // [UI-REDESIGN / Stage 6] The backdrop is bound to the popover's open state,
@@ -2198,6 +2289,13 @@ function closePlaybackPopover({ returnFocus = false } = {}) {
   playbackSettingsBtn.setAttribute("aria-expanded", "false");
   playbackSheetScrim.hidden = true;
   if (returnFocus) playbackSettingsBtn.focus();
+  // [UI-REDESIGN / Stage 6 fix] The ONE shared close path — every close
+  // route (×, Escape, outside click, toggle-close) already funnels through
+  // this function, which is exactly why the shared
+  // [TRANSIENT-FOCUS-SHORTCUT-RELEASE] fix (see its own block near the Tags
+  // filter panel above) hooks in here and nowhere else. Safe to call
+  // unconditionally regardless of whether focus is actually on the trigger.
+  releaseTransientTriggerFocus(playbackSettingsBtn);
 }
 
 function togglePlaybackPopover() {
@@ -2219,8 +2317,13 @@ playbackSettingsBtn.addEventListener("click", (event) => {
   // the Player's shortcuts. Released only once the popover is CLOSED — while
   // it is open, isPlaybackPopoverOpen() already withholds the shortcuts on
   // purpose, and the controls inside need an undisturbed focus flow. A
-  // keyboard user is exempt (detail === 0), so Escape's focus return and
-  // Space/Enter on the trigger are unaffected.
+  // keyboard user is exempt (detail === 0) and keeps focus on the trigger —
+  // that used to mean the shortcuts stayed suppressed until the user tabbed
+  // away, but closePlaybackPopover()'s call into the shared
+  // [TRANSIENT-FOCUS-SHORTCUT-RELEASE] mechanism (see its own block near the
+  // Tags filter panel above) now restores them immediately regardless, so
+  // Escape's focus return and a keyboard toggle-close both keep the trigger
+  // focused AND get shortcuts back at once.
   if (!isPlaybackPopoverOpen()) releaseFocusAfterPointerActivation(event);
 });
 
@@ -2290,6 +2393,10 @@ function openControlsDrawer() {
   controlsPanel.classList.add("is-drawer-open");
   controlsScrim.hidden = false;
   mobileControlsBtn.setAttribute("aria-expanded", "true");
+  // [UI-REDESIGN / Stage 6 fix] See [TRANSIENT-FOCUS-SHORTCUT-RELEASE] near
+  // the Tags filter panel above — a fresh open ends any "just closed" grace
+  // period left over from a previous visit.
+  clearTransientTriggerFocusRelease(mobileControlsBtn);
   // Focus moves INTO the sheet, to its first control. Without this a keyboard
   // or screen-reader user is left on a trigger that now sits behind a scrim,
   // with the thing they opened unannounced. The close button is first in the
@@ -2308,6 +2415,12 @@ function closeControlsDrawer({ returnFocus = false } = {}) {
   controlsScrim.hidden = true;
   mobileControlsBtn.setAttribute("aria-expanded", "false");
   if (returnFocus) mobileControlsBtn.focus();
+  // [UI-REDESIGN / Stage 6 fix] closeControlsDrawer() is genuinely the
+  // single close path (toggle, close button, outside click, Escape, and the
+  // resize-driven auto-close below all route through it), so one call here
+  // covers all of them — see [TRANSIENT-FOCUS-SHORTCUT-RELEASE] near the
+  // Tags filter panel above.
+  releaseTransientTriggerFocus(mobileControlsBtn);
 }
 
 mobileControlsBtn.addEventListener("click", (event) => {
@@ -4314,7 +4427,27 @@ function handleTransportKeydown(event) {
   // the full :focus-visible latching explanation). Text entry is the one
   // genuine conflict and is already excluded on the line above.
   // F, Space and the arrows are deliberately unaffected.
-  if (event.key.toLowerCase() !== "l" && isKeyboardFocusedControl(document.activeElement)) return;
+  //
+  // [UI-REDESIGN / STAGE 6] [TRANSIENT-FOCUS-SHORTCUT-RELEASE] The second
+  // exemption: any of the three transient triggers (Playback ⚙, the Folders
+  // drawer handle, the Tags filter toggle), but ONLY in the "a close path
+  // just returned focus here" grace period — see the shared mechanism's own
+  // block near the Tags filter panel above for the full ROOT CAUSE and WHY.
+  // In one sentence: closing any of the three deliberately returns focus to
+  // its trigger, isKeyboardFocusedControl() then correctly reports that
+  // trigger as keyboard-focused, and nothing else distinguishes "just
+  // closed" from "user tabbed here fresh, wanting to operate this control" —
+  // without this, every shortcut but L stayed suppressed for as long as a
+  // just-closed trigger held focus. A user who tabs to any of the three
+  // fresh, having never opened it, still gets ordinary button semantics
+  // (Space/Enter opens it) — the grace period is false for them.
+  if (
+    event.key.toLowerCase() !== "l" &&
+    !hasTransientShortcutGracePeriod(document.activeElement) &&
+    isKeyboardFocusedControl(document.activeElement)
+  ) {
+    return;
+  }
 
   switch (event.key) {
     case "ArrowLeft":
