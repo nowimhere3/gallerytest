@@ -53,6 +53,24 @@ const DEVICE_RECORD_ID = "device";
 //  actually merged/published.]
 const ASSOCIATIONS_RECORD_ID = "associations";
 
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-LIVE-INTEGRATION]
+// [WHY: "which transport is this installation actually using" must be a single
+//  explicit, persisted value with no third "maybe" reading. The approved
+//  cutover is HARD: a V2-active installation must never write V1 again, and a
+//  not-yet-activated one must never write V2 — inferring that from whether a
+//  sync-v2/ directory happens to exist would make an interrupted or partially
+//  failed activation indistinguishable from a completed one, which is exactly
+//  the ambiguity that turns a recoverable state into a data-loss decision. A
+//  missing record reads as "v1", the only safe default: it is what every
+//  installation predating this stage genuinely is.]
+const ACTIVATION_RECORD_ID = "activation";
+
+/** The only three activation states. "v1" also covers "never activated". */
+export const ACTIVATION_V1 = "v1";
+export const ACTIVATION_V2 = "v2";
+export const ACTIVATION_FAILED = "failed";
+
 function openDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
@@ -224,6 +242,47 @@ export async function loadAssociationsCache() {
     const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(ASSOCIATIONS_RECORD_ID));
     await completeTransaction(transaction);
     return record && record.associations && typeof record.associations === "object" ? record.associations : {};
+  } finally {
+    database.close();
+  }
+}
+
+// ---- Activation state (Phase 6 Sync V2, Stage E) --------------------------
+
+/**
+ * This installation's transport activation state. Never null: an installation
+ * with no record has genuinely never been activated, which IS "v1".
+ * Shape: { mode, activatedAt, migration: { attempted, v1ProfilesSeeded, reason } }.
+ */
+export async function loadActivationState() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(ACTIVATION_RECORD_ID));
+    await completeTransaction(transaction);
+
+    const mode =
+      record && (record.mode === ACTIVATION_V2 || record.mode === ACTIVATION_FAILED) ? record.mode : ACTIVATION_V1;
+    return {
+      mode,
+      activatedAt: (record && record.activatedAt) || null,
+      migration: (record && record.migration) || null,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+export async function saveActivationState({ mode, activatedAt = null, migration = null }) {
+  const database = await openDatabase();
+
+  try {
+    const record = { id: ACTIVATION_RECORD_ID, mode, activatedAt, migration };
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).put(record);
+    await completeTransaction(transaction);
+    return record;
   } finally {
     database.close();
   }

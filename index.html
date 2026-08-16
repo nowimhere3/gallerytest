@@ -896,8 +896,49 @@
             <button id="profile-sync-disconnect-btn" class="danger" type="button">Disconnect Sync</button>
           </div>
 
+          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+               [WHY: activation is one-way and user-initiated, so it gets its
+                own explicit control rather than happening on connect. Shown
+                only while this installation is still on V1 — after cutover
+                there is nothing left to activate, and re-offering it would
+                imply the installation could go back.] -->
+          <div id="profile-sync-activate-panel" class="profile-sync-activate-panel hidden">
+            <p class="hint">
+              Sync V2 merges changes from every device instead of replacing whole Profiles.
+              Activating is one-way for this device. Your existing data stays exactly as it is.
+            </p>
+            <button id="profile-sync-activate-btn" class="secondary" type="button">Activate Sync V2</button>
+          </div>
+
+          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+               [WHY: the second device's ONLY way to say "this local folder is
+                that shared library". A dropdown of ids the user must pick from
+                deliberately — no name matching, no signature matching, no
+                pre-selection. Linking attaches identity only; it never moves
+                curation between Profiles.] -->
+          <div id="profile-sync-link-panel" class="profile-sync-link-panel hidden">
+            <p class="hint">
+              Link the currently loaded folder to a library another device already shares.
+              This only matches up identity — no Profile content is moved.
+            </p>
+            <div class="control-stack">
+              <select id="profile-sync-link-select" aria-label="Shared library to link the loaded folder to"></select>
+              <button id="profile-sync-link-btn" class="secondary" type="button">Link Loaded Folder</button>
+            </div>
+            <p id="profile-sync-link-status" class="hint" role="status"></p>
+          </div>
+
+          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+               [WHY: relabelled from "conflict" to RECOVERY. Sync V2 never asks
+                this question — it merges per fact, so "both sides changed" has
+                a correct answer. These controls survive only for a V1
+                installation, and as a deliberate escape hatch; renderProfileSync
+                hides them entirely once mode is v2.] -->
           <div id="profile-sync-conflict-panel" class="profile-sync-conflict-panel hidden">
-            <p class="hint">Profile changed on another device.</p>
+            <p class="hint">
+              <strong>Recovery only.</strong> Profile changed on another device and could not be
+              reconciled automatically. Choosing here replaces one whole version with the other.
+            </p>
             <div class="control-stack">
               <button id="profile-sync-use-synced-btn" class="secondary" type="button">Use Synced Version</button>
               <button id="profile-sync-keep-local-btn" class="secondary" type="button">Keep Local Version</button>

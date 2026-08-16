@@ -41,6 +41,24 @@
 //  internally inconsistent generation while that replacement is built.]
 import { loadSyncConfig, saveSyncConnection, updateSyncMeta, clearSyncConfig } from "../storage/profile-sync-store.js";
 import { DEFAULT_PROFILE_NAME } from "./indexeddb.js";
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-LIVE-INTEGRATION]
+// [WHY: routing lives HERE rather than in a parallel sync class because every
+//  guarantee this module already owns — the ~3s debounce, the serialized
+//  reconcile chain, queryPermission-never-requestPermission on auto passes, and
+//  the single subscribe() the UI renders from — must hold identically for V2.
+//  A second engine alongside this one would be a second chance for two passes
+//  to overlap on the same folder handle, and a second status surface for the UI
+//  to disagree with. One engine, one chain, one status; the MODE decides which
+//  reconcile body runs, and nothing else changes.]
+import { runSyncV2Pass } from "./sync-v2.js";
+import {
+  activateSyncV2 as runActivation,
+  loadActivationState,
+  ACTIVATION_V1,
+  ACTIVATION_V2,
+  ACTIVATION_FAILED,
+} from "./sync-v2-activation.js";
 
 const AUTO_SYNC_DEBOUNCE_MS = 3000;
 const MANIFEST_FILE_NAME = "manifest.json";
@@ -349,8 +367,27 @@ export class ProfileSync {
   #reconcileChain = Promise.resolve();
   #applyingRemote = false; // guards against our own replaceAllProfiles() re-triggering a redundant auto-sync pass
 
+  // ---- Sync V2 activation (Stage E) --------------------------------------
+  //
+  // #mode is this installation's persisted transport. Read once at init() and
+  // updated only by activateV2(). Defaults to V1 rather than "unknown": every
+  // installation that predates Stage E genuinely IS V1, and a mode that could
+  // read as neither would leave #reconcileImpl with no defined behaviour.
+  #mode = ACTIVATION_V1;
+  #activation = null;
+  #lastPassInfo = null; // { mergedPeers, skippedPeers } from the most recent V2 pass
+  // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+  // [WHY: started in the CONSTRUCTOR and awaited by #reconcileImpl, so no
+  //  reconcile can possibly run before this installation's transport is known.
+  //  Loading it in init() alone was not enough: connectNewFolder() reconciles
+  //  too, and a caller that reached it without init() having finished would run
+  //  the default (V1) transport on an installation that had already cut over —
+  //  writing V1 after cutover, which the policy forbids absolutely.]
+  #activationReady;
+
   constructor(profileStore) {
     this.#profile = profileStore;
+    this.#activationReady = this.#loadActivation();
     // A single subscription drives every auto-sync trigger: favorites,
     // hidden, tags, tag vocabulary, profile create/switch/delete/rename,
     // and import all funnel through ProfileStore's #emit() already (see
@@ -367,7 +404,22 @@ export class ProfileSync {
    * picker itself — see [PROFILE-SYNC] header: only an explicit user
    * action (Choose/Change/Reconnect) may do that.
    */
+  async #loadActivation() {
+    try {
+      this.#activation = await loadActivationState();
+      this.#mode = this.#activation.mode;
+    } catch (error) {
+      console.warn("[PROFILE-SYNC] Could not read the sync activation state; staying on V1.", error);
+      this.#mode = ACTIVATION_V1;
+    }
+  }
+
   async init() {
+    // Which transport this installation uses decides what every step below is
+    // even allowed to write, so it is resolved before anything touches the
+    // folder. Started in the constructor; merely awaited here.
+    await this.#activationReady;
+
     let config;
     try {
       config = await loadSyncConfig();
@@ -523,7 +575,69 @@ export class ProfileSync {
    * choice: "use-synced" | "keep-local". Only after this succeeds does a
    * new baseline get established — see #acceptBaseline.
    */
+  /**
+   * [PHASE-6-SYNC-V2]
+   * [STAGE-E-LIVE-INTEGRATION]
+   * [WHY: activation is user-initiated and one-way by design. It runs through
+   *  the same serialized reconcile chain as every other pass so it can never
+   *  interleave with one — an activation landing halfway through a V1 publish
+   *  would be exactly the V1+V2 coexistence the policy forbids. On success the
+   *  very next pass is already V2; on failure #mode becomes ACTIVATION_FAILED
+   *  and #reconcileImpl refuses BOTH transports rather than falling back to
+   *  V1, because a partially-migrated installation is no longer described by
+   *  V1's own data.]
+   */
+  async activateSyncV2() {
+    await this.#activationReady;
+    if (this.#mode === ACTIVATION_V2) return { ok: true, alreadyActive: true };
+
+    const run = async () => {
+      this.#status = "syncing";
+      this.#message = "Activating Sync V2…";
+      this.#emit();
+
+      const result = await runActivation({ profileStore: this.#profile, dirHandle: this.#dirHandle });
+      this.#mode = result.mode;
+      this.#activation = { mode: result.mode, activatedAt: Date.now(), migration: result.migration };
+
+      if (!result.ok) {
+        this.#status = "migration-failed";
+        this.#message =
+          (result.migration && result.migration.reason) ||
+          "Sync activation did not finish. Your Profile data is safe and saved locally.";
+        this.#emit();
+        return result;
+      }
+
+      // Immediately run the first real V2 pass so the status the user sees
+      // reflects an actual verified pass, not merely "we flipped a flag".
+      await this.#reconcileImpl();
+      return result;
+    };
+
+    this.#reconcileChain = this.#reconcileChain.then(run, run);
+    return this.#reconcileChain;
+  }
+
+  /** This installation's transport mode — "v1" | "v2" | "failed". */
+  getActivation() {
+    return { mode: this.#mode, ...(this.#activation || {}) };
+  }
+
+  /**
+   * [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+   * [WHY: recovery ONLY. Normal V2 reconciliation never reaches "conflict" —
+   *  there is no code path in #reconcileV2 that sets it — so this can only be
+   *  entered from a V1-mode installation, or deliberately by the recovery UI.
+   *  The V1 guard below is what keeps a V2 installation from being talked into
+   *  a whole-collection overwrite by a stale UI state: after cutover, V1's
+   *  collection no longer describes this installation.]
+   */
   async resolveConflict(choice) {
+    if (this.#mode === ACTIVATION_V2) {
+      console.warn("[SYNC-V2] Refusing a Keep Local / Use Synced resolution on a V2 installation.");
+      return;
+    }
     if (this.#status !== "conflict" || !this.#dirHandle) return;
 
     this.#status = "syncing";
@@ -569,6 +683,16 @@ export class ProfileSync {
       //  the read-only console audit already in main.js. No UI renders it; it
       //  is state, not a string for a user to read.]
       baselineFingerprint: this.#baselineFingerprint,
+      // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+      // [WHY: the UI must be able to say WHICH transport produced the status it
+      //  is rendering, and report a skipped peer WITHOUT implying the whole
+      //  pass failed — a peer skipped mid-write is a normal, self-healing
+      //  event, not an error, and conflating the two is how a truthful status
+      //  surface starts lying.]
+      mode: this.#mode,
+      migration: (this.#activation && this.#activation.migration) || null,
+      mergedPeers: this.#lastPassInfo ? this.#lastPassInfo.mergedPeers : null,
+      skippedPeers: this.#lastPassInfo ? this.#lastPassInfo.skippedPeers : [],
     };
   }
 
@@ -618,7 +742,100 @@ export class ProfileSync {
     return this.#reconcileChain;
   }
 
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-E-LIVE-INTEGRATION]
+  // [WHY: the single fork between transports, placed at the TOP of the
+  //  reconcile body so there is exactly one line to read to know which one ran.
+  //  ACTIVATION_FAILED deliberately runs NEITHER: an installation whose
+  //  activation did not complete must not resume writing V1 (it may already
+  //  have adopted V1-seeded facts, so V1 no longer describes it) and must not
+  //  write V2 either (its migration is unfinished). It reports a truthful
+  //  status and waits for the user to retry activation — fail safe, surface
+  //  recovery, never guess.]
   async #reconcileImpl() {
+    await this.#activationReady;
+
+    if (this.#mode === ACTIVATION_FAILED) {
+      this.#status = "migration-failed";
+      this.#message =
+        (this.#activation && this.#activation.migration && this.#activation.migration.reason) ||
+        "Sync activation did not finish. Your Profile data is safe and saved locally.";
+      this.#emit();
+      return;
+    }
+    if (this.#mode === ACTIVATION_V2) return this.#reconcileV2();
+    return this.#reconcileV1();
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-E-LIVE-INTEGRATION]
+  // [WHY: this is the whole V2 live path. Note what is NOT here: no
+  //  fingerprint comparison, no baseline three-way branch, and above all no
+  //  conflict state — V2 merges per fact, so "both sides changed" is an
+  //  ordinary outcome with a correct answer, not a question for the user. The
+  //  Keep Local / Use Synced controls stay reachable only as explicit recovery
+  //  (see resolveConflict), never from here.]
+  async #reconcileV2() {
+    if (!this.#dirHandle) return;
+
+    this.#status = "syncing";
+    this.#emit();
+
+    let result;
+    try {
+      result = await runSyncV2Pass({ profileStore: this.#profile, dirHandle: this.#dirHandle });
+    } catch (error) {
+      console.error("[SYNC-V2] Sync pass threw.", error);
+      this.#status = "offline";
+      this.#message = "Sync could not complete. Local changes are saved.";
+      this.#emit();
+      return;
+    }
+
+    this.#lastPassInfo = {
+      mergedPeers: result.mergedPeers || 0,
+      skippedPeers: result.skippedPeers || [],
+    };
+
+    switch (result.status) {
+      case "permission-needed":
+        this.#status = "permission-needed";
+        this.#message = result.message || null;
+        this.#emit();
+        return;
+
+      case "verify-failed":
+        // Reuses Stage B's exact discipline: nothing accepted, nothing cleaned
+        // up, local data untouched, and the baseline/lastSyncAt deliberately
+        // NOT advanced.
+        this.#enterVerifyFailed(result.reason === "changed" ? "changed" : "unreadable");
+        return;
+
+      case "no-device-identity":
+        this.#status = "offline";
+        this.#message = "This device has no sync identity yet. Local changes are saved.";
+        this.#emit();
+        return;
+
+      case "ok":
+        // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+        // [WHY: "connected" is only ever reached on an `ok` result, which
+        //  runSyncV2Pass returns only after either a read-back-VERIFIED publish
+        //  or a confirmed no-op (this device's published generation already
+        //  equals what it would publish). Every other outcome falls into a
+        //  branch above. That is the whole of "do not claim Synced unless the
+        //  pass was actually accepted".]
+        await this.#acceptV2Pass();
+        return;
+
+      default:
+        this.#status = "offline";
+        this.#message = "Sync could not complete. Local changes are saved.";
+        this.#emit();
+    }
+  }
+
+  async #reconcileV1() {
     if (!this.#dirHandle) return;
 
     // Auto-triggered passes have no user gesture available, so only
@@ -836,6 +1053,28 @@ export class ProfileSync {
       await updateSyncMeta({ baselineFingerprint: fingerprint, lastSyncAt: this.#lastSyncAt });
     } catch (error) {
       console.warn("[PROFILE-SYNC] Could not persist sync metadata.", error);
+    }
+
+    this.#emit();
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-E-LIVE-INTEGRATION]
+  // [WHY: deliberately NOT #acceptBaseline. V2 has no collection fingerprint,
+  //  and nulling #baselineFingerprint here would destroy the V1 baseline that
+  //  is still the only record of what the V1 generation this installation
+  //  migrated FROM contained — read-only recovery material, per the cutover
+  //  policy. This advances only what a V2 pass actually establishes: that a
+  //  verified pass completed, and when.]
+  async #acceptV2Pass() {
+    this.#lastSyncAt = Date.now();
+    this.#status = "connected";
+    this.#message = null;
+
+    try {
+      await updateSyncMeta({ lastSyncAt: this.#lastSyncAt });
+    } catch (error) {
+      console.warn("[SYNC-V2] Could not persist sync metadata.", error);
     }
 
     this.#emit();

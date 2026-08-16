@@ -833,6 +833,36 @@ button:not(:disabled):hover,
   color: var(--text);
 }
 
+/* [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+   [WHY: reuses the existing panel geometry (.profile-sync-manage-panel's
+    spacing, .profile-sync-conflict-panel's inset card) so these read as part
+    of the same Status Update Center block rather than a new visual language.
+    The colour is the only difference and it is deliberate: activation and
+    linking are ordinary forward actions, so they take the neutral surface
+    treatment, NOT the amber the recovery panel uses to mark an exceptional
+    choice.] */
+.profile-sync-activate-panel,
+.profile-sync-link-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.profile-sync-activate-panel .hint,
+.profile-sync-link-panel .hint {
+  margin: 0 0 10px;
+}
+
+.profile-sync-link-panel .hint:last-child {
+  margin: 10px 0 0;
+}
+
+.profile-sync-link-panel select {
+  width: 100%;
+}
+
 /* Import / Export demoted to an advanced/manual disclosure — styled like
    .tags-section/.profile-section's summary, but a size down (same
    reasoning .legacy-picker-details already uses for a nested disclosure). */

@@ -9,6 +9,13 @@ import {
   listLegacyLibraries,
   addLegacyLibrary,
   updateLegacyLibrarySignature,
+  // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+  // [WHY: linkLocalLibraryToSharedId is the ONLY way a second device attaches
+  //  its own physical folder to an already-shared library, and it is reachable
+  //  from exactly one explicit user action (see the Link Shared Library
+  //  controls) — never from a folder open, a name match, or a signature match.]
+  getLibraryByLibraryId,
+  linkLocalLibraryToSharedId,
 } from "./storage/library-registry.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 import {
@@ -143,6 +150,12 @@ const profileSyncManageToggleBtn = document.getElementById("profile-sync-manage-
 const profileSyncManagePanel = document.getElementById("profile-sync-manage-panel");
 const profileSyncChangeBtn = document.getElementById("profile-sync-change-btn");
 const profileSyncDisconnectBtn = document.getElementById("profile-sync-disconnect-btn");
+const profileSyncActivatePanel = document.getElementById("profile-sync-activate-panel");
+const profileSyncActivateBtn = document.getElementById("profile-sync-activate-btn");
+const profileSyncLinkPanel = document.getElementById("profile-sync-link-panel");
+const profileSyncLinkSelect = document.getElementById("profile-sync-link-select");
+const profileSyncLinkBtn = document.getElementById("profile-sync-link-btn");
+const profileSyncLinkStatus = document.getElementById("profile-sync-link-status");
 const profileSyncConflictPanel = document.getElementById("profile-sync-conflict-panel");
 const profileSyncUseSyncedBtn = document.getElementById("profile-sync-use-synced-btn");
 const profileSyncKeepLocalBtn = document.getElementById("profile-sync-keep-local-btn");
@@ -1407,6 +1420,29 @@ async function renderRecentLibraries() {
 // FUTURE: This is the ONE place that writes a library<->profile
 // association. Do not duplicate this logic at a new call site — call this
 // function instead.
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-LIVE-INTEGRATION]
+// [WHY: the single seam where an EXPLICIT association becomes a synchronized
+//  fact. Routing through ProfileStore (rather than calling setLibraryProfile
+//  directly, as this used to) is what mints the shared libraryId — which by
+//  design happens ONLY here, never on a folder open — and stamps
+//  associations[libraryId] = profileId so the other device learns it. The
+//  local row's own profileId field is still written, by setLibraryAssociation
+//  itself, so every existing UI read of activeLibraryRecord.profileId keeps
+//  working unchanged.
+//
+//  Deliberately NOT used by the three stale-association CLEARING sites
+//  elsewhere in this file: those fire when the associated Profile no longer
+//  exists locally, and publishing a null there would tell every peer the user
+//  disassociated the library when they did not. Under V2 a deleted Profile is
+//  itself a synced tombstone, so the association fact correctly keeps naming
+//  it — and an explicit Restore brings both back together.]
+async function associateThroughSyncV2(localLibraryId, targetProfileId) {
+  const sharedLibraryId = await profile.setLibraryAssociation(localLibraryId, targetProfileId);
+  if (!sharedLibraryId) return null;
+  return getLibraryByLibraryId(sharedLibraryId);
+}
+
 async function associateCurrentLibraryWithProfile(targetProfileId) {
   if (!targetProfileId) return false;
 
@@ -1421,7 +1457,7 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
           record = await addLegacyLibrary(pendingLegacySignature);
         }
 
-        const updated = await setLibraryProfile(record.id, targetProfileId);
+        const updated = await associateThroughSyncV2(record.id, targetProfileId);
         activeLibraryRecord = updated || { ...record, profileId: targetProfileId };
         pendingLegacySignature = null;
         logLegacyIdentity("associated profile id", { profileId: targetProfileId, libraryId: activeLibraryRecord.id });
@@ -1455,7 +1491,7 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
   fsaAssociateBtn.disabled = true;
   profileAssociateBtn.disabled = true;
   try {
-    const updated = await setLibraryProfile(activeLibraryRecord.id, targetProfileId);
+    const updated = await associateThroughSyncV2(activeLibraryRecord.id, targetProfileId);
     if (updated) activeLibraryRecord = updated;
     syncAssociateButtonVisibility();
     fsaStatusText.textContent = `Associated "${activeLibraryRecord.name}" with "${profile.getProfileName()}".`;
@@ -3112,13 +3148,22 @@ fileInput.addEventListener("change", (event) => {
 folderInput.addEventListener("change", (event) => {
   const files = event.target.files;
 
-  // Record which top-level folder this profile is currently associated
-  // with (Phase 8.1 — Multi-Profile Foundation). Purely descriptive
-  // metadata — the folder's own name, nothing more. No matching/detection
-  // happens here or anywhere yet; that's deferred to a later phase.
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-E-LIVE-INTEGRATION]
+  // [WHY: this used to call profile.setMasterFolder({ name: topFolderName }),
+  //  which wrote the opened folder's name onto WHICHEVER PROFILE HAPPENED TO BE
+  //  ACTIVE — a durable association nobody asked for, created by the mere act
+  //  of opening a folder. Two consequences made it unsafe: it silently
+  //  re-pointed the active Profile's masterFolder every time a different folder
+  //  was browsed, and under Sync V1 that value travels in the published
+  //  collection, so one device browsing a folder rewrote metadata on every
+  //  other device. Association is now EXCLUSIVELY an explicit user action —
+  //  associateCurrentLibraryWithProfile() — which is also the only place that
+  //  mints a shared libraryId. Opening a folder is navigation, not identity.
+  //  topFolderName is still computed: loadFiles() needs it to fingerprint a
+  //  legacy folder for RECOGNITION, which is local-only and associates nothing.]
   const firstFile = files && files[0];
   const topFolderName = firstFile && firstFile.webkitRelativePath ? firstFile.webkitRelativePath.split("/")[0] : null;
-  if (topFolderName) profile.setMasterFolder({ name: topFolderName });
 
   // [Phase 8.4-3] isFolderPick=true is what unlocks durable legacy
   // identity in loadFiles() — the plain "Choose Files" input below never
@@ -4610,7 +4655,21 @@ function renderProfileSync() {
     !status.configured || status.status === "permission-needed"
   );
   profileSyncNowBtn.disabled = status.status === "syncing" || status.status === "conflict";
-  profileSyncConflictPanel.classList.toggle("hidden", status.status !== "conflict");
+
+  // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+  // [WHY: the recovery controls are gated on mode as well as status. A V2
+  //  installation can never legitimately reach "conflict" (nothing in
+  //  #reconcileV2 sets it), but gating on the mode too means a stale render
+  //  from before activation cannot leave a whole-collection overwrite button
+  //  on screen for an installation that has already cut over.]
+  const isV2 = status.mode === "v2";
+  profileSyncConflictPanel.classList.toggle("hidden", isV2 || status.status !== "conflict");
+
+  // Offered only while still on V1, and only once a folder is actually
+  // connected — activating with nothing to migrate from is possible but is a
+  // Stage-E-and-later decision, not something to advertise here.
+  profileSyncActivatePanel.classList.toggle("hidden", isV2 || !status.configured || status.status === "syncing");
+  profileSyncLinkPanel.classList.toggle("hidden", !isV2 || !status.configured);
 
   if (!status.configured) {
     profileSyncManagePanel.classList.add("hidden");
@@ -4647,11 +4706,35 @@ function renderProfileSync() {
     case "verify-failed":
       line = `Sync not completed — ${status.message}`;
       break;
+    // [PHASE-6-SYNC-V2]
+    // [STAGE-E-LIVE-INTEGRATION]
+    // [WHY: an installation whose activation did not finish is running NEITHER
+    //  transport (see ProfileSync#reconcileImpl), so it must not render as
+    //  connected, syncing, or offline — all three imply a working sync this
+    //  installation does not currently have. It says so plainly and points at
+    //  the retry, because the only correct next step is a user decision.]
+    case "migration-failed":
+      line = `Sync activation did not finish — ${status.message || "Your Profile data is safe and saved locally."}`;
+      break;
     case "connected":
-    default:
-      line = `✓ Connected — "${status.folderName}" · Auto Sync: ON · Last sync: ${
+    default: {
+      const v2 = status.mode === "v2";
+      line = `✓ Connected — "${status.folderName}" · ${v2 ? "Sync V2" : "Sync V1"} · Auto Sync: ON · Last sync: ${
         status.lastSyncAt ? formatRelativeTime(status.lastSyncAt) : "just now"
       }`;
+      // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+      // [WHY: a skipped peer is appended to a CONNECTED line rather than
+      //  replacing it. Skipping one device mid-write is normal, self-healing,
+      //  and does not make this device's own verified pass any less real —
+      //  reporting it as a failure would be as untruthful as hiding it.]
+      if (v2 && status.skippedPeers && status.skippedPeers.length) {
+        const count = status.skippedPeers.length;
+        line += ` · ${count} device${count === 1 ? "" : "s"} skipped this pass (will retry)`;
+      }
+      if (v2 && status.migration && status.migration.reason) {
+        line += ` · Note: ${status.migration.reason}`;
+      }
+    }
   }
   profileSyncStatusText.textContent = line;
 }
@@ -4787,8 +4870,101 @@ profileSyncManageToggleBtn.addEventListener("click", () => {
 profileSyncUseSyncedBtn.addEventListener("click", () => profileSync.resolveConflict("use-synced"));
 profileSyncKeepLocalBtn.addEventListener("click", () => profileSync.resolveConflict("keep-local"));
 
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-LIVE-INTEGRATION]
+// [WHY: one confirm, because activation is one-way for this device. The
+//  wording states the two things the user cannot undo (this device stops
+//  writing V1) and the one thing they might fear and shouldn't (nothing local
+//  is deleted). ProfileSync.activateSyncV2() runs the migration and the first
+//  real V2 pass; every status the user then sees comes from that pass, not
+//  from this click.]
+profileSyncActivateBtn.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Activate Sync V2 on this device?\n\n" +
+      "• Changes from every device will be merged instead of one version replacing another.\n" +
+      "• This device will stop writing the old sync format. Existing old files are left untouched.\n" +
+      "• Nothing in your local Profiles is deleted.\n\n" +
+      "This is one-way for this device."
+  );
+  if (!confirmed) return;
+
+  profileSyncActivateBtn.disabled = true;
+  try {
+    await profileSync.activateSyncV2();
+  } finally {
+    profileSyncActivateBtn.disabled = false;
+  }
+  await renderSharedLibraryOptions();
+});
+
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-LIVE-INTEGRATION]
+// [WHY: the list is built from association FACTS this device has merged — i.e.
+//  libraries some device has actually shared — never from local folder names,
+//  and never pre-selected. The user has to choose a specific shared id, which
+//  is the whole point: matching a physical folder to a logical library is a
+//  judgement only they can make safely.]
+async function renderSharedLibraryOptions() {
+  if (!profileSyncLinkSelect) return;
+  const associations = profile.listAssociations();
+  const ids = Object.keys(associations);
+
+  profileSyncLinkSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = ids.length ? "Choose a shared library…" : "No shared libraries known yet";
+  profileSyncLinkSelect.appendChild(placeholder);
+
+  for (const libraryId of ids) {
+    const option = document.createElement("option");
+    option.value = libraryId;
+    const associatedProfile = profile.listProfiles().find((entry) => entry.id === associations[libraryId]);
+    // Enough context to choose safely: which Profile it belongs to, plus the
+    // id itself so two libraries on the same Profile are still distinguishable.
+    option.textContent = `${associatedProfile ? associatedProfile.name : "Unknown Profile"} · ${libraryId.slice(0, 8)}…`;
+    profileSyncLinkSelect.appendChild(option);
+  }
+
+  profileSyncLinkBtn.disabled = ids.length === 0;
+}
+
+profileSyncLinkBtn.addEventListener("click", async () => {
+  const sharedLibraryId = profileSyncLinkSelect.value;
+  if (!sharedLibraryId) {
+    profileSyncLinkStatus.textContent = "Choose a shared library first.";
+    return;
+  }
+  if (!activeLibraryRecord || !activeLibraryRecord.id) {
+    profileSyncLinkStatus.textContent = "Load the folder you want to link first.";
+    return;
+  }
+
+  profileSyncLinkBtn.disabled = true;
+  try {
+    const linked = await linkLocalLibraryToSharedId(activeLibraryRecord.id, sharedLibraryId);
+    if (!linked) {
+      profileSyncLinkStatus.textContent =
+        "Could not link this folder — it is already linked to a different shared library.";
+      return;
+    }
+    activeLibraryRecord = linked;
+    // The next pass reconciles this row's Profile pointer from the association
+    // fact; nothing is copied or moved here.
+    await profileSync.syncNow();
+    profileSyncLinkStatus.textContent = `Linked "${linked.name}" to the shared library.`;
+    await renderRecentLibraries();
+    syncAssociateButtonVisibility();
+  } catch (error) {
+    console.warn("[SYNC-V2] Could not link this folder to a shared library.", error);
+    profileSyncLinkStatus.textContent = "Could not link this folder. Try again.";
+  } finally {
+    profileSyncLinkBtn.disabled = false;
+  }
+});
+
 profileSync.subscribe(renderProfileSync);
-renderProfileSync();
+profileSync.subscribe(() => {
+  renderSharedLibraryOptions().catch(() => undefined);
 
 // ---- Boot ---------------------------------------------------------------
 
