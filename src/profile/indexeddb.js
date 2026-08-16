@@ -282,6 +282,34 @@ export async function deleteProfileData(profileId) {
 }
 
 /**
+ * [PHASE-6-SYNC-V2]
+ * [STAGE-D2-TRANSPORT]
+ * [WHY: getFullReplica() must publish a deleted Profile's tombstone fact, not
+ *  just the profiles the LOCAL registry currently shows — a Profile removed
+ *  from the visible registry still has a row here (deletion is now a stamped
+ *  fact, never deleteProfileData — see ProfileStore#deleteProfile). This is
+ *  the enumeration source that makes that distinction possible: every
+ *  profileId this installation has ever persisted a row for, live or
+ *  tombstoned, independent of what the UI-facing registry currently lists.]
+ */
+export async function listAllProfileIds() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const request = transaction.objectStore(STORE_NAME).getAll();
+    const rows = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Could not list saved profiles."));
+    });
+    await completeTransaction(transaction);
+    return rows.filter((row) => row && typeof row.id === "string").map((row) => row.id);
+  } finally {
+    database.close();
+  }
+}
+
+/**
  * Saves the complete profile registry. Like saveProfileData, this replaces
  * the whole row, so callers must always pass the full { activeProfileId,
  * profiles } shape, not a partial update.

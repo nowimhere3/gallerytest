@@ -40,6 +40,23 @@ export function localSeedStamp(deviceId) {
 }
 
 /**
+ * [PHASE-6-SYNC-V2]
+ * [STAGE-D2-TRANSPORT]
+ * [WHY: V1 has no stamps at all — it is pre-ordering data recovered by reading
+ *  its files directly (see sync-v2-migration.js), not a peer with real history.
+ *  Seeding it BELOW LOCAL_SEED_T is what makes "local seed outranks V1 where
+ *  the same fact disagrees" true by construction: any local fact, even one this
+ *  installation only ever seeded from its own pre-V2 state, already carries a
+ *  higher stamp and wins the merge outright. V1 can only ever contribute a fact
+ *  that has no local counterpart at all — pure recovery, never regression.]
+ */
+export const V1_SEED_T = 1;
+
+export function v1SeedStamp(deviceId) {
+  return { t: V1_SEED_T, d: `v1-seed:${deviceId}` };
+}
+
+/**
  * Builds a fact replica from one profile's existing ProfileStore data.
  *
  * Only POSITIVE state is seeded. A record that does not exist, or a field that
@@ -188,6 +205,72 @@ export function diffFactsAgainstProfileData(facts, { name, items, tags }) {
   }
 
   return changes;
+}
+
+// A record with only default/falsy values carries no information worth
+// keeping. Mirrors profile-store.js's private isEmptyRecord — duplicated
+// rather than imported because this file is deliberately dependency-free
+// (see the module header): a pure function belongs where its inputs/outputs
+// are plain data, not reaching into ProfileStore's private helpers.
+function isEmptyProfileRecord(record) {
+  return Object.values(record).every((value) => {
+    if (typeof value === "boolean") return value === false;
+    if (value === null || value === undefined) return true;
+    if (Array.isArray(value)) return value.length === 0;
+    return false;
+  });
+}
+
+/**
+ * Applies a diffFactsAgainstProfileData()-shaped diff to plain items/tags data,
+ * returning NEW plain objects — never mutates its input.
+ *
+ * [PHASE-6-SYNC-V2]
+ * [STAGE-D2-TRANSPORT]
+ * [WHY: ProfileStore#applyFactsToLocal already does this for the ACTIVE
+ *  profile, applying directly to `this.#recordsByPath`/`this.#tags` because it
+ *  IS that profile's live state. Adopting a merged sync pass touches every
+ *  profile a device knows about, most of which are NOT the active one and have
+ *  no live in-memory state to mutate — this is that same field-by-field
+ *  application, written as a pure function so it can run against a profile
+ *  that is simply data read from IndexedDB.]
+ */
+export function applyProfileDiff(diff, { items, tags }) {
+  let nextItems = { ...(items || {}) };
+  let nextTags = (tags || []).map((tag) => ({ ...tag }));
+
+  for (const tag of diff.tags.add) nextTags.push({ id: tag.id, name: tag.name });
+  for (const tag of diff.tags.rename) {
+    nextTags = nextTags.map((t) => (t.id === tag.id ? { ...t, name: tag.name } : t));
+  }
+  for (const tagId of diff.tags.remove) nextTags = nextTags.filter((t) => t.id !== tagId);
+
+  for (const item of diff.items) {
+    const existing = nextItems[item.path] || {};
+    const record = { ...existing };
+
+    if ("favorite" in item) {
+      record.favorite = item.favorite;
+      if (item.favorite && item.favoritedAt !== null && item.favoritedAt !== undefined) {
+        record.favoritedAt = item.favoritedAt;
+      } else {
+        delete record.favoritedAt;
+      }
+    }
+    if ("hidden" in item) record.hidden = item.hidden;
+
+    if (item.addTags.length || item.removeTags.length) {
+      const tagIds = new Set(Array.isArray(existing.tags) ? existing.tags : []);
+      for (const tagId of item.addTags) tagIds.add(tagId);
+      for (const tagId of item.removeTags) tagIds.delete(tagId);
+      record.tags = [...tagIds];
+    }
+
+    if (isEmptyProfileRecord(record)) delete nextItems[item.path];
+    else nextItems[item.path] = record;
+  }
+
+  return { items: nextItems, tags: nextTags };
 }
 
 /**

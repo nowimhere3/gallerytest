@@ -20,6 +20,7 @@ import {
   loadRegistry,
   saveRegistry,
   deleteProfileData,
+  listAllProfileIds,
   generateProfileId,
   DEFAULT_PROFILE_NAME,
 } from "./indexeddb.js";
@@ -49,6 +50,7 @@ import {
   seedFactsFromProfileData,
   diffFactsAgainstProfileData,
   diffLocalStates,
+  applyProfileDiff,
   findProjectionDrift,
   localSeedStamp,
 } from "./sync-translate.js";
@@ -207,23 +209,185 @@ export class ProfileStore {
    * from memory (always at least as fresh as IndexedDB); the rest are read from
    * their own rows. Stage D2's transport publishes this.
    */
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D2-TRANSPORT]
+  // [WHY: enumerates every profileId ever PERSISTED (listAllProfileIds), not
+  //  this.#profiles (the UI-facing, visible registry). A deleted Profile is
+  //  removed from #profiles immediately (see #deleteProfile) but its row, now
+  //  carrying a deleted:true fact, remains — enumerating only #profiles would
+  //  silently stop publishing that tombstone the moment it was created, which
+  //  is exactly how a peer that has not yet seen the deletion would never
+  //  learn of it and keep the Profile alive forever.]
   async getFullReplica() {
     await this.whenFactsSettled();
 
     const replica = Facts.emptyReplica();
-    for (const entry of this.#profiles) {
-      if (entry.id === this.#profileId) {
-        replica.profiles[entry.id] = this.#facts;
+    let knownIds;
+    try {
+      knownIds = new Set(await listAllProfileIds());
+    } catch (error) {
+      console.warn("[SYNC-V2] Could not list known profiles for a replica.", error);
+      knownIds = new Set();
+    }
+    if (this.#profileId) knownIds.add(this.#profileId);
+
+    for (const profileId of knownIds) {
+      if (profileId === this.#profileId) {
+        replica.profiles[profileId] = this.#facts;
         continue;
       }
       try {
-        const data = await loadProfileData(entry.id);
-        if (data.facts) replica.profiles[entry.id] = data.facts;
+        const data = await loadProfileData(profileId);
+        if (data.facts) replica.profiles[profileId] = data.facts;
       } catch (error) {
-        console.warn(`[SYNC-V2] Could not read facts for profile "${entry.id}".`, error);
+        console.warn(`[SYNC-V2] Could not read facts for profile "${profileId}".`, error);
       }
     }
     return takeSnapshot(replica);
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D2-TRANSPORT]
+  // [WHY: this is the observe half of observe-before-tick, applied to a PEER's
+  //  replica rather than this device's own persisted facts. It must run for
+  //  every valid peer BEFORE the sync pass does anything else — in particular
+  //  before adoptMergedReplica below, and before any user mutation that could
+  //  land while a pass is in flight — or a local click issued between reading a
+  //  peer and finishing this pass could draw a stamp that loses to a fact the
+  //  peer already published, silently discarding the click.]
+  async observePeerReplica(replica) {
+    await this.#identity.ready;
+    this.#identity.observeReplica(replica);
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D2-TRANSPORT]
+  // [WHY: a sync pass has already merged local + every valid peer (see
+  //  sync-v2.js) into ONE replica covering every Profile any of them mentioned.
+  //  Applying that here — instead of the caller writing IndexedDB directly —
+  //  keeps "how a replica becomes local state" a single ProfileStore
+  //  responsibility, the same reasoning [PROFILE-SYNC] already documents for
+  //  getFullCollection/replaceAllProfiles. Every profile is MERGED into
+  //  whatever is already stored, never assigned over it — merge is
+  //  commutative/idempotent, so replaying the same pass twice, or running two
+  //  devices' passes in either order, converges to the same result. This never
+  //  mints a stamp: it only reconciles already-stamped facts, so it never
+  //  drains through #recordFact/#factQueue.]
+  //
+  // A profile mentioned in `mergedReplica` that this device has never seen
+  // before is added to its OWN registry — recovering a Profile another device
+  // created, not just its content — with a name projected from its facts.
+  async adoptMergedReplica(mergedReplica) {
+    await this.#ready;
+    await this.#identity.ready;
+    await this.#drainPendingWrites();
+
+    const now = Date.now();
+    let registryChanged = false;
+    let activeWasDeletedRemotely = false;
+
+    for (const profileId of Object.keys(mergedReplica.profiles || {})) {
+      const facts = mergedReplica.profiles[profileId];
+      const deletedRemotely = Facts.isProfileDeleted(mergedReplica, profileId);
+      let entry = this.#profiles.find((candidate) => candidate.id === profileId);
+
+      if (!entry && !deletedRemotely) {
+        const projected = Facts.projectProfile(mergedReplica, profileId);
+        entry = {
+          id: profileId,
+          name: (projected && projected.name) || DEFAULT_PROFILE_NAME,
+          masterFolder: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        this.#profiles.push(entry);
+        registryChanged = true;
+      } else if (entry && deletedRemotely) {
+        // [PHASE-6-SYNC-V2][STAGE-D2-TRANSPORT]
+        // [WHY: a peer's deletion must make this device's VISIBLE registry
+        //  agree — a Profile the rest of the world considers gone must stop
+        //  showing up here too. Facts (below) are still merged and persisted
+        //  regardless, because the tombstone must keep propagating to any
+        //  THIRD device that has not yet seen it — only the local, UI-facing
+        //  list is what changes here.]
+        this.#profiles = this.#profiles.filter((candidate) => candidate.id !== profileId);
+        registryChanged = true;
+        if (profileId === this.#profileId) activeWasDeletedRemotely = true;
+        entry = null;
+      }
+      // else: not deleted and already known — proceed to ordinary adoption below.
+
+      if (profileId === this.#profileId) {
+        // Reuses the exact merge-then-apply-then-persist path load already
+        // goes through — see #adoptFacts. It merges rather than assigns for the
+        // same reason: this pass and a concurrent local mutation must both
+        // survive regardless of which finishes first.
+        await this.#adoptFacts(facts);
+        continue;
+      }
+
+      const currentName = entry ? entry.name : DEFAULT_PROFILE_NAME;
+      const updatedName = await this.#adoptMergedFactsForForeignProfile(profileId, facts, currentName);
+      if (entry && updatedName && updatedName !== entry.name) {
+        entry.name = updatedName;
+        entry.updatedAt = now;
+        registryChanged = true;
+      }
+    }
+
+    // [PHASE-6-SYNC-V2][STAGE-D2-TRANSPORT]
+    // [WHY: reuses deleteProfile's exact fallback-then-switch sequence — a
+    //  Profile deleted on ANOTHER device must not leave THIS device active on
+    //  a Profile that no longer visibly exists, any more than a local delete
+    //  would. #adoptFacts above already merged the tombstone into #facts, so
+    //  this only handles the "what becomes active now" half.]
+    if (activeWasDeletedRemotely) {
+      const fallback = this.#pickFallbackProfile();
+      registryChanged = true;
+      await this.#drainPendingWrites();
+      this.#profileId = null;
+      await this.switchProfile(fallback.id);
+    }
+
+    if (registryChanged) {
+      try {
+        await saveRegistry({ activeProfileId: this.#profileId, profiles: this.#profiles });
+      } catch (error) {
+        console.warn("[SYNC-V2] Could not save the profile registry after adopting a merged replica.", error);
+      }
+      this.#emit();
+    }
+  }
+
+  // Adopts merged facts for a profile that is NOT the active one — no live
+  // in-memory state to update, so this reads/merges/diffs/writes its stored row
+  // directly. See applyProfileDiff in sync-translate.js for why this is a pure
+  // field-by-field application rather than a wholesale replacement.
+  async #adoptMergedFactsForForeignProfile(profileId, mergedFacts, currentName) {
+    let stored;
+    try {
+      stored = await loadProfileData(profileId);
+    } catch (error) {
+      console.warn(`[SYNC-V2] Could not read profile "${profileId}" to adopt a merged replica.`, error);
+      return null;
+    }
+
+    const current = stored.facts || { items: {}, tags: {} };
+    const merged = MergeEngine.mergeProfileFacts(current, mergedFacts);
+    const diff = diffFactsAgainstProfileData(merged, {
+      name: currentName,
+      items: stored.items,
+      tags: stored.tags,
+    });
+    const { items, tags } = applyProfileDiff(diff, { items: stored.items, tags: stored.tags });
+
+    try {
+      await saveProfileData(profileId, { items, tags, facts: merged });
+    } catch (error) {
+      console.warn(`[SYNC-V2] Could not save profile "${profileId}" after adopting a merged replica.`, error);
+    }
+
+    return diff.profileName !== null ? diff.profileName : null;
   }
 
   // [PHASE-6-SYNC-V2]
@@ -568,8 +732,48 @@ export class ProfileStore {
       console.warn("Could not save the new profile.", error);
     }
 
+    // [PHASE-6-SYNC-V2]
+    // [STAGE-D2-TRANSPORT]
+    // [WHY: existence must be a synchronized fact from the moment a Profile is
+    //  created, not only once it happens to be loaded/switched to and thereby
+    //  gains a seeded fact row. Without this, a Profile created and never
+    //  activated has NO row in storage at all — listAllProfileIds() would never
+    //  see it, getFullReplica() would never publish it, and another device
+    //  would have no way to learn this Profile exists until the creating device
+    //  happened to switch to it first.
+    //
+    //  Deliberately NOT awaited here — createProfile() must keep resolving as
+    //  soon as the registry write finishes, exactly as it did before this
+    //  stamp existed. It is queued on #factQueue instead (same discipline as
+    //  #recordFact: counted in #pendingFacts, waited for by whenFactsSettled()
+    //  and #drainPendingWrites()), so it is never lost and never dropped, but
+    //  a caller awaiting createProfile() is never made to wait on the clock.]
+    this.#stampNewProfileExistence(entry.id, trimmed);
+
     this.#emit();
     return { ...entry };
+  }
+
+  // Writes the row (items:{}, tags:[], name fact) that makes a brand-new
+  // Profile immediately enumerable and publishable — see createProfile above.
+  // Queued rather than awaited by its caller; see the WHY there.
+  #stampNewProfileExistence(profileId, name) {
+    this.#pendingFacts += 1;
+    this.#factQueue = this.#factQueue
+      .catch(() => undefined)
+      .then(() => this.#ready.catch(() => undefined))
+      .then(() => this.#identity.ready.catch(() => undefined))
+      .then(async () => {
+        const stamp = this.#identity.tick();
+        const facts = Facts.setProfileName(Facts.emptyReplica(), profileId, name, stamp).profiles[profileId];
+        await saveProfileData(profileId, { items: {}, tags: [], facts });
+      })
+      .catch((error) => {
+        console.warn(`[SYNC-V2] Could not stamp existence for the new profile "${profileId}".`, error);
+      })
+      .then(() => {
+        this.#pendingFacts -= 1;
+      });
   }
 
   // Makes an already-registered profile (by id) the active one: persists
@@ -659,6 +863,57 @@ export class ProfileStore {
   // ProfileStore-owned metadata (registry entry + IndexedDB row).
   //
   // No-op (returns false) if profileId isn't a known profile.
+  // Deleting the only remaining profile (locally OR via a remote deletion
+  // adopted in adoptMergedReplica) can't leave the registry empty — the app
+  // always needs an active Gallery world to load into, same as a genuinely
+  // fresh install (#resolveActiveProfile above). Pushes the fresh fallback
+  // onto this.#profiles itself; callers still persist the registry.
+  // Merges a `deleted:true` fact into `profileId`'s facts and persists the row
+  // — never deletes it. The active profile goes through #recordFact (so it is
+  // queued/stamped/drained exactly like any other mutation on the profile the
+  // user is currently in); any other profile is read-merged-written directly,
+  // the same pattern #adoptMergedFactsForForeignProfile already uses.
+  async #tombstoneProfile(profileId, isActive) {
+    if (isActive) {
+      this.#recordFact((replica, id, stamp) => Facts.deleteProfile(replica, id, stamp));
+      // [PHASE-6-SYNC-V2][STAGE-D2-TRANSPORT]
+      // [WHY: #recordFact only merges the tombstone into the in-memory
+      //  this.#facts — it never persists on its own (every OTHER caller pairs
+      //  it with an explicit #persist(), e.g. setFavorite). Without this call
+      //  the tombstone lives only in memory and switchProfile's very next reset
+      //  (this.#facts = { items: {}, tags: {} }) discards it — the row on disk
+      //  never learns the profile was deleted at all.]
+      this.#persist();
+      await this.#drainPendingWrites();
+      return;
+    }
+
+    try {
+      await this.#identity.ready;
+      const stamp = this.#identity.tick();
+      const stored = await loadProfileData(profileId);
+      const current = stored.facts || { items: {}, tags: {} };
+      const tombstoned = Facts.deleteProfile(
+        { schemaVersion: 2, profiles: { [profileId]: current }, associations: {} },
+        profileId,
+        stamp
+      ).profiles[profileId];
+      await saveProfileData(profileId, { items: stored.items, tags: stored.tags, facts: tombstoned });
+    } catch (error) {
+      console.warn(`[SYNC-V2] Could not tombstone profile "${profileId}".`, error);
+    }
+  }
+
+  #pickFallbackProfile() {
+    let fallback = this.#profiles[0] || null;
+    if (!fallback) {
+      const now = Date.now();
+      fallback = { id: generateProfileId(), name: DEFAULT_PROFILE_NAME, masterFolder: null, createdAt: now, updatedAt: now };
+      this.#profiles.push(fallback);
+    }
+    return fallback;
+  }
+
   async deleteProfile(profileId) {
     await this.#ready;
     if (!profileId) return false;
@@ -671,24 +926,7 @@ export class ProfileStore {
 
     let nextActiveId = this.#profileId;
     if (wasActive) {
-      let fallback = this.#profiles[0] || null;
-
-      // Deleting the only remaining profile can't leave the registry
-      // empty — the app always needs an active Gallery world to load into,
-      // same as a genuinely fresh install (#resolveActiveProfile above).
-      if (!fallback) {
-        const now = Date.now();
-        fallback = {
-          id: generateProfileId(),
-          name: DEFAULT_PROFILE_NAME,
-          masterFolder: null,
-          createdAt: now,
-          updatedAt: now,
-        };
-        this.#profiles.push(fallback);
-      }
-
-      nextActiveId = fallback.id;
+      nextActiveId = this.#pickFallbackProfile().id;
     }
 
     try {
@@ -697,11 +935,17 @@ export class ProfileStore {
       console.warn("Could not save the profile registry after deletion.", error);
     }
 
-    try {
-      await deleteProfileData(profileId);
-    } catch (error) {
-      console.warn("Could not delete the profile's stored data.", error);
-    }
+    // [PHASE-6-SYNC-V2]
+    // [STAGE-D2-TRANSPORT]
+    // [WHY: deletion is now a stamped, tombstoned FACT (Facts.deleteProfile),
+    //  never a physical row removal (deleteProfileData is no longer called
+    //  here). A tombstone with nowhere durable to live cannot propagate — a
+    //  peer offline at the moment of this delete would rejoin, see the
+    //  Profile's real (pre-deletion) facts with no contrary evidence anywhere,
+    //  and resurrect it. Keeping the row — now carrying deleted:true — is what
+    //  lets getFullReplica() keep publishing the tombstone until every peer has
+    //  converged on it, exactly like a tag's deletion already works.]
+    await this.#tombstoneProfile(profileId, wasActive);
 
     if (wasActive) {
       // [DEBUG-8.3-PROFILE-DELETE] Deleting the ACTIVE profile needs the
@@ -725,6 +969,62 @@ export class ProfileStore {
       this.#emit();
     }
 
+    return true;
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D2-TRANSPORT]
+  // [WHY: explicit Restore must be a NEW, newer fact — never a weakening of
+  //  what the deletion meant, and never a special local-only override that
+  //  merge doesn't understand. Facts.restoreProfile draws a fresh stamp above
+  //  everything this device has observed, so it deterministically beats an
+  //  older deletion once it propagates, and loses cleanly to a genuinely
+  //  NEWER deletion (e.g. someone deleted it again on another device after
+  //  this restore) — ordinary LWW, no special-casing required. Re-adds the
+  //  Profile to the visible registry so it reappears wherever it was hidden.]
+  //
+  // No-op (returns false) if profileId is already visible, or has never
+  // existed at all (no row to restore).
+  async restoreProfile(profileId) {
+    await this.#ready;
+    if (!profileId) return false;
+    if (this.#profiles.some((candidate) => candidate.id === profileId)) return false;
+
+    let projectedName = DEFAULT_PROFILE_NAME;
+    try {
+      if (profileId === this.#profileId) {
+        this.#recordFact((replica, id, stamp) => Facts.restoreProfile(replica, id, stamp));
+        this.#persist(); // see the identical note in #tombstoneProfile
+        await this.#drainPendingWrites();
+        projectedName = this.#profileName;
+      } else {
+        await this.#identity.ready;
+        const stamp = this.#identity.tick();
+        const stored = await loadProfileData(profileId);
+        if (!stored.facts) return false; // no row at all — nothing to restore
+        const current = stored.facts;
+        const restored = Facts.restoreProfile(
+          { schemaVersion: 2, profiles: { [profileId]: current }, associations: {} },
+          profileId,
+          stamp
+        ).profiles[profileId];
+        await saveProfileData(profileId, { items: stored.items, tags: stored.tags, facts: restored });
+        const projected = Facts.projectProfile({ schemaVersion: 2, profiles: { [profileId]: restored }, associations: {} }, profileId);
+        projectedName = (projected && projected.name) || DEFAULT_PROFILE_NAME;
+      }
+    } catch (error) {
+      console.warn(`[SYNC-V2] Could not restore profile "${profileId}".`, error);
+      return false;
+    }
+
+    const now = Date.now();
+    this.#profiles.push({ id: profileId, name: projectedName, masterFolder: null, createdAt: now, updatedAt: now });
+    try {
+      await saveRegistry({ activeProfileId: this.#profileId, profiles: this.#profiles });
+    } catch (error) {
+      console.warn("[SYNC-V2] Could not save the profile registry after restoring a profile.", error);
+    }
+    this.#emit();
     return true;
   }
 
@@ -1120,12 +1420,25 @@ export class ProfileStore {
       //  idempotent, so "what was stored" and "what just happened" combine to
       //  the same result in either order. In the ordinary case the held slice is
       //  empty and this is exactly adoption.]
-      this.#facts = MergeEngine.mergeProfileFacts(this.#facts, storedFacts);
+      const merged = MergeEngine.mergeProfileFacts(this.#facts, storedFacts);
+      // [PHASE-6-SYNC-V2][STAGE-D2-TRANSPORT]
+      // [WHY: persistence must follow whether the FACTS changed, not only
+      //  whether #applyFactsToLocal found a name/item/tag difference worth
+      //  writing to local records. profile.deleted (and profile.name when it
+      //  equals what's already local) are real fields on the SAME facts object
+      //  that #applyFactsToLocal never reads at all — merging in a fresh
+      //  tombstone with no other change would otherwise leave the tombstone
+      //  sitting only in memory, discarded the moment this profile is next
+      //  reset (e.g. by switchProfile), and never actually written to the row
+      //  whose whole job is making it durable.]
+      const factsChanged = MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#facts);
+      this.#facts = merged;
       this.#identity.observeReplica({ profiles: { [profileId]: this.#facts }, associations: {} });
 
       // Facts are authoritative for everything they describe, so any drift
       // between them and the stored records self-heals here on every load.
-      if (this.#applyFactsToLocal(this.#facts)) this.#persist();
+      const localChanged = this.#applyFactsToLocal(this.#facts);
+      if (localChanged || factsChanged) this.#persist();
       this.#queueFactDriftReport("after adopting stored facts");
       return;
     }
