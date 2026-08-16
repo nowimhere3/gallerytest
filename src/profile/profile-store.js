@@ -46,6 +46,15 @@ import { takeSnapshot } from "./profile-snapshot.js";
 import * as Facts from "./sync-facts.js";
 import * as MergeEngine from "./sync-merge.js";
 import { SyncIdentity } from "./sync-device.js";
+// [PHASE-6-SYNC-V2]
+// [STAGE-D3-LIBRARY-IDENTITY]
+// [WHY: physical folders are local; only stable logical identity and
+//  association may synchronize. library-registry.js owns the physical
+//  identity (FSA handle, legacy signature) and never learns about facts,
+//  stamps, or merge — this is the only place those two vocabularies meet, the
+//  same boundary ProfileStore already keeps between itself and indexeddb.js.]
+import * as LibraryRegistry from "../storage/library-registry.js";
+import { loadAssociationsCache, saveAssociationsCache } from "../storage/profile-sync-store.js";
 import {
   seedFactsFromProfileData,
   diffFactsAgainstProfileData,
@@ -173,6 +182,17 @@ export class ProfileStore {
   // How many row writes are queued but not yet committed. See #drainPendingWrites.
   #pendingSaves = 0;
 
+  // ---- Library associations (Phase 6, Stage D3) --------------------------
+  //
+  // { libraryId: Fact<profileId|null> } — the SHARED identity's association,
+  // never a physical folder. Durable home is profile-sync-store.js's tiny
+  // associations cache (see loadAssociationsCache), completely independent of
+  // whether THIS device happens to have a local library-registry row for a
+  // given libraryId — a device can hold and republish an association fact for
+  // a library it has never physically opened at all.
+  #associations = {};
+  #associationsReady;
+
   constructor({ identity } = {}) {
     // Loading is intentionally started by the store itself. Consumers keep
     // using the synchronous ProfileStore API; once saved records arrive, the
@@ -180,6 +200,15 @@ export class ProfileStore {
     this.#identity = identity || new SyncIdentity();
     this.#ready = this.#resolveActiveProfile();
     this.#loadSavedRecords();
+    this.#associationsReady = this.#loadAssociations();
+  }
+
+  async #loadAssociations() {
+    try {
+      this.#associations = await loadAssociationsCache();
+    } catch (error) {
+      console.warn("[SYNC-V2] Could not load library associations.", error);
+    }
   }
 
   /** This installation's stable device identity. Null until it resolves. */
@@ -197,6 +226,73 @@ export class ProfileStore {
     await this.#ready;
     await this.#identity.ready;
     await this.#factQueue;
+  }
+
+  async whenAssociationsSettled() {
+    await this.#associationsReady;
+    await this.#identity.ready;
+  }
+
+  /** Every known association fact, detached — {libraryId: Fact<profileId|null>}. */
+  getAssociations() {
+    return takeSnapshot(this.#associations);
+  }
+
+  /** Projected {libraryId: profileId} for every association currently pointing somewhere — Stage E's "listSharedLibraries" surface. */
+  listAssociations() {
+    return takeSnapshot(Facts.projectAssociations({ schemaVersion: 2, profiles: {}, associations: this.#associations }));
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D3-LIBRARY-IDENTITY]
+  // [WHY: associating/disassociating a library never touches this.#profileId
+  //  or this.#facts — there is no code path here that could make it write to
+  //  the wrong Profile, because it never writes to a Profile's facts AT ALL.
+  //  The stamp/merge discipline is identical to a Profile-fact mutation (same
+  //  clock, same mergeFact semantics via mergeMaps), but the fact itself lives
+  //  entirely outside the profiles map, exactly as sync-facts.js's schema
+  //  requires — see mergeReplicas' WHY in sync-merge.js.]
+  //
+  // `localLibraryId` is library-registry.js's LOCAL row id (NOT the shared
+  // libraryId — that's minted/preserved here via ensureLibraryId).
+  // `profileId: null` disassociates explicitly. Returns the shared libraryId
+  // on success, or null if the local library id isn't known.
+  async setLibraryAssociation(localLibraryId, profileId) {
+    await this.#associationsReady;
+    await this.#identity.ready;
+
+    let row;
+    try {
+      row = await LibraryRegistry.ensureLibraryId(localLibraryId);
+    } catch (error) {
+      console.warn(`[SYNC-V2] Could not resolve a shared libraryId for "${localLibraryId}".`, error);
+      return null;
+    }
+    if (!row) return null;
+
+    const stamp = this.#identity.tick();
+    const fact = MergeEngine.makeFact(profileId || null, stamp);
+    this.#associations = MergeEngine.mergeMaps(this.#associations, { [row.libraryId]: fact }, MergeEngine.mergeFact);
+
+    try {
+      await saveAssociationsCache(this.#associations);
+    } catch (error) {
+      console.warn("[SYNC-V2] Could not persist library associations.", error);
+    }
+    // Best-effort: keeps the row's UI-facing `profileId` field (existing,
+    // pre-Sync-V2 field — see [LIBRARY-PROFILE-ASSOCIATION] in
+    // library-registry.js) in step with the fact this method just won. If
+    // this device's OWN stamp lost the merge above (can't happen here — it's
+    // always the newest — but WOULD apply symmetrically on adoption), the row
+    // would instead be corrected by adoptMergedReplica below.
+    try {
+      await LibraryRegistry.setLibraryProfile(localLibraryId, this.#associations[row.libraryId].v);
+    } catch (error) {
+      console.warn(`[SYNC-V2] Could not update local library "${localLibraryId}" after association.`, error);
+    }
+
+    this.#emit();
+    return row.libraryId;
   }
 
   /** The active profile's fact slice, detached. */
@@ -220,8 +316,10 @@ export class ProfileStore {
   //  learn of it and keep the Profile alive forever.]
   async getFullReplica() {
     await this.whenFactsSettled();
+    await this.whenAssociationsSettled();
 
     const replica = Facts.emptyReplica();
+    replica.associations = this.#associations;
     let knownIds;
     try {
       knownIds = new Set(await listAllProfileIds());
@@ -356,6 +454,60 @@ export class ProfileStore {
         console.warn("[SYNC-V2] Could not save the profile registry after adopting a merged replica.", error);
       }
       this.#emit();
+    }
+
+    await this.#adoptMergedAssociations(mergedReplica.associations);
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D3-LIBRARY-IDENTITY]
+  // [WHY: merged, never assigned — the same reasoning as every profile-facts
+  //  adoption above. A libraryId this device has never heard of before is
+  //  simply added to the map; one it already has an opinion on is resolved by
+  //  ordinary LWW via mergeFact, regardless of which side's stamp is newer.
+  //  local-registry rows are updated ONLY for a libraryId this device actually
+  //  has a physical folder for (getLibraryByLibraryId) — a device with no such
+  //  row still keeps and republishes the fact via #associations/the durable
+  //  cache, it just has nothing local to reconcile.]
+  async #adoptMergedAssociations(incoming) {
+    await this.#associationsReady;
+    const merged = MergeEngine.mergeMaps(this.#associations, incoming || {}, MergeEngine.mergeFact);
+    const changed = MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#associations);
+
+    if (changed) {
+      this.#associations = merged;
+      try {
+        await saveAssociationsCache(this.#associations);
+      } catch (error) {
+        console.warn("[SYNC-V2] Could not persist merged library associations.", error);
+      }
+      this.#emit();
+    }
+
+    // [PHASE-6-SYNC-V2][STAGE-D3-LIBRARY-IDENTITY]
+    // [WHY: reconciles EVERY locally-linked library against #associations —
+    //  not only libraryIds whose fact changed in THIS pass. A row freshly
+    //  linked via linkLocalLibraryToSharedId (a raw storage operation Stage E
+    //  calls directly, with no ProfileStore involvement at link time — see
+    //  library-registry.js) needs its UI-facing profileId picked up from
+    //  whatever association value this device ALREADY held, which is exactly
+    //  the case "only changed ids" would miss. Cheap self-heal, same
+    //  philosophy as the facts/local-records drift check in #adoptFacts.]
+    let knownLinks;
+    try {
+      knownLinks = await LibraryRegistry.listKnownLibraryIds();
+    } catch (error) {
+      console.warn("[SYNC-V2] Could not list locally-linked libraries to reconcile.", error);
+      return;
+    }
+    for (const { id, libraryId } of knownLinks) {
+      const fact = this.#associations[libraryId];
+      if (!fact) continue;
+      try {
+        await LibraryRegistry.setLibraryProfile(id, fact.v);
+      } catch (error) {
+        console.warn(`[SYNC-V2] Could not reconcile local library "${id}" for libraryId "${libraryId}".`, error);
+      }
     }
   }
 

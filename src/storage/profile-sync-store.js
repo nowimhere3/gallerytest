@@ -38,6 +38,21 @@ const RECORD_ID = "sync";
 //  DATABASE_VERSION bump, because IndexedDB rows are schema-less per record.]
 const DEVICE_RECORD_ID = "device";
 
+// [PHASE-6-SYNC-V2]
+// [STAGE-D3-LIBRARY-IDENTITY]
+// [WHY: physical folders are local; only stable logical identity and
+//  association may synchronize. An association fact's durable home cannot be
+//  "on the library-registry row it happens to match locally" alone — a device
+//  that has MERGED IN an association fact for a libraryId it has no local
+//  physical folder for (a library another device owns) still has to keep and
+//  republish that fact, or it silently drops out of the gossip on this
+//  device's next publish. This tiny cache is the single durable home for the
+//  full associations[libraryId] map regardless of local library ownership;
+//  library-registry.js rows still carry their OWN copy of `profileId` purely
+//  for existing UI code to keep reading unchanged — this cache is what is
+//  actually merged/published.]
+const ASSOCIATIONS_RECORD_ID = "associations";
+
 function openDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
@@ -189,6 +204,37 @@ export async function saveDeviceRecord({ deviceId, lastIssuedT = 0 }) {
 
   try {
     const record = { id: DEVICE_RECORD_ID, deviceId, lastIssuedT, createdAt: Date.now() };
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).put(record);
+    await completeTransaction(transaction);
+    return record;
+  } finally {
+    database.close();
+  }
+}
+
+// ---- Library associations (Phase 6 Sync V2, Stage D3) ---------------------
+
+/** The full `{ libraryId: Fact<profileId|null> }` map, or `{}` if never saved. */
+export async function loadAssociationsCache() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(ASSOCIATIONS_RECORD_ID));
+    await completeTransaction(transaction);
+    return record && record.associations && typeof record.associations === "object" ? record.associations : {};
+  } finally {
+    database.close();
+  }
+}
+
+/** Replaces the whole associations map — callers always pass the full, already-merged map. */
+export async function saveAssociationsCache(associations) {
+  const database = await openDatabase();
+
+  try {
+    const record = { id: ASSOCIATIONS_RECORD_ID, associations: associations || {} };
     const transaction = database.transaction(STORE_NAME, "readwrite");
     transaction.objectStore(STORE_NAME).put(record);
     await completeTransaction(transaction);
