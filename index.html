@@ -272,9 +272,55 @@
                <strong> labels, so this adds a heading, not a second
                readout. -->
           <p class="status-box-title">Live Status</p>
-          <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
-          <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
-          <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
+          <!-- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+               WHAT: the three original rows, now grouped in one wrapper so
+               they can be hidden as a unit while the mobile takeover below
+               is showing — Selected/View describe the CURRENT Player, which
+               has nothing to say mid-load or right after a failure.
+               WHY a wrapper rather than hiding each row: this is a pure
+               nesting change — same three elements, same ids, same content,
+               no attribute added to any of them — so nothing that already
+               reads #status-text/#selected-text/#view-mode-text is affected.
+               Desktop is unaffected; no existing rule targeted `.status-box`'s
+               children directly (verified against styles.css). -->
+          <div class="status-box-fields">
+            <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
+            <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
+            <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
+          </div>
+
+          <!-- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+               WHAT: the mobile-only focused-loading composition — a primary
+               truthful state line, a small textmode activity bar, a real
+               count (only when a total is actually known), a green textmode
+               animation, and a short atmospheric line. `display: none` at
+               every width by default; the compact stylesheet turns it on
+               only while `[data-mobile-load-state="loading"]` — see
+               styles.css for why "loading" specifically, not "failed".
+               WHY every piece here is a MIRROR, never a second source: each
+               is written by renderMobileLoadProgress()/the animation tick in
+               main.js from the exact same loaded/total values the existing
+               onProgress callbacks already compute for #status-text — there
+               is no second progress computation anywhere in this block.
+               The animation (#mobile-load-ascii) and the activity bar's
+               indeterminate sweep are pure decoration with zero influence on
+               any loader state, which is why both carry aria-hidden — a
+               screen-reader user gets the same two truthful text lines
+               (#mobile-load-primary-text, #mobile-load-count-text) a sighted
+               user reads, nothing more, nothing less, and no rapid-fire
+               aria-live spam (matching #status-text's own long-standing
+               choice not to be a live region during batch progress).
+               FUTURE: DESKTOP NOTE — a desktop equivalent of this focused
+               loading composition may be worth considering later; no desktop
+               CSS or behavior exists for it yet, and none should be added
+               without a separate, deliberate pass. -->
+          <div class="mobile-load-takeover">
+            <p id="mobile-load-primary-text" class="mobile-load-primary-text"></p>
+            <p id="mobile-load-activity-bar" class="mobile-load-activity-bar" aria-hidden="true"></p>
+            <p id="mobile-load-count-text" class="mobile-load-count-text hidden"></p>
+            <pre id="mobile-load-ascii" class="mobile-load-ascii" aria-hidden="true"></pre>
+            <p id="mobile-load-atmosphere-text" class="mobile-load-atmosphere-text" aria-hidden="true"></p>
+          </div>
         </div>
 
         <!-- [UI-REDESIGN / Stage 3]
