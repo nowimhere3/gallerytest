@@ -109,6 +109,11 @@ const fillPanelBtn = document.getElementById("fill-panel-btn");
 // moved parents, not identities, so nothing else in this file changed.
 const playbackSettingsBtn = document.getElementById("playback-settings-btn");
 const playbackSettingsPopover = document.getElementById("playback-settings-popover");
+// [UI-REDESIGN / Stage 6] The sheet's own × and its backdrop. Both belong to
+// the SAME popover element above — there is no separate mobile panel, and
+// these two are inert on desktop because CSS hides them there.
+const playbackSheetCloseBtn = document.getElementById("playback-sheet-close-btn");
+const playbackSheetScrim = document.getElementById("playback-sheet-scrim");
 
 const allMediaBtn = document.getElementById("all-media-btn");
 const favoritesOnlyBtn = document.getElementById("favorites-only-btn");
@@ -181,8 +186,12 @@ const tagActivityEmpty = document.getElementById("tag-activity-empty");
 
 const prevBtn = document.getElementById("prev-btn");
 const nextBtn = document.getElementById("next-btn");
+// [UI-REDESIGN / Stage 6] #play-btn is the transport's ONE Play/Pause button
+// and #play-pause-icon is the single <path> inside it whose `d` it swaps.
+// The former #stop-btn capture is gone with the element; nothing else in this
+// file referenced it.
 const playBtn = document.getElementById("play-btn");
-const stopBtn = document.getElementById("stop-btn");
+const playPauseIcon = document.getElementById("play-pause-icon");
 const clearBtn = document.getElementById("clear-btn");
 
 const statusText = document.getElementById("status-text");
@@ -1921,6 +1930,21 @@ function isPlaybackPopoverOpen() {
 function openPlaybackPopover() {
   playbackSettingsPopover.classList.remove("hidden");
   playbackSettingsBtn.setAttribute("aria-expanded", "true");
+  // [UI-REDESIGN / Stage 6] The backdrop is bound to the popover's open state,
+  // not to a width: CSS decides whether it is drawn, exactly as it decides
+  // whether the popover is a sheet or an anchored panel. Toggling it here — in
+  // the one open path and the one close path — is what stops it from ever
+  // being left on screen without the sheet.
+  playbackSheetScrim.hidden = false;
+
+  // [UI-REDESIGN / Stage 6] Focus enters the sheet when the sheet is what the
+  // user actually got. The test is whether the × is RENDERED, not what the
+  // viewport measures — offsetParent is null for a display:none element, so
+  // this is the same "CSS owns the breakpoint" rule the drawer states, asked
+  // as a question about the DOM rather than about a media query. On desktop
+  // the header is display:none, so this is a no-op and the existing desktop
+  // focus flow (tab forward into the panel) is untouched.
+  if (playbackSheetCloseBtn.offsetParent !== null) playbackSheetCloseBtn.focus();
 }
 
 // `returnFocus` is for the keyboard path only: Escape must put focus back on
@@ -1931,6 +1955,7 @@ function closePlaybackPopover({ returnFocus = false } = {}) {
   if (!isPlaybackPopoverOpen()) return;
   playbackSettingsPopover.classList.add("hidden");
   playbackSettingsBtn.setAttribute("aria-expanded", "false");
+  playbackSheetScrim.hidden = true;
   if (returnFocus) playbackSettingsBtn.focus();
 }
 
@@ -1958,8 +1983,23 @@ playbackSettingsBtn.addEventListener("click", (event) => {
   if (!isPlaybackPopoverOpen()) releaseFocusAfterPointerActivation(event);
 });
 
+// [UI-REDESIGN / Stage 6] The sheet's × — a keyboard-style close, so it puts
+// focus back on the ⚙ that opened it, the same contract Escape has. It routes
+// through closePlaybackPopover() like every other dismissal; it does not hide
+// the element itself. stopPropagation keeps this click from also reaching the
+// document handler below as an "outside" click — harmless today, since that
+// handler no-ops once the popover is closed, but it keeps the two paths from
+// racing if either ever grows.
+playbackSheetCloseBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  closePlaybackPopover({ returnFocus: true });
+});
+
 // Outside-click close. Bound once at module scope, and cheap when closed:
 // isPlaybackPopoverOpen() short-circuits before any DOM walking.
+// [UI-REDESIGN / Stage 6] #playback-sheet-scrim is deliberately NOT special-
+// cased here: a tap on the backdrop is an outside click and is handled as one,
+// which is also why it does not steal focus back to the trigger.
 document.addEventListener("click", (event) => {
   if (!isPlaybackPopoverOpen()) return;
   if (playbackSettingsPopover.contains(event.target)) return;
@@ -3082,14 +3122,50 @@ galleryJumpInput.addEventListener("keydown", (event) => {
   performGalleryJump();
 });
 
+// [UI-REDESIGN / Stage 6] The two states of the ONE Play/Pause icon. They are
+// the `d` of the same <path>, not two shapes taking turns, so there is nothing
+// to keep in sync beyond this single attribute. Kept beside the function that
+// writes them rather than in index.html because a value that changes at
+// runtime belongs with the code that changes it.
+const PLAY_ICON_PATH = "M8.2 5.4v13.2L19 12z";
+const PAUSE_ICON_PATH = "M7.8 5.4h3.4v13.2H7.8z M12.8 5.4h3.4v13.2h-3.4z";
+
+// [UI-REDESIGN / Stage 6] Paints #play-btn from the runtime's OWN isPlaying
+// flag and nothing else — no local "is it playing" variable exists here, and
+// none may be added. syncControls() is the only caller, and it runs from
+// render(), which is the runtime subscription; so the icon, the accessible
+// name and the tooltip cannot drift from what is actually playing, including
+// when playback stops without anyone pressing this button (a filter hiding the
+// last visible item, runtime.clear(), the end of a non-looping run).
+//
+// Deliberately writes all three of icon/aria-label/title together: a screen
+// reader user hearing "Play" on a button that pauses is the failure mode this
+// whole substage exists to avoid.
+function syncPlayPauseButton(isPlaying) {
+  const label = isPlaying ? "Pause" : "Play";
+  playPauseIcon.setAttribute("d", isPlaying ? PAUSE_ICON_PATH : PLAY_ICON_PATH);
+  playBtn.setAttribute("aria-label", label);
+  playBtn.setAttribute("title", label);
+  // Presentational only — lets the stylesheet treat the pause state
+  // differently later without JS needing to know about it.
+  playBtn.classList.toggle("is-playing", isPlaying);
+}
+
 function syncControls(state) {
   const hasItems = state.hasItems;
   const canNavigate = state.hasVisibleItems;
 
   prevBtn.disabled = !canNavigate;
   nextBtn.disabled = !canNavigate;
-  playBtn.disabled = !canNavigate || state.isPlaying;
-  stopBtn.disabled = !state.isPlaying;
+  // [UI-REDESIGN / Stage 6] One button, so one disabled rule. It was
+  // `!canNavigate || state.isPlaying` while Start and Stop were separate —
+  // Start went dead the moment playback began, which is exactly the state in
+  // which this button now has to be pressable. `|| state.isPlaying` therefore
+  // becomes `&& !state.isPlaying`: anything running can always be paused, even
+  // in the transient case where the last visible item has just been filtered
+  // away and the runtime has not yet emitted its own stop.
+  playBtn.disabled = !canNavigate && !state.isPlaying;
+  syncPlayPauseButton(state.isPlaying);
   clearBtn.disabled = isLoadingFiles || !allItems.length;
 
   // [UI-REDESIGN / Stage 3] Nothing to show fullscreen without a current
@@ -3339,8 +3415,10 @@ tagsFilterToggleBtn.addEventListener("click", (event) => {
 prevBtn.addEventListener("click", () => goToPreviousMedia());
 nextBtn.addEventListener("click", () => goToNextMedia());
 
-// [UI-REDESIGN / Stage 3] The ordinary Player's single "start" path, shared
-// by the Start button and the Space shortcut so the two can never diverge.
+// [UI-REDESIGN / Stage 3] The ordinary Player's single "start" path. It is
+// now reached only through toggleTransportPlayback(), which both the
+// Play/Pause button and the Space shortcut call — so the two still cannot
+// diverge, they just converge one level earlier than they used to.
 //
 // It is now just runtime.play(). The `if (fillInput.checked) enterFillMode()`
 // half was retired with the checkbox: Start starts playback and nothing
@@ -3351,11 +3429,21 @@ function startPlaybackFromTransport() {
   runtime.play();
 }
 
-// The ordinary Player's Space toggle. Deliberately NOT togglePlay(), which
+// The ordinary Player's Play/Pause. Deliberately NOT togglePlay(), which
 // PM's own Space uses and which must keep going straight to the runtime —
 // once PM is up, entering it again is meaningless and its keyboard behavior
-// is established. Stopping is identical in both modes; only starting
+// is established. Pausing is identical in both modes; only starting
 // differs.
+//
+// [UI-REDESIGN / Stage 6] This is now the single entry point for BOTH the
+// #play-btn click and the Space shortcut, and it is the only playback toggle
+// the ordinary transport has. runtime.stop() is the pause half: it clears the
+// interval and flips isPlaying, and it leaves #currentIndex and the current
+// item exactly where they were, so resuming continues from the same media
+// rather than restarting the sequence. Videos are paused in place by
+// buildViewer() reading the same isPlaying, keeping their currentTime.
+// FUTURE: There is ONE playback state and MediaRuntime owns it. Do not add a
+// paused/resumed flag here to make this read more like a player.
 function toggleTransportPlayback() {
   if (runtime.getState().isPlaying) {
     runtime.stop();
@@ -3393,16 +3481,24 @@ function enterFillPanelDeliberately() {
   runtime.play();
 }
 
-playBtn.addEventListener("click", () => startPlaybackFromTransport());
+// [UI-REDESIGN / Stage 6] The Play/Pause button and the Space shortcut are
+// now literally the same call. It used to be startPlaybackFromTransport()
+// here and toggleTransportPlayback() for Space, which only agreed because
+// Start was disabled while playing; with one button that asymmetry would mean
+// the click and the key doing different things, so both go through the
+// toggle. startPlaybackFromTransport() is still the shared "start" half
+// inside it, and Autoplay on Fill still reaches playback its own way.
+playBtn.addEventListener("click", () => toggleTransportPlayback());
 
 // [UI-REDESIGN / Stage 3] Same shared entry path as the `F` shortcut.
 fillPanelBtn.addEventListener("click", () => enterFillPanelDeliberately());
 
 // [UI-REDESIGN / Stage 4] The now-playing strip's two controls. Both are
 // distinct elements calling EXISTING functions — runtime.stop() is the same
-// call #stop-btn makes, and ensureGalleryWorkspaceVisible() already existed
-// for cross-workspace hand-offs. Neither re-implements anything, and no id
-// is cloned.
+// call toggleTransportPlayback() makes to pause (it was #stop-btn's call
+// before Stage 6 retired that button), and ensureGalleryWorkspaceVisible()
+// already existed for cross-workspace hand-offs. Neither re-implements
+// anything, and no id is cloned.
 nowPlayingStopBtn.addEventListener("click", () => runtime.stop());
 
 // [UI-REDESIGN / Stage 5 fix]
@@ -3448,7 +3544,10 @@ nowPlayingReturnBtn.addEventListener("click", (event) => {
   });
 });
 
-stopBtn.addEventListener("click", () => runtime.stop());
+// [UI-REDESIGN / Stage 6] The `stopBtn.addEventListener("click", () =>
+// runtime.stop())` that stood here is gone with #stop-btn. Its runtime.stop()
+// is still reached from exactly two live places — toggleTransportPlayback()'s
+// pause half, and #now-playing-stop-btn above.
 
 clearBtn.addEventListener("click", () => {
   bumpGalleryGeneration();
@@ -3872,10 +3971,13 @@ document.addEventListener("keydown", handlePresentationKeydown);
 // WHY: These are a keyboard route to the EXISTING buttons, not a new
 // playback model. Previous/Next go through goToPreviousMedia()/
 // goToNextMedia(), the same functions the buttons call, and Space uses the
-// existing togglePlay() — deliberately NOT the Start button's click
-// handler, because that also enters Fill Panel when Fill Panel is ticked,
+// existing togglePlay() — deliberately NOT the transport button's click
+// handler, because that also entered Fill Panel when Fill Panel was ticked,
 // and a spacebar press silently going fullscreen would be an unpleasant
-// surprise. Start and Stop keep their labels and their separate buttons.
+// surprise. [UI-REDESIGN / Stage 6] The sentence that stood here — "Start
+// and Stop keep their labels and their separate buttons" — is no longer
+// true of the ordinary Player: those two merged into one Play/Pause button.
+// PM's own toolbar is unaffected and still has its own #overlay-play-btn.
 // FUTURE: No visible shortcut hints in this stage, by instruction. If they
 // are added later they belong next to the transport buttons, and this
 // handler should stay the single source of what the keys do.
@@ -3990,16 +4092,22 @@ function handleTransportKeydown(event) {
       break;
     case " ":
     case "Spacebar": // older browsers
-      // Whichever of the pair is currently live: Stop while playing, Start
-      // otherwise. If that button is disabled there is nothing to do, and
-      // the page keeps its normal scroll behavior.
-      if (runtime.getState().isPlaying ? stopBtn.disabled : playBtn.disabled) return;
+      // [UI-REDESIGN / Stage 6] One button to consult, so one check. This
+      // read `runtime.getState().isPlaying ? stopBtn.disabled :
+      // playBtn.disabled` while the pair existed — picking whichever of the
+      // two was live. #play-btn is now live in both directions and its
+      // disabled state already accounts for playing (see syncControls), so
+      // reading it is the whole rule. Same principle as ArrowLeft/ArrowRight
+      // above: the button's own disabled state IS the shortcut's guard, so
+      // there is never a second rule to keep in step.
+      if (playBtn.disabled) return;
       // Also load-bearing for the mouse-clicked-❤️ case: a <button> that
       // still holds pointer focus would otherwise fire its own click on
       // Space and toggle Favorite as well. Preventing the default here
       // suppresses that activation, so Space means exactly one thing.
       event.preventDefault();
-      // Matches the Start button exactly, Fullscreen / Fill Panel included.
+      // The exact call #play-btn's own click handler makes — one toggle, one
+      // code path, so the key and the button can never disagree.
       toggleTransportPlayback();
       break;
     default:
@@ -4965,6 +5073,9 @@ profileSyncLinkBtn.addEventListener("click", async () => {
 profileSync.subscribe(renderProfileSync);
 profileSync.subscribe(() => {
   renderSharedLibraryOptions().catch(() => undefined);
+});
+renderProfileSync();
+renderSharedLibraryOptions().catch(() => undefined);
 
 // ---- Boot ---------------------------------------------------------------
 

@@ -1260,94 +1260,384 @@ button:not(:disabled):hover,
   background: #000;
 }
 
-/* [UI-REDESIGN / Stage 3]
-   WHAT: The transport row beneath the Player — Favorite/Previous/Start/
-   Stop/Next left, Playback ⚙ and the counter right.
+/* [UI-REDESIGN / Stage 3 · retuned in Stage 6]
+   WHAT: The transport row beneath the Player — the four primary icon
+   controls (♡ ⏮ ▶/⏸ ⏭), flexible space, then the two utility controls
+   (⚙ ⛶) and the counter readout.
    WHY: `position: relative` is load-bearing: it is the containing block for
    the absolutely-positioned popover below, which is why the popover is a
    child of this row rather than of the button's own group.
-   `flex-wrap` lets the two clusters stack at narrow widths instead of
-   overflowing — Stage 6 owns the real responsive pass, this just keeps it
-   from breaking before then.
-   FUTURE: The cluster's DOM order IS its visual order — no `order` values
-   here, deliberately, so the tab sequence matches what is on screen. */
+   `flex-wrap: nowrap` REPLACES the Stage 3 `wrap`. Wrapping was the stopgap
+   that kept the text-labelled row from overflowing before the responsive pass
+   existed; now that the controls are icons the row is narrow enough to hold
+   one line at every supported width, and wrapping would break the single
+   guarantee this row makes.
+
+   ---- The one-row budget -------------------------------------------------
+   Three custom properties drive the whole row, and only these three are
+   changed by the breakpoints further down the file:
+
+     --transport-size  the square button edge (also the pointer target)
+     --transport-gap   the gap between buttons AND between the three groups
+     --transport-icon  the SVG edge inside the button
+
+   A fourth, --transport-size-wide, is derived from the first (1.2×) and is
+   the width of Previous and Next only; it is never set directly, so the
+   proportion holds at every breakpoint on its own.
+
+   Six controls, of which two are 1.2× wide:
+       ♡ 1 + ⏮ 1.2 + ▶/⏸ 1 + ⏭ 1.2 + ⚙ 1 + ⛶ 1  =  6.4 × size
+   and, once the flexible space has closed, 6 gaps (three inside the primary
+   group, one inside the utility group, one between the groups, one before
+   the counter). So the row's cramped width is
+
+       6.4 × size  +  6 × gap        (+ the counter, where it is still shown)
+
+   At the defaults that is 6.4×44 + 6×8 = 329.6px. Each breakpoint below
+   re-solves that sum for a narrower box, and it is solved by shrinking the
+   gap FIRST — a 3px gap is invisible, a 3px-smaller icon is not.
+   Above that width the leftover is not distributed into the gaps: it goes
+   entirely into the utility group's `margin-inline-start: auto`, which is
+   what holds the two groups apart. The row therefore has no in-between
+   state where everything is slightly too spread out.
+
+   ---- Why it cannot overflow even off-breakpoint ------------------------
+   Media queries read the VIEWPORT, so they do not fire when this app is
+   itself sized into a narrow panel inside a wide window. Three things cover
+   that case, in this order:
+     0. the flexible space closes — the auto margin on the utility group is
+        free space, and free space is always spent before anything else can
+        be taken;
+     1. the counter yields next — `.player-transport-meta` has
+        `flex-shrink: 200` against the groups' 1, so a short row eats the
+        readout before it touches a control;
+     2. then the buttons shrink — they keep `flex-shrink: 1` down to a
+        `min-width` floor 10px under their nominal size, so an impossible box
+        squeezes the row instead of wrapping it or pushing a scrollbar.
+   Neither is the primary mechanism; both exist so the row degrades instead
+   of breaking. A container query would be the direct way to do this and is
+   deliberately NOT used: `container-type` on this row or on the viewer panel
+   makes that element the containing block for `position: fixed` descendants,
+   and the Playback popover is `position: fixed` at ≤980px — it would be
+   re-anchored to the transport row instead of the viewport, silently turning
+   the bottom sheet back into a floating box. Percentage `gap` is out for a
+   related reason: this cluster is sized by its content, so a percentage gap
+   resolves against a width that does not exist yet and overflows.
+   FUTURE: DOM order IS visual order — no `order` values here, deliberately,
+   so the tab sequence matches what is on screen. Do not add `transform:
+   scale()` to this group to make things fit: it would scale the focus ring
+   and the pointer targets with it. */
 .player-transport-row {
+  --transport-size: 44px;
+  --transport-size-wide: calc(var(--transport-size) * 1.2);
+  --transport-gap: 8px;
+  --transport-icon: 20px;
+
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
+  flex-wrap: nowrap;
+  gap: var(--transport-gap);
   margin-top: 14px;
+  min-width: 0;
 }
 
 .player-transport-cluster {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: var(--transport-gap);
 }
 
-/* [UI-REDESIGN / Stage 5]
-   WHAT: Start is the only filled button in the transport; its neighbours are
-   secondary.
-   WHY: The approved composition gives the cluster one primary action. Start
+/* [UI-REDESIGN / Stage 6]
+   WHAT: One square, padding-free box per transport control.
+   WHY: The base `button` rule is built for text — `min-height: 44px` plus
+   `padding: 12px 14px` — and `min-height` is a floor that `height` cannot
+   lower, so both are restated here in terms of --transport-size and the
+   padding is dropped. Every button in the row therefore has exactly one
+   width, which is what makes the budget above arithmetic rather than a
+   guess.
+   `flex: 0 1 auto` with a `min-width` floor is the safety net described
+   above: normal widths never invoke it, because the breakpoints size the row
+   to fit before shrinking can start.
+   Colour, border, radius, hover, :focus-visible, :disabled and the
+   .secondary / accent split are all still inherited — nothing about the
+   look of an individual button is redefined here, only its box. */
+.player-transport-cluster > button,
+.player-transport-utility > button {
+  flex: 0 1 auto;
+  width: var(--transport-size);
+  min-width: calc(var(--transport-size) - 10px);
+  height: var(--transport-size);
+  min-height: var(--transport-size);
+  padding: 0;
+  line-height: 1;
+}
+
+/* The icon is the button's only content, so it is sized from the same
+   variable rather than from a font-size — `currentColor` means it inherits
+   the accent-on-Start / text-on-secondary split for free, including the
+   0.45 opacity of :disabled. */
+.transport-icon {
+  display: block;
+  width: var(--transport-icon);
+  height: var(--transport-icon);
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+/* [UI-REDESIGN / Stage 5 · Stage 6]
+   WHAT: Play/Pause is the only filled button in the transport; its
+   neighbours are secondary.
+   WHY: The approved composition gives the row one primary action. #play-btn
    already inherits the accent fill from the base `button` rule, so it needs
-   nothing — what was missing is that Previous/Stop/Next were competing with
-   it at the same weight. This demotes them to the same .secondary treatment
-   used everywhere else in the app; no element, id or handler is involved.
-   Favorite keeps its own .favorite-toggle styling and is excluded. */
+   nothing — what was missing is that its neighbours were competing with it at
+   the same weight. This demotes them to the same .secondary treatment used
+   everywhere else in the app; no element, id or handler is involved.
+   Favorite keeps its own .favorite-toggle styling and is excluded, and the
+   utility group's two buttons carry `.secondary` in the markup already.
+   [Stage 6] `#stop-btn` dropped from this selector with the element itself —
+   Start and Stop merged into the one Play/Pause button, which is the accent
+   one, so nothing here needed to change beyond the deletion. */
 .player-transport-cluster > #prev-btn,
-.player-transport-cluster > #stop-btn,
 .player-transport-cluster > #next-btn {
   background: var(--panel-2);
   color: var(--text);
   border-color: var(--border);
 }
 
+/* [UI-REDESIGN / Stage 6]
+   WHAT: Previous and Next are 1.2× the standard icon-button width. Height is
+   untouched, so they read as slightly wider keys in an otherwise square row.
+   WHY: They are the two controls a user aims at repeatedly and often without
+   looking — scrubbing through a library is a rhythm, and the widest targets
+   should be the ones that rhythm lands on. Play/Pause is pressed decisively
+   and already carries the accent fill to find it by, so it does not need the
+   extra width as well.
+   The multiplier lives in --transport-size-wide so the width budget further
+   down has one number to reason about, and so the ratio holds automatically
+   at every breakpoint instead of being restated five times. */
+.player-transport-cluster > #prev-btn,
+.player-transport-cluster > #next-btn {
+  width: var(--transport-size-wide);
+  min-width: calc(var(--transport-size-wide) - 10px);
+}
+
+/* [UI-REDESIGN / Stage 6]
+   WHAT: The utility group — ⚙ and ⛶ — and the flexible space that separates
+   it from the primary controls.
+   WHY: `margin-inline-start: auto` is the whole separation mechanism. An auto
+   margin on a flex item absorbs ALL the free space on that side, so at
+   comfortable widths the row reads as two groups pushed apart, and as the box
+   narrows the margin shrinks continuously to zero and the groups close up
+   into `♡ ⏮ ▶/⏸ ⏭ ⚙ ⛶`. That ordering is free and automatic: auto margins
+   only ever consume POSITIVE free space, so the space is gone before
+   flex-shrink can touch a control — which is exactly the required order of
+   concessions, with no breakpoint and no reflow at the boundary.
+   A fixed gap would have had to pick one width to look right at, and would
+   have kept taking its pixels after there were none to give.
+   FUTURE: Do not put a min-width or a fixed margin on this group to "hold"
+   the separation — that turns the graceful close-up into an overflow. */
+.player-transport-utility {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-inline-start: auto;
+  gap: var(--transport-gap);
+}
+
+/* [UI-REDESIGN / Stage 6]
+   The meta group is the counter and nothing else. The lopsided
+   `flex-shrink: 200` against the cluster's 1 is what makes the READOUT yield
+   first: flexbox distributes a shortfall in proportion to base-size ×
+   shrink-factor, so at these sizes the counter absorbs ~97% of anything the
+   row is short and the buttons are effectively untouched until the counter
+   has nothing left to give. */
 .player-transport-meta {
   display: flex;
   align-items: center;
+  flex: 0 200 auto;
+  min-width: 0;
   gap: 12px;
 }
 
 /* The counter is a readout, not a control — muted and tabular so the
-   numbers do not jitter as the index changes during a slideshow. */
+   numbers do not jitter as the index changes during a slideshow. It
+   ellipsises rather than wrapping or pushing the row wider. */
 .player-transport-meta #counter-text {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-/* [UI-REDESIGN / Stage 3]
-   WHAT: Pins the two meta buttons — Fill ⛶ and Playback ⚙ — to one line box.
-   WHY: They were already identical in CSS terms: both are `button.secondary`,
-   so both inherit the same min-height: 44px, padding: 12px 14px, radius,
-   border, weight and centering. Nothing distinguished them in the stylesheet.
-   The size difference came from the GLYPH. `⛶` (U+26F6) resolves to a
-   symbol/emoji fallback face whose intrinsic line box is taller than `⚙`
-   (U+2699) in the UI face, and min-height is a floor rather than a cap — so
-   the taller line box simply grew the button past 44px.
-   `line-height: 1` replaces that inherited line box with a predictable one,
-   and the explicit font-size keeps both glyphs rendering at the same scale
-   whichever face each resolves to. With border-box, 16px of content plus
-   12+12 padding and 2 of border lands under the 44px floor, so both settle
-   at exactly 44px. Everything else — padding, radius, border, hover, focus,
-   the aria-expanded treatment below — is inherited identically and left
-   alone.
-   No width is set: each button keeps its natural content width, per the
-   approved composition. Order (Fill ⛶ · Playback ⚙ · counter) is DOM order
-   with no `order` values involved.
-   FUTURE: Any further icon-bearing button added to this group needs to join
-   this selector, or it will size itself off its own glyph the same way. */
-.player-transport-meta .fill-panel-btn,
-.player-transport-meta .playback-settings-btn {
-  font-size: 1rem;
-  line-height: 1;
+/* [UI-REDESIGN / Stage 6]
+   WHAT: Favorite is the one control in the row that is still a TEXT glyph —
+   syncFavoriteButtons() writes ♡ / ♥ into it — so it needs the shared box
+   restated in glyph terms. Its pill radius and its loved/unloved colours are
+   untouched, including `.favorite-toggle.is-favorite`.
+   WHY: `.favorite-toggle` sets `min-width: 44px` (and the ≤520px block near
+   the end of this file sets 40px plus a font-size). `min-width` beats
+   `width`, so without this the heart would refuse to follow --transport-size
+   down and would be the one button that broke the row. This selector is two
+   classes deep, so it outranks both of those rules at every viewport width
+   without needing to be repeated inside each breakpoint.
+   [UI-REDESIGN / Stage 3] The rule this replaces pinned Fill ⛶ and
+   Playback ⚙ to a predictable line box, because `⛶` (U+26F6) resolved to a
+   symbol/emoji fallback face taller than `⚙` and grew its button past 44px.
+   Both are inline SVG now, so the glyph problem is gone with the glyphs; the
+   `line-height: 1` that fixed it lives on `.player-transport-cluster >
+   button` above and still applies to them.
+   FUTURE: If another text-glyph control ever joins the row it needs this
+   same treatment, or it will size itself off its own font face. */
+.player-transport-cluster > .favorite-toggle {
+  width: var(--transport-size);
+  min-width: calc(var(--transport-size) - 10px);
+  height: var(--transport-size);
+  min-height: var(--transport-size);
+  padding: 0;
+  font-size: calc(var(--transport-icon) * 0.95);
 }
 
 .playback-settings-btn[aria-expanded="true"] {
   border-color: var(--neon-blue-glow);
   color: var(--neon-blue);
+}
+
+/* ==========================================================================
+   [UI-REDESIGN / Stage 6] Transport one-row budget
+   ==========================================================================
+   WHAT: The only breakpoints in this file that touch the transport. Each one
+   re-solves `6.4 × --transport-size + 6 × --transport-gap` for a narrower
+   viewer panel by changing those three variables and nothing else — no
+   layout switch, no control hidden, no `transform: scale()`.
+   WHY: Kept together, in one block, because the guarantee is arithmetic and
+   arithmetic is only checkable when you can see all of it at once. Splitting
+   these steps across the components they affect is how a row like this
+   quietly starts wrapping again.
+
+   The order of concessions is fixed and deliberate:
+     0. the FLEXIBLE SPACE closes  (automatic — see the auto margin above)
+     1. the counter goes           (a readout, not a control — and it goes
+                                    outright at the compact breakpoint, not
+                                    by degrees; see the ≤980px step)
+     2. the GAP tightens           (invisible to the user)
+     3. the BUTTON shrinks         (pointer target, so as late as possible)
+     4. the ICON shrinks           (legibility, so last)
+   No step ever removes one of the six controls, and none of the six is ever
+   sacrificed to keep the counter.
+
+   The widths below are VIEWPORT widths; what the sum has to fit inside is
+   the viewer panel's inner width, which is
+       viewport − 432px   above 980px  (18px body padding ×2, the 340px rail,
+                                        the 20px grid gap, 18px panel
+                                        padding ×2)
+       viewport − 48px    at or below 980px  (10px body padding ×2, 14px
+                                        panel padding ×2 — the shell block at
+                                        the end of this file sets both)
+   Each step is checked at ITS TIGHTEST viewport, i.e. one pixel above the
+   next breakpoint, and the check includes the row's own 12px gap and the
+   counter (~60px) wherever the counter is still drawn.
+
+   The counter is present ONLY above 980px, so it appears in the desktop line
+   of the table and nowhere else. Below it the row is six controls and five
+   gaps (three inside the primary group, one inside the utility group, one
+   between the two), which is why every compact step below has more slack
+   than the desktop one.
+
+     default   44 / 8      cramped 330 (6 gaps, counter present). Tightest at
+               (>980px)    981px → 549px of panel; 330 + 60 for the counter =
+                           390, leaving ~159px of flexible space holding the
+                           groups apart.
+     ≤ 980px   —           counter hidden. Cramped drops to 322 (5 gaps) and
+                           the panel is 932px at 980px: the row is nowhere
+                           near tight here, which is the point of spending
+                           the counter early rather than late.
+     ≤ 900px   gap 8→6     cramped 312. Tightest at 701px → 653px of panel,
+                           so the groups are still far apart. Gap only — the
+                           first sized concession is the invisible one.
+     ≤ 700px   size 44→42, cramped 294. Tightest at 521px → 473px of panel,
+               gap 6→5     so ~179px of flexible space remains. The button
+                           leaves its 44px comfort size but is still a legal
+                           touch target; the icon has not moved yet.
+     ≤ 520px   size 42→40, cramped 276. Tightest at 401px → 353px of panel:
+               gap 5→4,    ~77px of space still separates the groups even at
+               icon 20→18  the bottom of this band.
+     ≤ 400px   size 40→36, cramped 245. Tightest at 341px → 293px of panel,
+               gap 4→3,    ~48px of space left. The groups only actually meet
+               icon 18→17  below ~300px of panel, which is narrower than any
+                           phone this opens on — so the fully-closed form is
+                           the degradation case, not the normal phone case.
+     ≤ 340px   size 36→33, cramped 221 against 272px of panel at 320px. Below
+               gap 3→2,    the narrowest phone this app is expected to open
+               icon 17→16  on; it exists so the row degrades, not breaks.
+
+   FUTURE: A seventh control invalidates every line above. If one is ever
+   added, redo the sum — do not just nudge a gap. */
+/* [UI-REDESIGN / Stage 6] 980px is the COMPACT BREAKPOINT — the same width at
+   which .layout drops to one column and the rail becomes the Folders drawer.
+   The counter goes with it, in one step, at that one width.
+   WHY here and not lower: on a phone-shaped box the counter is the only thing
+   in the row that answers a question nobody asked mid-slideshow, and it was
+   costing the six controls their space to do it. `display: none` on the group
+   means it occupies ZERO width — no reserved box, no ellipsis, no "413 / …" —
+   and every pixel it gave up goes straight into the flexible space that holds
+   the primary and utility groups apart, so the row gets roomier rather than
+   just emptier.
+   Deliberately NOT a new breakpoint: this is the existing compact breakpoint,
+   so the counter disappears exactly when the compact interface appears, which
+   is a rule a user can learn in one resize.
+   `display: none` is on the GROUP, never on #counter-text: the id keeps its
+   .hidden-free state, and counterText.textContent in main.js goes on being
+   written and read at every width. Nothing about the calculation changes —
+   only whether this row draws the result. Above 980px the counter is
+   completely untouched. */
+@media (max-width: 980px) {
+  .player-transport-meta {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .player-transport-row {
+    --transport-gap: 6px;
+  }
+}
+
+@media (max-width: 700px) {
+  .player-transport-row {
+    --transport-size: 42px;
+    --transport-gap: 5px;
+  }
+}
+
+@media (max-width: 520px) {
+  .player-transport-row {
+    --transport-size: 40px;
+    --transport-gap: 4px;
+    --transport-icon: 18px;
+  }
+}
+
+@media (max-width: 400px) {
+  .player-transport-row {
+    --transport-size: 36px;
+    --transport-gap: 3px;
+    --transport-icon: 17px;
+  }
+}
+
+@media (max-width: 340px) {
+  .player-transport-row {
+    --transport-size: 33px;
+    --transport-gap: 2px;
+    --transport-icon: 16px;
+  }
 }
 
 /* [UI-REDESIGN / Stage 3]
@@ -1369,6 +1659,19 @@ button:not(:disabled):hover,
    openPlaybackPopover()/closePlaybackPopover() toggle. Do not add a second
    visibility mechanism (an `[open]` attribute, an `.is-open` class) — one
    of the two will drift out of sync with aria-expanded. */
+/* [UI-REDESIGN / Stage 6]
+   The sheet header, its auto-save note and the backdrop are all DESKTOP-OFF by
+   default and switched on inside the compact block at the end of this file.
+   Declaring them off here rather than on there is deliberate: it means the
+   desktop popover cannot be altered by anything added to the sheet later —
+   a new sheet part is invisible until someone opts it in at the breakpoint,
+   which is the opposite of the usual accident. */
+.playback-sheet-header,
+.playback-sheet-note,
+.playback-sheet-scrim {
+  display: none;
+}
+
 .playback-popover {
   position: absolute;
   bottom: calc(100% + 8px);
@@ -2659,10 +2962,70 @@ hr {
     font-size: 0.85rem;
   }
 
+  /* [UI-REDESIGN / Stage 6]
+     WHAT: The Folders handle — a square 44px button with a white folder drawn
+     by its own two pseudo-elements. No <img>, no inline SVG, no icon font, no
+     child elements at all.
+     WHY: The button had to lose its text to stop crowding the context line
+     next to it, and a folder is the one glyph that says "the place your
+     libraries come from" without a word. Two rectangles is genuinely all a
+     folder is at this size, so drawing it in CSS costs less than any of the
+     alternatives and inherits the button's own disabled/hover/focus states
+     for free.
+     HOW it is drawn:
+       ::before is the TAB — 9×5, top-left, rounded on its top corners only.
+       ::after  is the BODY — 20×12, sitting 1px under the tab's bottom edge
+                so the two overlap and read as one shape.
+     Both are `position: absolute` against the button's `position: relative`
+     with hard pixel offsets, because ::before/::after would otherwise become
+     flex ITEMS of this inline-flex button and lay out side by side instead of
+     stacking. The offsets centre a 20×16 icon in the button's 42×42 padding
+     box (44 less its 1px border each side, under the global border-box):
+     left (42−20)/2 = 11, top (42−16)/2 = 13.
+     Pure white rather than var(--text) so it stays the brightest thing on the
+     compact strip — this is the one control on that strip that opens
+     something, and the mark is small.
+     FUTURE: If this ever needs a second state (a badge, an open folder), add
+     a class and a third layer via box-shadow — do not add a child element,
+     or the empty-button/aria-label contract in index.html stops holding. */
   .mobile-controls-btn {
     display: inline-flex;
+    position: relative;
     flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
     min-height: 44px;
+    padding: 0;
+    /* Belt and braces: this button has no text node, but a stray one must
+       never push the box wider than the icon it is meant to be. */
+    font-size: 0;
+    line-height: 1;
+  }
+
+  .mobile-controls-btn::before,
+  .mobile-controls-btn::after {
+    content: "";
+    position: absolute;
+    background: #fff;
+  }
+
+  /* Tab: 9×5 at the top-left of the icon box. */
+  .mobile-controls-btn::before {
+    left: 11px;
+    top: 13px;
+    width: 9px;
+    height: 5px;
+    border-radius: 2px 2px 0 0;
+  }
+
+  /* Body: 20×12, starting 1px inside the tab's lower edge so the two overlap
+     into one silhouette instead of showing a seam. */
+  .mobile-controls-btn::after {
+    left: 11px;
+    top: 17px;
+    width: 20px;
+    height: 12px;
+    border-radius: 1px 2px 2px 2px;
   }
 
   /* --- The rail as a Controls bottom sheet -------------------------------
@@ -2838,27 +3201,18 @@ hr {
     padding: 14px;
   }
 
-  /* The transport is the one row that must never wrap into a second line at
-     the cost of the meta controls: the cluster takes the width it needs and
-     the meta group drops beneath it, rather than Fill/Playback being pushed
-     off the right edge. */
-  .player-transport-row {
-    align-items: stretch;
-  }
-
-  .player-transport-cluster {
-    flex: 1 1 100%;
-  }
-
-  .player-transport-cluster > button {
-    flex: 1 1 auto;
-    min-height: 44px;
-  }
-
-  .player-transport-meta {
-    flex: 1 1 100%;
-    justify-content: space-between;
-  }
+  /* [UI-REDESIGN / Stage 6 — substage: icon-only transport]
+     Nothing here changes the transport's layout any more. The rules this
+     replaces did the opposite of what the row now guarantees: they gave the
+     cluster and the meta group `flex: 1 1 100%` so the two stacked into two
+     lines, which was the only way a row of TEXT-labelled buttons could fit a
+     phone. With icon buttons it fits on one line at every width, and the
+     sizing that makes that true lives entirely in the transport budget block
+     earlier in this file. Adding a second, competing layout for the same row
+     down here is exactly how it would start wrapping again.
+     `justify-content` and `align-items` stay inherited from the base rule:
+     controls left, counter right, centred — the same composition as desktop,
+     which is the point. */
 
   /* The popover becomes a bottom sheet: at these widths a 260px panel
      anchored to the right edge of the transport row either overhangs the
@@ -2880,6 +3234,86 @@ hr {
     padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
     max-height: 80vh;
     overflow-y: auto;
+  }
+
+  /* [UI-REDESIGN / Stage 6]
+     WHAT: The backdrop behind the sheet. z-index 41 puts it directly under the
+     sheet's 42 and over everything else on the page.
+     WHY: 41 is also the Controls drawer's layer, which is safe because the two
+     can never be open together — openControlsDrawer() closes this popover on
+     the way in, and while the drawer is open its own scrim covers the ⚙ that
+     would reopen this. The `[hidden]` rule is the same guard .controls-scrim
+     carries: `display: flex/block` in a rule like this would otherwise beat
+     the `hidden` ATTRIBUTE that main.js toggles, and the dimmer would be
+     stuck on screen with no sheet behind it. */
+  .playback-sheet-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 41;
+    background: rgba(4, 8, 20, 0.62);
+  }
+
+  .playback-sheet-scrim[hidden] {
+    display: none;
+  }
+
+  /* [UI-REDESIGN / Stage 6]
+     WHAT: The sticky sheet header. Stays put while the settings scroll under
+     it, because the sheet is capped at 80vh and can genuinely scroll on a
+     short screen — a close button that scrolls away is the problem this is
+     fixing, not a smaller version of it.
+     HOW: the popover is the scroll container, so `position: sticky; top: 0`
+     pins to its scrollport. The negative margins pull the header out into the
+     sheet's own 16px padding so it spans edge to edge and the padding scrolls
+     away behind it rather than leaving a transparent strip above it; the
+     opaque background is what makes that legal to look at. `border-radius`
+     matches the sheet's own top corners so the two do not disagree. */
+  .playback-sheet-header {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: -16px -16px 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    border-radius: 18px 18px 0 0;
+    background: rgba(13, 20, 40, 0.98);
+  }
+
+  .playback-sheet-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  /* A 44px square target for a single glyph. `line-height: 1` and the explicit
+     font-size keep `×` from sizing the box off its own line box, the same
+     problem the transport icons had before they became SVG. */
+  .playback-sheet-close-btn {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    font-size: 1.4rem;
+    line-height: 1;
+  }
+
+  /* [UI-REDESIGN / Stage 6] The honest replacement for an Apply button. Every
+     control in this sheet already persists on its own `change` through
+     savePlaybackPreferences(), so this states that fact rather than offering a
+     commit that would imply the opposite. Muted and small on purpose: it is a
+     reassurance, not an instruction. */
+  .playback-sheet-note {
+    display: block;
+    margin: 0 0 12px;
+    color: var(--muted);
+    font-size: 0.8rem;
   }
 
   /* --- Gallery filters and navigation ------------------------------------ */
@@ -2927,15 +3361,15 @@ hr {
 }
 
 /* Phone: the tab bar loses its sticky offset because the header's own height
-   drops, and the transport meta group stops trying to hold one line. */
+   drops.
+   [UI-REDESIGN / Stage 6 — substage: icon-only transport] The
+   `.player-transport-meta { flex-wrap: wrap }` that used to sit here is gone.
+   It let the counter drop to a second line; the meta group is the counter
+   alone now, and the ≤520px / ≤400px steps in the transport budget block
+   truncate then hide it instead. */
 @media (max-width: 480px) {
   .workspace-nav {
     top: 56px;
-  }
-
-  .player-transport-meta {
-    flex-wrap: wrap;
-    gap: 8px;
   }
 
   .mobile-context-text {
