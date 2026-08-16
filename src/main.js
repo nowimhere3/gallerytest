@@ -198,6 +198,14 @@ const statusText = document.getElementById("status-text");
 const selectedText = document.getElementById("selected-text");
 const viewModeText = document.getElementById("view-mode-text");
 const associatedText = document.getElementById("associated-text");
+
+// [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] The mobile-only
+// takeover composition — see its own block below for how each is driven.
+const mobileLoadPrimaryText = document.getElementById("mobile-load-primary-text");
+const mobileLoadActivityBar = document.getElementById("mobile-load-activity-bar");
+const mobileLoadCountText = document.getElementById("mobile-load-count-text");
+const mobileLoadAscii = document.getElementById("mobile-load-ascii");
+const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
 const counterText = document.getElementById("counter-text");
 const galleryCount = document.getElementById("gallery-count");
 
@@ -886,6 +894,198 @@ function getVisibleItems() {
   return filtered;
 }
 
+// ---- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] ---------------
+//
+// WHAT: the compact mobile shell's alternate presentations while a folder
+// load is in flight or its last attempt failed — a focused Live Status
+// takeover during genuine activity, a narrower "show the real error"
+// presentation once it fails — plus the automatic hand-off into the Player
+// once loading genuinely finishes. Both loaders (legacy loadFiles() and FSA
+// loadFromFsaHandle(), including its remembered-library resume calls) drive
+// this through the SAME state below; there is no second implementation.
+//
+// WHY "loading" is never derived from a progress callback's own counters:
+// there is a known, unresolved bug where a load's progress reaches N / N and
+// never actually finishes (the pipeline stalls somewhere between the last
+// onProgress tick and runtime.load() actually running). Defining this view's
+// exit condition as "processed === total" would silently paper over that —
+// the mobile shell would claim success the app itself has not reached. Using
+// isLoadingFiles instead is correct specifically because it is already the
+// SAME flag both loaders use to guard against a second concurrent load, and
+// it is set false in the identical `finally` block that runs only after
+// finishLoadingItems() -> reloadRuntime() -> runtime.load() has actually
+// executed — not after any particular progress number. If that pipeline
+// hangs, isLoadingFiles correctly stays true and this view correctly stays
+// on Live Status; this task does not fix that bug, and this code does not
+// pretend to.
+let lastMobileLoadFailed = false;
+let previousMobileLoadState = null;
+
+// The 980 here MUST match the compact breakpoint in styles.css. It exists
+// only to gate the one non-cosmetic effect below (moving focus) — every
+// visual effect of [data-mobile-load-state] is already scoped by the real
+// stylesheet media query and needs no JS check of its own.
+function isCompactViewport() {
+  return window.matchMedia("(max-width: 980px)").matches;
+}
+
+// [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+// WHAT: mirrors the exact loaded/total numbers the two onProgress callbacks
+// already have into the takeover's own primary-state and count readouts, and
+// into the activity bar. Never a second computation of progress — call
+// sites pass exactly the values they already have on hand for #status-text.
+// total === null means "not knowable yet" (the FSA scan has no total until
+// it finishes): the count line is hidden rather than showing a fabricated or
+// partial total, and the activity bar's indeterminate sweep (driven by the
+// animation tick below) takes over instead of a fake percentage.
+let mobileLoadHasKnownTotal = false;
+const MOBILE_ACTIVITY_BAR_WIDTH = 10;
+
+function renderMobileLoadProgress(primaryText, loaded, total) {
+  mobileLoadPrimaryText.textContent = primaryText;
+  mobileLoadHasKnownTotal = typeof total === "number" && total > 0;
+
+  if (mobileLoadHasKnownTotal) {
+    mobileLoadCountText.textContent = `${loaded.toLocaleString()} / ${total.toLocaleString()} media files`;
+    mobileLoadCountText.classList.remove("hidden");
+    renderMobileActivityBarRatio(loaded / total);
+  } else {
+    mobileLoadCountText.textContent = "";
+    mobileLoadCountText.classList.add("hidden");
+    // Left as whatever the last indeterminate sweep tick drew — the next
+    // tick (every 550ms while animating) repaints it regardless.
+  }
+}
+
+function renderMobileActivityBarRatio(ratio) {
+  const filled = Math.round(Math.max(0, Math.min(1, ratio)) * MOBILE_ACTIVITY_BAR_WIDTH);
+  mobileLoadActivityBar.textContent = `[${"▓".repeat(filled)}${"░".repeat(MOBILE_ACTIVITY_BAR_WIDTH - filled)}]`;
+}
+
+function renderMobileActivityBarSweep(tick) {
+  const windowSize = 3;
+  const span = MOBILE_ACTIVITY_BAR_WIDTH - windowSize;
+  const pos = tick % (span + 1);
+  const cells = new Array(MOBILE_ACTIVITY_BAR_WIDTH).fill("░");
+  for (let i = 0; i < windowSize; i++) cells[pos + i] = "▓";
+  mobileLoadActivityBar.textContent = `[${cells.join("")}]`;
+}
+
+// [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+// WHAT: a 6-frame, ping-pong "scan brackets" loop — abstract corner marks
+// breathing in and out around a centre dot — plus a short, restrained set of
+// atmospheric phrases. Both are pure decoration: neither is read by, nor
+// feeds back into, any loader state. Every line is fixed-width (verified
+// equal length) so the box never jitters between frames.
+const MOBILE_TAKEOVER_FRAMES = [
+  "┌───────────────┐\n│ ◢           ◣ │\n│       ·       │\n│ ◥           ◤ │\n└───────────────┘",
+  "┌───────────────┐\n│    ◢     ◣    │\n│       ◦       │\n│    ◥     ◤    │\n└───────────────┘",
+  "┌───────────────┐\n│      ◢ ◣      │\n│       ◉       │\n│      ◥ ◤      │\n└───────────────┘",
+  "┌───────────────┐\n│      ◢ ◣      │\n│       ●       │\n│      ◥ ◤      │\n└───────────────┘",
+  "┌───────────────┐\n│      ◢ ◣      │\n│       ◉       │\n│      ◥ ◤      │\n└───────────────┘",
+  "┌───────────────┐\n│    ◢     ◣    │\n│       ◦       │\n│    ◥     ◤    │\n└───────────────┘",
+];
+
+const MOBILE_ATMOSPHERE_PHRASES = ["Building your gallery…", "Still working…", "Preparing your media…"];
+
+let mobileTakeoverAnimationTimer = null;
+
+// [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+// Idempotent — a second call while already running is a no-op, so this can
+// never be started twice into two concurrent intervals. `tick` lives in this
+// call's own closure, so every fresh load starts the loop at frame 0 with no
+// state carried over from a previous one.
+// Respects prefers-reduced-motion by painting exactly one frame and
+// returning before the interval is ever created — see the WHY below.
+function startMobileTakeoverAnimation() {
+  if (mobileTakeoverAnimationTimer !== null) return;
+
+  let tick = 0;
+  const renderTick = () => {
+    mobileLoadAscii.textContent = MOBILE_TAKEOVER_FRAMES[tick % MOBILE_TAKEOVER_FRAMES.length];
+    if (!mobileLoadHasKnownTotal) renderMobileActivityBarSweep(tick);
+    if (tick % 8 === 0) {
+      mobileLoadAtmosphereText.textContent = MOBILE_ATMOSPHERE_PHRASES[(tick / 8) % MOBILE_ATMOSPHERE_PHRASES.length];
+    }
+    tick += 1;
+  };
+
+  renderTick(); // paint immediately — no blank first frame while the interval's first tick is still pending
+
+  // WHY checked here rather than once at module load: the user's OS-level
+  // preference can only sensibly change between page loads for this app's
+  // purposes, so checking once per takeover start (not reactively) is
+  // correct and matches isCompactViewport()'s own once-per-transition check
+  // above.
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  mobileTakeoverAnimationTimer = setInterval(renderTick, 550);
+}
+
+// Idempotent — safe to call even when nothing is running (every
+// syncMobileLoadState() exit path from "loading" calls this unconditionally
+// rather than trying to remember whether reduced-motion left it unset).
+function stopMobileTakeoverAnimation() {
+  if (mobileTakeoverAnimationTimer === null) return;
+  clearInterval(mobileTakeoverAnimationTimer);
+  mobileTakeoverAnimationTimer = null;
+}
+
+// The single place that decides the mobile load state and writes it to the
+// DOM. Called immediately after every place isLoadingFiles or
+// lastMobileLoadFailed changes (four call sites, all inside loadFiles() /
+// loadFromFsaHandle()) — never from a general subscription, so it cannot
+// silently drift out of sync with the two flags it reads.
+//
+// Three values, not two: "loading" (isLoadingFiles true — genuine activity,
+// the full focused takeover, everything else in the panel hidden because
+// none of it is actionable while every picker control is already disabled),
+// "failed" (isLoadingFiles false but the last attempt's error is still the
+// most current truth — the takeover's animation/bar/atmosphere stop, but the
+// Libraries block stays visible because that is where the real error
+// (#fsa-status-text) lives and where the user retries), and "normal"
+// (neither — the ordinary compact shell, unchanged from before this state
+// existed).
+function syncMobileLoadState() {
+  const state = isLoadingFiles ? "loading" : lastMobileLoadFailed ? "failed" : "normal";
+  const wasActivelyLoading = previousMobileLoadState === "loading";
+  const isActivelyLoading = state === "loading";
+
+  appShell.dataset.mobileLoadState = state;
+
+  if (!wasActivelyLoading && isActivelyLoading) startMobileTakeoverAnimation();
+
+  if (wasActivelyLoading && !isActivelyLoading) {
+    stopMobileTakeoverAnimation();
+
+    // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+    // Fires exactly once, exactly on the loading -> genuinely-succeeded edge:
+    // state === "normal" excludes the failure edge, and .app-has-media
+    // (buildViewer()'s own truth about whether the Player has something to
+    // show — see its own comment) is already correct by the time this runs,
+    // because finishLoadingItems() -> reloadRuntime() -> runtime.load() ->
+    // render() -> buildViewer() has already executed earlier in the same
+    // synchronous call, before the `finally` block that resets
+    // isLoadingFiles and calls this function reaches this line.
+    //
+    // returnToGalleryAndFocusPlayer() is documented as deliberately NOT
+    // wired to render() or any runtime subscription, to stop a background
+    // update from stealing focus out from under a user mid-interaction
+    // elsewhere in Gallery. This call site is a deliberate, narrow exception
+    // to that rule: .media-content — including the Jump box and filters
+    // that note is protecting — has been hidden by
+    // [data-mobile-load-state="loading"] CSS for this entire load, so there
+    // is nothing on screen for this to interrupt. It is also gated to the
+    // compact viewport only, so desktop never receives this auto-focus
+    // behavior at all.
+    if (state === "normal" && appShell.classList.contains("app-has-media") && isCompactViewport()) {
+      returnToGalleryAndFocusPlayer();
+    }
+  }
+
+  previousMobileLoadState = state;
+}
+
 // Shared tail of every "a folder/fileset finished loading" path (the
 // original webkitdirectory path AND the FSA path below). Stamps
 // favorite/hidden/tag status from the Profile immediately, before
@@ -909,6 +1109,10 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   if (!total || isLoadingFiles) return;
 
   isLoadingFiles = true;
+  // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] A fresh attempt
+  // clears any failure the PREVIOUS attempt left showing.
+  lastMobileLoadFailed = false;
+  syncMobileLoadState();
 
   // Clear immediately so stale thumbnails / soon-to-be-revoked object URLs
   // from a previous selection aren't left on screen while the new batch
@@ -918,6 +1122,11 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   clearViewerNode();
   exitFillMode();
   setLoadingState(true, total);
+  // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] Mirrors the exact
+  // "0 / total" setLoadingState() just wrote into #status-text, so the
+  // takeover shows correct numbers from its very first frame rather than
+  // sitting blank until the first batch completes.
+  renderMobileLoadProgress("Loading media…", 0, total);
   lastHiddenRelativePath = null;
   syncUndoHideButton();
   // [FSA] Switching TO the local-picker path — release whatever the FSA
@@ -951,6 +1160,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
       batchSize: BATCH_SIZE,
       onProgress: (loaded, totalCount) => {
         statusText.textContent = `Loading media… ${loaded} / ${totalCount}`;
+        renderMobileLoadProgress("Loading media…", loaded, totalCount);
       },
     });
 
@@ -1049,6 +1259,14 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
+    // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] The authoritative
+    // completion point — after finishLoadingItems() (called above, inside the
+    // try block, only on success) has already run runtime.load(). This
+    // function has no catch block, so an exception here leaves
+    // lastMobileLoadFailed at whatever it already was; see that flag's own
+    // comment for why that asymmetry with the FSA path is left alone rather
+    // than expanded here.
+    syncMobileLoadState();
   }
 }
 
@@ -1069,6 +1287,11 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
   isLoadingFiles = true;
+  // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Same reset as
+  // loadFiles() above — covers a fresh pick AND every remembered-library
+  // resume call into this same function.
+  lastMobileLoadFailed = false;
+  syncMobileLoadState();
 
   // [P1-DIAGNOSTIC / TEMPORARY] Retains the root handle for the
   // DevTools-callable probe at the bottom of this file — see that block's
@@ -1145,6 +1368,11 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   exitFillMode();
   setLoadingState(true);
   statusText.textContent = "Scanning folder…";
+  // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] total is null: the
+  // FSA scan has no total until it finishes, so the takeover's count line
+  // stays hidden and its activity bar runs the indeterminate sweep instead
+  // of a fabricated percentage.
+  renderMobileLoadProgress("Scanning folder…", 0, null);
   lastHiddenRelativePath = null;
   syncUndoHideButton();
   // [FSA] Switching TO the FSA path — release whatever the local <input>
@@ -1166,6 +1394,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       batchSize: BATCH_SIZE,
       onProgress: (loaded) => {
         statusText.textContent = `Scanning folder… ${loaded} media file${loaded === 1 ? "" : "s"} found so far`;
+        renderMobileLoadProgress("Scanning folder…", loaded, null);
       },
     });
 
@@ -1234,9 +1463,21 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   } catch (error) {
     console.error("[FSA] Failed to load the selected folder.", error);
     fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
+    // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] The one genuine,
+    // already-truthful failure path this loader has — reached only when zero
+    // items were accepted. Keeps the mobile Live-Status-only view up,
+    // showing the message written just above, instead of silently reverting
+    // to the ordinary empty-state UI.
+    lastMobileLoadFailed = true;
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
+    // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Authoritative
+    // completion point for this loader too — after finishLoadingItems() (only
+    // reached on success, inside the try block above) has already run
+    // runtime.load(), or after the catch above has already recorded a
+    // genuine failure.
+    syncMobileLoadState();
   }
 }
 

@@ -1672,6 +1672,16 @@ button:not(:disabled):hover,
   display: none;
 }
 
+/* [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+   Same DESKTOP-OFF-by-default pattern as the sheet parts above, for the same
+   reason: the takeover composition is invisible everywhere until the compact
+   block at the end of this file explicitly turns it on for
+   [data-mobile-load-state="loading"] specifically — never for "failed" (see
+   that state's own comment) and never on desktop. */
+.mobile-load-takeover {
+  display: none;
+}
+
 .playback-popover {
   position: absolute;
   bottom: calc(100% + 8px);
@@ -3119,6 +3129,161 @@ hr {
 
   .app-shell:not(.app-has-media) .viewer-empty {
     min-height: 96px;
+  }
+
+  /* --- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] -------------
+     WHAT: two compact-shell presentations beyond the ordinary loaded/empty
+     ones above, keyed off [data-mobile-load-state] — set in main.js from
+     isLoadingFiles and one failure flag, never from a progress callback:
+
+       "loading" — genuine activity. A TRUE focused takeover: .media-content
+                   AND the rail's Libraries / Associate / Clear Media are all
+                   hidden, leaving only Live Status (heading + the takeover
+                   composition below) on screen. Nothing hidden here is
+                   actionable anyway — every picker control is already
+                   disabled for the duration by the existing
+                   setLoadingState(true).
+       "failed"  — the last attempt's error is the most current truth.
+                   .media-content stays hidden (no jumping to an empty
+                   Player), but Libraries stays VISIBLE — #fsa-status-text,
+                   where the real "Could not load that folder: …" message
+                   already lives, is inside that block, and it is also where
+                   the user retries. The takeover's animation/bar/atmosphere
+                   are hidden here (see .mobile-load-takeover below) — a
+                   "still scanning" animation once scanning has genuinely
+                   stopped would be dishonest.
+
+     Both states share the rail's "ordinary in-flow block" treatment — the
+     SAME properties the pre-existing empty-state rule above uses, so Live
+     Status ends up in identical position/appearance regardless of which of
+     the three reasons (empty, loading, failed) put it there.
+     WHY no `:not(.simulated-fullscreen)` guard here unlike the empty-state
+     rule above: entering Fill Panel requires an already-loaded current item,
+     and both loaders call exitFillMode() before setting isLoadingFiles — so
+     "loading" and .simulated-fullscreen can never both be true, and "failed"
+     only follows "loading", so neither ever overlaps Fill Panel either.
+     There is no specificity war to win.
+     Both states can overlap with EITHER .app-has-media or its absence (a
+     reload while media is already showing vs. the very first load), which is
+     why .media-content is hidden unconditionally rather than only with
+     `:not(.app-has-media)`.
+     FUTURE: DESKTOP NOTE — a desktop equivalent of this focused loading
+     takeover may be worth considering later; no desktop CSS or behavior
+     exists for it, and none should be added without a separate, deliberate
+     pass.
+     FUTURE: these are shell PRESENTATION rules only. The state itself is
+     computed exactly once, in syncMobileLoadState() in main.js — do not add
+     a second place that reads isLoadingFiles to decide what to show. */
+  .app-shell[data-mobile-load-state="loading"] .media-content,
+  .app-shell[data-mobile-load-state="failed"] .media-content {
+    display: none;
+  }
+
+  .app-shell[data-mobile-load-state="loading"] .controls-panel,
+  .app-shell[data-mobile-load-state="failed"] .controls-panel {
+    position: static;
+    z-index: auto;
+    max-height: none;
+    overflow-y: visible;
+    border-radius: var(--radius);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 18px;
+    transform: none;
+    visibility: visible;
+  }
+
+  .app-shell[data-mobile-load-state="loading"] .mobile-controls-btn,
+  .app-shell[data-mobile-load-state="failed"] .mobile-controls-btn,
+  .app-shell[data-mobile-load-state="loading"] .controls-drawer-close-btn,
+  .app-shell[data-mobile-load-state="failed"] .controls-drawer-close-btn {
+    display: none;
+  }
+
+  .app-shell[data-mobile-load-state="loading"] .status-box,
+  .app-shell[data-mobile-load-state="failed"] .status-box {
+    order: -1;
+  }
+
+  /* "loading" only: the true takeover — hides every OTHER rail section, so
+     Live Status is genuinely the sole thing on screen, exactly as required.
+     "failed" deliberately does NOT hide these — #fsa-status-text and the
+     retry controls live inside them. */
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-identity,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-section-label,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .legacy-picker-details,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .fsa-picker-row,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > #fsa-recent-libraries,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > #fsa-status-text,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > hr,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-profile-summary,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .clear-media-btn {
+    display: none;
+  }
+
+  /* --- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] composition -
+     WHAT: the focused-loading card itself — heading (the pre-existing
+     .status-box-title, reused, not duplicated) plus the primary state line,
+     activity bar, real count, textmode animation and atmosphere line. Off
+     everywhere by default (base rule further up the file); only switched on
+     for "loading" specifically — "failed" hides it, per the WHY above.
+     Generous gaps and top/bottom padding are the "intentional, not four rows
+     stranded in a big viewport" ask — the numbers below were chosen against
+     a 390×844 phone with the compact header/status-box padding already
+     subtracted, not against this stylesheet's other spacing scale. */
+  .app-shell[data-mobile-load-state="loading"] .mobile-load-takeover {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 28px 12px 24px;
+    text-align: center;
+  }
+
+  .app-shell[data-mobile-load-state="loading"] .status-box-title {
+    text-align: center;
+    font-size: 1.05rem;
+    letter-spacing: 0.04em;
+  }
+
+  .mobile-load-primary-text {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  /* Textmode, not a styled progress element — border-radius/box-shadow would
+     fight the "terminal" language the ASCII frame below already sets. */
+  .mobile-load-activity-bar {
+    margin: 0;
+    font-family: "Courier New", ui-monospace, monospace;
+    font-size: 1rem;
+    letter-spacing: 0.12em;
+  }
+
+  .mobile-load-count-text {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.9rem;
+  }
+
+  /* `white-space: pre` is load-bearing — the frames in main.js are built as
+     fixed-width multi-line strings and rely on the browser not collapsing
+     their spaces or reflowing their line breaks. `line-height: 1.15` keeps
+     the five text rows close enough to read as one glyph, not five. */
+  .mobile-load-ascii {
+    margin: 8px 0;
+    padding: 0;
+    background: none;
+    border: none;
+    white-space: pre;
+    line-height: 1.15;
+    font-size: 0.95rem;
+  }
+
+  .mobile-load-atmosphere-text {
+    margin: 0;
+    font-size: 0.85rem;
+    font-style: italic;
   }
 
   /* --- Player-first stack ------------------------------------------------
