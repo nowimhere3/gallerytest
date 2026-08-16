@@ -4742,7 +4742,29 @@ profile.subscribe(() => {
       pendingFilterReloadItemId = currentItem.id;
     }
   }
-  renderPresentationTagsPanel(runtime.getState().currentItem);
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-E-LIVE-REMOTE-PROJECTION]
+  // [WHY: synchronized facts adopted into the active Profile must immediately
+  //  become visible in the loaded UI on either device without reload or local
+  //  interaction. Re-projecting allItems above fixes the DATA, but the rendered
+  //  surfaces are driven by runtime.subscribe(render) — and a REMOTE change
+  //  moves no runtime state, so nothing re-rendered. Locally this was invisible
+  //  because a click goes through runtime.toggleFavorite(), which does move the
+  //  runtime; a peer's change has no such side effect. The filter branch above
+  //  only re-renders when Favorites Only or a Tag filter happens to be active,
+  //  so in the ordinary All view the badges and the favourite/hide controls kept
+  //  showing pre-sync state.
+  //
+  //  These are the SAME functions render() already uses, called directly rather
+  //  than through render(): buildViewer() would rebuild the media element and
+  //  interrupt playback, which a background sync must never do. renderGallery()
+  //  takes its own cheap same-list path (updateGalleryHighlightsAndBadges), so
+  //  this refreshes badges without rebuilding 17k cards.]
+  const projectedState = runtime.getState();
+  renderGallery(projectedState);
+  syncFavoriteButtons(projectedState.currentItem);
+  syncHideButton(projectedState.currentItem);
+  renderPresentationTagsPanel(projectedState.currentItem);
 });
 
 // ---- Profile Sync UI (Profile Sync Folder POC) ---------------------------
@@ -5016,6 +5038,15 @@ async function renderSharedLibraryOptions() {
   if (!profileSyncLinkSelect) return;
   const associations = profile.listAssociations();
   const ids = Object.keys(associations);
+
+  // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
+  // [WHY: this now runs on every ProfileSync emit, and the scheduler makes
+  //  those routine. Rebuilding the <select> unconditionally would discard the
+  //  user's in-progress choice underneath them mid-interaction, so the DOM is
+  //  only touched when the option set has genuinely changed.]
+  const signature = ids.map((id) => `${id}:${associations[id]}`).join("|");
+  if (profileSyncLinkSelect.dataset.signature === signature) return;
+  profileSyncLinkSelect.dataset.signature = signature;
 
   profileSyncLinkSelect.innerHTML = "";
   const placeholder = document.createElement("option");
@@ -5692,6 +5723,67 @@ async function __iaSyncFolderShape() {
  *   - includeSyncFolder: true (default). Set false to skip the Audit-B probe.
  *   - maxHashSamples: 1000 (default) cap on emitted hashes per list.
  */
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-HUMAN-DEVICE-LABEL]
+// [WHY: real-device debugging must show a human-readable device name before
+//  the raw UUID without allowing presentation metadata to affect sync
+//  identity. Strictly READ-ONLY, and deliberately so: it reads ProfileSync's
+//  already-published status surface rather than running a pass of its own, so
+//  typing it into a console during a live two-device test cannot change what
+//  that test is measuring — no sync pass, no write, no IndexedDB or Drive
+//  access, no UI state change. Peer data is whatever the LAST pass observed;
+//  if that reads as stale, run Sync Now deliberately and call this again.]
+window.__bgSyncDevices = function () {
+  const status = profileSync.getStatus();
+  const lines = [];
+
+  lines.push("=== SYNC V2 DEVICES ===");
+  lines.push("");
+  lines.push("THIS DEVICE");
+  lines.push(`Device: ${status.deviceLabel || "Unknown Device"}`);
+  lines.push(`Device ID: ${status.deviceId || "(not yet assigned)"}`);
+  if (status.mode !== "v2") lines.push(`(Sync V2 is not active on this device — mode: ${status.mode})`);
+  lines.push("");
+
+  const peers = status.peers || [];
+  lines.push(`PEERS (${peers.length} seen on the last pass)`);
+  if (peers.length === 0) {
+    lines.push("(none seen yet — run Sync Now, then call this again)");
+  }
+  for (const peer of peers) {
+    lines.push("");
+    lines.push(`Device: ${peer.label || "Unknown Device"}`);
+    lines.push(`Device ID: ${peer.deviceId}`);
+    lines.push(`Updated: ${peer.updatedAt ? new Date(peer.updatedAt).toLocaleString() : "unknown"}`);
+  }
+
+  const skipped = status.skippedPeers || [];
+  if (skipped.length) {
+    lines.push("");
+    lines.push(`SKIPPED THIS PASS (${skipped.length})`);
+    for (const peer of skipped) {
+      lines.push(`  ${peer.deviceId} — ${peer.reason}`);
+      // [PHASE-6-SYNC-V2][STAGE-E-REAL-DRIVE-HASH-RECOVERY]
+      // [WHY: byte length and both digest prefixes are what distinguish a peer
+      //  caught mid-propagation from a structural fault, which otherwise look
+      //  identical from the outside.]
+      if (peer.detail) lines.push(`      ${peer.detail}`);
+    }
+    lines.push("  (a skipped peer is retried automatically on the next pass — no action needed)");
+  }
+
+  if (status.ownGenerationSettling) {
+    lines.push("");
+    lines.push(
+      `THIS DEVICE'S OWN GENERATION IS STILL SETTLING (pass ${status.ownGenerationSettling}) — ` +
+        `${status.ownGenerationReason || "unreadable"}; waiting rather than rewriting.`
+    );
+  }
+
+  console.log(lines.join("\n"));
+  return undefined; // nothing to act on programmatically; this is a human report
+};
+
 window.__bgProfileIdentityAudit = async function (options = {}) {
   const { salt = null, hashUnmatched = false, includeSyncFolder = true, maxHashSamples = 1000 } = options;
 

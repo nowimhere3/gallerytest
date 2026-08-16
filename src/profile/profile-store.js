@@ -212,6 +212,17 @@ export class ProfileStore {
   }
 
   /** This installation's stable device identity. Null until it resolves. */
+  // [PHASE-6-SYNC-V2][STAGE-E-HUMAN-DEVICE-LABEL]
+  // [WHY: real-device debugging must show a human-readable device name before
+  //  the raw UUID without allowing presentation metadata to affect sync
+  //  identity. Exposed beside getDeviceId() so a caller cannot accidentally
+  //  reach for the label when it wanted identity — but note the asymmetry:
+  //  getDeviceId() returns durable persisted state, this returns a string
+  //  recomputed on every call. Nothing may key, order, or merge on it.]
+  getDeviceLabel() {
+    return this.#identity.label;
+  }
+
   getDeviceId() {
     return this.#identity.deviceId;
   }
@@ -1591,6 +1602,21 @@ export class ProfileStore {
       // between them and the stored records self-heals here on every load.
       const localChanged = this.#applyFactsToLocal(this.#facts);
       if (localChanged || factsChanged) this.#persist();
+
+      // [PHASE-6-SYNC-V2]
+      // [STAGE-E-LIVE-REMOTE-PROJECTION]
+      // [WHY: synchronized facts adopted into the active Profile must
+      //  immediately become visible in the loaded UI on either device without
+      //  reload or local interaction. This emit was missing entirely, and it is
+      //  the whole bug: a remote favorite/hide/tag reached #recordsByPath and
+      //  IndexedDB (so an export was correct) but NOTHING was notified, because
+      //  adoptMergedReplica only emits when the REGISTRY changes — adding,
+      //  removing or renaming a Profile — and a favorite on an already-known
+      //  active Profile changes no registry entry. Every live surface in
+      //  main.js hangs off profile.subscribe(), so all of them silently kept
+      //  rendering pre-sync state. Gated on localChanged so an idle no-op pass
+      //  still notifies nobody and costs nothing.]
+      if (localChanged) this.#emit();
       this.#queueFactDriftReport("after adopting stored facts");
       return;
     }

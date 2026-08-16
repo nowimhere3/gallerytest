@@ -47,6 +47,9 @@ const PROFILE_FACTS_KIND = "gallery-profile-sync-v2-facts";
 const ASSOCIATIONS_KIND = "gallery-profile-sync-v2-associations";
 const SCHEMA_VERSION = 2;
 
+/** Shown for a peer whose device.json predates labels, or whose platform is unrecognised. */
+export const UNKNOWN_DEVICE_LABEL = "Unknown Device";
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -67,12 +70,27 @@ export function assertOwnDeviceScope(deviceId) {
   }
 }
 
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-REAL-DRIVE-HASH-RECOVERY]
+// [WHY: separate DriveFS clients may observe device metadata and profile bytes
+//  at different points in propagation; integrity must remain strict while
+//  either direction recovers automatically. This function used to SILENTLY
+//  choose between SHA-256 and an FNV fallback depending on whether
+//  crypto.subtle happened to be available. A publisher with subtle writes a
+//  64-char digest; a reader without it recomputes an 8-char one and they can
+//  never agree — producing a PERMANENT `profile-hash-mismatch` that is
+//  indistinguishable from real corruption, in one direction only, with no way
+//  to tell the two apart from a diagnostic. The algorithm is now reported
+//  alongside the digest and recorded in device.json, so a reader that cannot
+//  reproduce a publisher's algorithm says exactly that instead of blaming the
+//  bytes. Integrity is unchanged: a digest is still compared strictly, and a
+//  mismatch is still a hard reject.]
 async function hashText(text) {
   if (typeof crypto !== "undefined" && crypto.subtle && typeof crypto.subtle.digest === "function") {
     try {
       const bytes = new TextEncoder().encode(text);
       const digest = await crypto.subtle.digest("SHA-256", bytes);
-      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      return { algo: "sha256", value: [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("") };
     } catch {
       // Fall through — same tolerance computeFingerprint (Stage B) applies.
     }
@@ -82,7 +100,12 @@ async function hashText(text) {
     hash ^= text.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);
   }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return { algo: "fnv1a", value: (hash >>> 0).toString(16).padStart(8, "0") };
+}
+
+/** The digest algorithm this runtime can actually produce. */
+export async function currentHashAlgo() {
+  return (await hashText("")).algo;
 }
 
 /** Two replicas are equal iff their canonical form is byte-identical. */
@@ -158,6 +181,19 @@ export async function readDeviceReplica(devicesDir, deviceId) {
     return { status: "invalid", reason: "manifest-shape" };
   }
 
+  // [PHASE-6-SYNC-V2][STAGE-E-REAL-DRIVE-HASH-RECOVERY]
+  // [WHY: a peer whose digest algorithm this runtime cannot reproduce is not
+  //  corrupt, and calling it corrupt sends whoever is debugging to look at the
+  //  wrong thing entirely. Absent hashAlgo means the generation predates this
+  //  field, in which case the only algorithm that ever existed was ours — so
+  //  "assume ours" is both backward compatible and correct. This is a REJECT,
+  //  not a bypass: unverifiable bytes are never adopted.]
+  const ourAlgo = await currentHashAlgo();
+  const theirAlgo = typeof manifest.hashAlgo === "string" && manifest.hashAlgo ? manifest.hashAlgo : ourAlgo;
+  if (theirAlgo !== ourAlgo) {
+    return { status: "invalid", reason: `hash-algo-mismatch:${theirAlgo}-vs-${ourAlgo}` };
+  }
+
   const profiles = {};
   let profilesDir = null;
   if (manifest.profiles.length > 0) {
@@ -181,7 +217,16 @@ export async function readDeviceReplica(devicesDir, deviceId) {
     }
 
     const actualHash = await hashText(text);
-    if (actualHash !== declared.hash) return { status: "invalid", reason: `profile-hash-mismatch:${declared.id}` };
+    if (actualHash.value !== declared.hash) {
+      // Detail exists so a real-device diagnostic can distinguish
+      // mid-propagation staleness (bytes differ, both digests well-formed)
+      // from a structural fault, without ever relaxing the reject itself.
+      return {
+        status: "invalid",
+        reason: `profile-hash-mismatch:${declared.id}`,
+        detail: `bytes=${text.length} declared=${String(declared.hash).slice(0, 8)} actual=${actualHash.value.slice(0, 8)} algo=${actualHash.algo}`,
+      };
+    }
 
     let parsed;
     try {
@@ -209,8 +254,12 @@ export async function readDeviceReplica(devicesDir, deviceId) {
   }
 
   const associationsActualHash = await hashText(associationsText);
-  if (associationsActualHash !== manifest.associationsHash) {
-    return { status: "invalid", reason: "associations-hash-mismatch" };
+  if (associationsActualHash.value !== manifest.associationsHash) {
+    return {
+      status: "invalid",
+      reason: "associations-hash-mismatch",
+      detail: `bytes=${associationsText.length} declared=${String(manifest.associationsHash).slice(0, 8)} actual=${associationsActualHash.value.slice(0, 8)}`,
+    };
   }
 
   let associationsParsed;
@@ -225,6 +274,12 @@ export async function readDeviceReplica(devicesDir, deviceId) {
 
   return {
     status: "valid",
+    // Read as OPTIONAL metadata, alongside — never inside — the replica. A
+    // device.json written before this field existed simply has no `label`, and
+    // is still perfectly valid; it reports the same fallback an unrecognised
+    // platform does.
+    label: typeof manifest.label === "string" && manifest.label ? manifest.label : UNKNOWN_DEVICE_LABEL,
+    updatedAt: Number.isFinite(manifest.updatedAt) ? manifest.updatedAt : null,
     replica: { schemaVersion: SCHEMA_VERSION, profiles, associations: associationsParsed.associations },
   };
 }
@@ -295,7 +350,7 @@ async function cleanupObsoleteOwnProfileFiles(profilesDir, keepIds) {
  *
  * Returns { ok: true } or { ok: false, reason }.
  */
-export async function publishDeviceReplicaVerified(devicesDir, deviceId, replica) {
+export async function publishDeviceReplicaVerified(devicesDir, deviceId, replica, { label = null } = {}) {
   assertOwnDeviceScope(deviceId);
 
   const deviceDir = await devicesDir.getDirectoryHandle(deviceId, { create: true });
@@ -303,18 +358,36 @@ export async function publishDeviceReplicaVerified(devicesDir, deviceId, replica
 
   const profileIds = Object.keys(replica.profiles || {}).sort();
   const declared = [];
+  let hashAlgo = null;
   for (const profileId of profileIds) {
     const hash = await writeProfileFile(profilesDir, profileId, replica.profiles[profileId]);
-    declared.push({ id: profileId, file: `${PROFILES_DIR_NAME}/${profileId}.json`, hash });
+    hashAlgo = hash.algo;
+    declared.push({ id: profileId, file: `${PROFILES_DIR_NAME}/${profileId}.json`, hash: hash.value });
   }
 
-  const associationsHash = await writeAssociationsFile(deviceDir, replica.associations || {});
+  const associations = await writeAssociationsFile(deviceDir, replica.associations || {});
+  const associationsHash = associations.value;
+  hashAlgo = hashAlgo || associations.algo;
 
   // Data files are all committed above; device.json is the commit point and
   // must be written last (see the module header).
+  // [PHASE-6-SYNC-V2][STAGE-E-HUMAN-DEVICE-LABEL]
+  // [WHY: `label` rides in device.json and NOWHERE else. device.json is the
+  //  file that CARRIES the hashes rather than being hashed itself, so an extra
+  //  field here cannot change any content hash, cannot change the replica that
+  //  readDeviceReplica reconstructs, and therefore cannot reach merge, ordering
+  //  or the publish-skip comparison. The consequence is deliberate: a label
+  //  that changes on its own will NOT trigger a publish — it refreshes the next
+  //  time this device publishes for a real reason. A possibly-stale debug
+  //  string is the correct trade for keeping presentation metadata completely
+  //  outside the convergence path.]
   await writeDeviceManifest(deviceDir, {
     schemaVersion: SCHEMA_VERSION,
     kind: DEVICE_KIND,
+    label: typeof label === "string" && label ? label : undefined,
+    // Additive and backward compatible: a device.json written before this field
+    // existed simply has none, and is read as "assume ours" (see readDeviceReplica).
+    hashAlgo,
     deviceId,
     profiles: declared,
     associationsHash,

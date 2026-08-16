@@ -52,6 +52,7 @@ import { DEFAULT_PROFILE_NAME } from "./indexeddb.js";
 //  to disagree with. One engine, one chain, one status; the MODE decides which
 //  reconcile body runs, and nothing else changes.]
 import { runSyncV2Pass } from "./sync-v2.js";
+import { UNKNOWN_DEVICE_LABEL } from "./sync-v2-transport.js";
 import {
   activateSyncV2 as runActivation,
   loadActivationState,
@@ -61,6 +62,17 @@ import {
 } from "./sync-v2-activation.js";
 
 const AUTO_SYNC_DEBOUNCE_MS = 3000;
+
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-CONVERGENCE-SCHEDULER]
+// [WHY: every active client must merge shared truth approximately every 3
+//  seconds without requiring local activity. Before this, the ONLY reconcile
+//  triggers were boot, reconnect, Sync Now, and a LOCAL ProfileStore mutation —
+//  so a device sitting idle never looked at the folder again, and a peer's
+//  change was invisible until its user happened to touch something. That is a
+//  correctness gap, not a tuning problem: convergence was conditional on local
+//  activity, which no distributed-state contract can be.]
+const CONVERGENCE_POLL_MS = 3000;
 const MANIFEST_FILE_NAME = "manifest.json";
 const PROFILES_DIR_NAME = "profiles";
 const MANIFEST_KIND = "gallery-profile-sync-manifest";
@@ -385,9 +397,28 @@ export class ProfileSync {
   //  writing V1 after cutover, which the policy forbids absolutely.]
   #activationReady;
 
+  // ---- Convergence scheduler (Stage E follow-up) -------------------------
+  //
+  // ONE timer, never an interval: it is armed only after the previous pass has
+  // fully settled (see #reconcile's finally), which makes overlapping passes
+  // structurally impossible rather than merely unlikely. #armPollTimer always
+  // clears before arming, so no lifecycle path — repeated init(), reconnect(),
+  // connectNewFolder(), activation — can leave two timers running.
+  #pollTimer = null;
+  #disposed = false;
+  // [PHASE-6-SYNC-V2][STAGE-E-REAL-DRIVE-HASH-RECOVERY]
+  // [WHY: carries what this device last successfully published across passes, so
+  //  runSyncV2Pass can tell "our own generation is still propagating" apart from
+  //  "our own generation is wrong". Lives on the engine because a pass is a pure
+  //  function; deliberately in-memory only — a fresh boot has no memory of a
+  //  previous publish and correctly falls back to re-reading the folder.]
+  #passState = {};
+  #environmentListeners = [];
+
   constructor(profileStore) {
     this.#profile = profileStore;
     this.#activationReady = this.#loadActivation();
+    this.#installEnvironmentTriggers();
     // A single subscription drives every auto-sync trigger: favorites,
     // hidden, tags, tag vocabulary, profile create/switch/delete/rename,
     // and import all funnel through ProfileStore's #emit() already (see
@@ -430,6 +461,7 @@ export class ProfileSync {
 
     if (!config || !config.handle) {
       this.#status = "not-configured";
+      this.#armPollTimer();
       this.#emit();
       return;
     }
@@ -557,6 +589,8 @@ export class ProfileSync {
     this.#lastSyncAt = null;
     this.#status = "not-configured";
     this.#message = null;
+    // #shouldPoll() is now false, so this clears the timer and arms nothing.
+    this.#armPollTimer();
     this.#emit();
   }
 
@@ -612,6 +646,10 @@ export class ProfileSync {
       // Immediately run the first real V2 pass so the status the user sees
       // reflects an actual verified pass, not merely "we flipped a flag".
       await this.#reconcileImpl();
+      // Called explicitly because this is the one pass that does NOT go through
+      // #reconcile() (it is already inside the chain), so it misses that
+      // method's re-arm. This is what starts polling at the moment of cutover.
+      this.#armPollTimer();
       return result;
     };
 
@@ -693,6 +731,18 @@ export class ProfileSync {
       migration: (this.#activation && this.#activation.migration) || null,
       mergedPeers: this.#lastPassInfo ? this.#lastPassInfo.mergedPeers : null,
       skippedPeers: this.#lastPassInfo ? this.#lastPassInfo.skippedPeers : [],
+      // [PHASE-6-SYNC-V2][STAGE-E-HUMAN-DEVICE-LABEL]
+      // [WHY: real-device debugging must show a human-readable device name
+      //  before the raw UUID without allowing presentation metadata to affect
+      //  sync identity. Both are exposed together, label first, so a caller
+      //  cannot render one without having the other to hand — and neither is
+      //  used by anything in this class beyond being handed to a reader.]
+      deviceLabel:
+        typeof this.#profile.getDeviceLabel === "function" ? this.#profile.getDeviceLabel() : UNKNOWN_DEVICE_LABEL,
+      deviceId: typeof this.#profile.getDeviceId === "function" ? this.#profile.getDeviceId() : null,
+      peers: (this.#lastPassInfo ? this.#lastPassInfo.peers : []) || [],
+      ownGenerationSettling: this.#lastPassInfo ? this.#lastPassInfo.ownGenerationSettling : null,
+      ownGenerationReason: this.#lastPassInfo ? this.#lastPassInfo.ownGenerationReason : null,
     };
   }
 
@@ -703,6 +753,92 @@ export class ProfileSync {
 
   #emit() {
     for (const listener of this.#listeners) listener();
+  }
+
+  // ---- Convergence scheduler ----------------------------------------------
+
+  /** True only when a periodic V2 convergence pass is currently warranted. */
+  #shouldPoll() {
+    // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
+    // [WHY: deliberately NOT gated on status. Gating on "permission-needed"
+    //  looked prudent and was a real bug: a single transient Drive fault
+    //  surfaces as exactly that status, and excluding it stopped this device
+    //  from ever polling again for the rest of the session — one hiccup, silent
+    //  permanent divergence. queryPermission() never prompts, so retrying costs
+    //  nothing and is how a recoverable fault recovers by itself. Only genuinely
+    //  terminal conditions stop the loop: not on V2, no folder, auto-sync off,
+    //  or disposed.]
+    return !this.#disposed && this.#mode === ACTIVATION_V2 && Boolean(this.#dirHandle) && this.#autoSync;
+  }
+
+  // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
+  // [WHY: clears before arming, unconditionally. Every lifecycle entry point
+  //  and every completed pass calls this, so "did something already arm a
+  //  timer?" never has to be reasoned about — the answer cannot cause a
+  //  duplicate. A state that must not poll (V1, activation failed,
+  //  disconnected, permission lost, disposed) simply arms nothing, which is how
+  //  polling stops without a second stop path to keep in sync.]
+  #armPollTimer() {
+    if (this.#pollTimer) {
+      clearTimeout(this.#pollTimer);
+      this.#pollTimer = null;
+    }
+    if (!this.#shouldPoll()) return;
+
+    this.#pollTimer = setTimeout(() => {
+      this.#pollTimer = null;
+      // Queues on the same serialized chain as every other pass. If one is
+      // already running this simply runs after it — coalesced, never
+      // concurrent, and never dropped. The next tick is armed by that pass's
+      // own completion, so a slow pass cannot accumulate a backlog.
+      this.#reconcile({ background: true }).catch(() => undefined);
+    }, CONVERGENCE_POLL_MS);
+  }
+
+  // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
+  // [WHY: a tab that was hidden or offline has been running a timer the browser
+  //  was free to throttle to minutes, so the moment it becomes usable again the
+  //  cadence guarantee is already broken — the only honest repair is to check
+  //  immediately rather than wait out a stale interval. Registered once, in the
+  //  constructor, and removable via dispose() so a long-lived page cannot
+  //  accumulate listeners across reconnects.]
+  #installEnvironmentTriggers() {
+    const wake = (reason) => {
+      if (!this.#shouldPoll()) return;
+      if (reason === "visibilitychange" && globalThis.document && globalThis.document.visibilityState === "hidden") {
+        return;
+      }
+      this.#armPollTimer(); // reset the cadence so we do not double-fire
+      this.#reconcile({ background: true }).catch(() => undefined);
+    };
+
+    const bind = (target, type) => {
+      if (!target || typeof target.addEventListener !== "function") return;
+      const handler = () => wake(type);
+      target.addEventListener(type, handler);
+      this.#environmentListeners.push({ target, type, handler });
+    };
+
+    bind(globalThis.document, "visibilitychange");
+    bind(globalThis, "focus");
+    bind(globalThis, "online");
+  }
+
+  /** Releases every timer and listener this instance owns. */
+  dispose() {
+    this.#disposed = true;
+    if (this.#pollTimer) {
+      clearTimeout(this.#pollTimer);
+      this.#pollTimer = null;
+    }
+    if (this.#debounceTimer) {
+      clearTimeout(this.#debounceTimer);
+      this.#debounceTimer = null;
+    }
+    for (const { target, type, handler } of this.#environmentListeners) {
+      if (target && typeof target.removeEventListener === "function") target.removeEventListener(type, handler);
+    }
+    this.#environmentListeners = [];
   }
 
   // ---- Auto Sync debounce -------------------------------------------------
@@ -730,14 +866,23 @@ export class ProfileSync {
   // Serializes reconcile passes through one chain (same pattern as
   // ProfileStore's #saveQueue) so an auto-triggered pass can never overlap
   // a manual "Sync Now" or a conflict resolution against the same handle.
-  #reconcile() {
+  #reconcile(options = {}) {
     const run = () =>
-      this.#reconcileImpl().catch((error) => {
-        console.error("[PROFILE-SYNC] Sync attempt failed.", error);
-        this.#status = "offline";
-        this.#message = (error && error.message) || "Sync failed.";
-        this.#emit();
-      });
+      this.#reconcileImpl(options)
+        .catch((error) => {
+          console.error("[PROFILE-SYNC] Sync attempt failed.", error);
+          this.#status = "offline";
+          this.#message = (error && error.message) || "Sync failed.";
+          this.#emit();
+        })
+        // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
+        // [WHY: the single re-arm point, and deliberately after the catch — a
+        //  pass that FAILED must still schedule the next one, or one transient
+        //  Drive error would silently end convergence for the rest of the
+        //  session. This also means the cadence is measured from the end of the
+        //  previous pass, so a slow pass delays the next tick instead of
+        //  stacking one behind it.]
+        .then(() => this.#armPollTimer());
     this.#reconcileChain = this.#reconcileChain.then(run, run);
     return this.#reconcileChain;
   }
@@ -752,7 +897,7 @@ export class ProfileSync {
   //  write V2 either (its migration is unfinished). It reports a truthful
   //  status and waits for the user to retry activation — fail safe, surface
   //  recovery, never guess.]
-  async #reconcileImpl() {
+  async #reconcileImpl(options = {}) {
     await this.#activationReady;
 
     if (this.#mode === ACTIVATION_FAILED) {
@@ -763,7 +908,7 @@ export class ProfileSync {
       this.#emit();
       return;
     }
-    if (this.#mode === ACTIVATION_V2) return this.#reconcileV2();
+    if (this.#mode === ACTIVATION_V2) return this.#reconcileV2(options);
     return this.#reconcileV1();
   }
 
@@ -775,15 +920,27 @@ export class ProfileSync {
   //  ordinary outcome with a correct answer, not a question for the user. The
   //  Keep Local / Use Synced controls stay reachable only as explicit recovery
   //  (see resolveConflict), never from here.]
-  async #reconcileV2() {
+  async #reconcileV2({ background = false } = {}) {
     if (!this.#dirHandle) return;
 
-    this.#status = "syncing";
-    this.#emit();
+    // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
+    // [WHY: a background poll never announces "Syncing…". At a 3-second cadence
+    //  that transient state is the entire flicker problem — the status would
+    //  strobe Syncing/Connected forever while nothing was happening. A
+    //  user-initiated pass still shows it, because there the user asked and is
+    //  waiting for an answer.]
+    if (!background) {
+      this.#status = "syncing";
+      this.#emit();
+    }
 
     let result;
     try {
-      result = await runSyncV2Pass({ profileStore: this.#profile, dirHandle: this.#dirHandle });
+      result = await runSyncV2Pass({
+        profileStore: this.#profile,
+        dirHandle: this.#dirHandle,
+        state: this.#passState,
+      });
     } catch (error) {
       console.error("[SYNC-V2] Sync pass threw.", error);
       this.#status = "offline";
@@ -792,17 +949,33 @@ export class ProfileSync {
       return;
     }
 
+    const previousStatus = this.#status;
+    const previousSkipped = JSON.stringify((this.#lastPassInfo && this.#lastPassInfo.skippedPeers) || []);
     this.#lastPassInfo = {
       mergedPeers: result.mergedPeers || 0,
       skippedPeers: result.skippedPeers || [],
+      // Diagnostics: non-null while this device is waiting for its OWN
+      // just-published generation to become readable again, rather than
+      // rewriting it. See runSyncV2Pass.
+      ownGenerationSettling: result.ownGenerationSettling || null,
+      ownGenerationReason: result.ownGenerationReason || null,
+      // Diagnostics only — see getStatus(). Retained from the LAST pass so a
+      // console helper can report peers without running a pass of its own.
+      peers: result.peers || (this.#lastPassInfo ? this.#lastPassInfo.peers : []) || [],
     };
+    const skippedChanged = JSON.stringify(this.#lastPassInfo.skippedPeers) !== previousSkipped;
 
     switch (result.status) {
-      case "permission-needed":
+      case "permission-needed": {
+        // Re-entered on every poll while the fault persists, so it only
+        // re-renders when the state actually changes — same quietness rule the
+        // ok branch below follows.
+        const changed = previousStatus !== "permission-needed" || this.#message !== (result.message || null);
         this.#status = "permission-needed";
         this.#message = result.message || null;
-        this.#emit();
+        if (changed || !background) this.#emit();
         return;
+      }
 
       case "verify-failed":
         // Reuses Stage B's exact discipline: nothing accepted, nothing cleaned
@@ -825,7 +998,24 @@ export class ProfileSync {
         //  equals what it would publish). Every other outcome falls into a
         //  branch above. That is the whole of "do not claim Synced unless the
         //  pass was actually accepted".]
-        await this.#acceptV2Pass();
+        //
+        // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
+        // [WHY: `silent` covers the ordinary case — an idle background poll
+        //  that read every peer, agreed with all of them, and had nothing to
+        //  publish. Nothing observable changed, so nothing is re-rendered and
+        //  no metadata write is issued; at a 3-second cadence those would be
+        //  ~1200 pointless DOM renders and IndexedDB writes an hour. Anything a
+        //  user would actually notice — remote changes adopted, a publish, a
+        //  peer skipped, or coming back from a non-connected state — is not
+        //  silent.]
+        await this.#acceptV2Pass({
+          silent:
+            background &&
+            !result.published &&
+            !result.adopted &&
+            previousStatus === "connected" &&
+            skippedChanged === false,
+        });
         return;
 
       default:
@@ -1066,10 +1256,16 @@ export class ProfileSync {
   //  migrated FROM contained — read-only recovery material, per the cutover
   //  policy. This advances only what a V2 pass actually establishes: that a
   //  verified pass completed, and when.]
-  async #acceptV2Pass() {
+  async #acceptV2Pass({ silent = false } = {}) {
     this.#lastSyncAt = Date.now();
     this.#status = "connected";
     this.#message = null;
+
+    // A silent pass still advances #lastSyncAt in memory — the pass really did
+    // happen and getStatus() must not under-report it — but skips the metadata
+    // write and the render, neither of which anyone can observe a difference
+    // from when nothing changed.
+    if (silent) return;
 
     try {
       await updateSyncMeta({ lastSyncAt: this.#lastSyncAt });

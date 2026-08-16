@@ -41,6 +41,41 @@ export function generateDeviceId() {
   return `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// [PHASE-6-SYNC-V2]
+// [STAGE-E-HUMAN-DEVICE-LABEL]
+// [WHY: raw UUID device folders are technically precise but unusable for
+//  real-device debugging; human labels must remain display-only and never
+//  become identity. This function is deliberately COARSE — it answers "which
+//  of the machines on my desk is this?", not "which installation is this?".
+//  Two Chromebooks both reporting "Chromebook" is a correct outcome, not a
+//  collision, because nothing anywhere keys off this string: deviceId remains
+//  the sole identity, and it is generated independently (generateDeviceId
+//  above) from a UUID that has no relationship to the platform.
+//
+//  Detection order matters: Chrome OS and Android both contain "Linux" in
+//  their user-agent strings, so the specific platforms are tested before the
+//  generic one or every Chromebook would read as "Linux" — which is exactly
+//  the confusion this exists to remove.]
+export function detectDeviceLabel(userAgent = undefined) {
+  let ua = userAgent;
+  if (ua === undefined) {
+    try {
+      ua = typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent : "";
+    } catch {
+      ua = "";
+    }
+  }
+  if (typeof ua !== "string" || !ua) return "Unknown Device";
+
+  if (/CrOS/i.test(ua)) return "Chromebook";
+  if (/Android/i.test(ua)) return "Android";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
+  if (/Windows/i.test(ua)) return "Windows";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "macOS";
+  if (/Linux|X11/i.test(ua)) return "Linux";
+  return "Unknown Device";
+}
+
 export class SyncIdentity {
   #deviceId = null;
   #clock = null;
@@ -111,6 +146,16 @@ export class SyncIdentity {
   /** True when this identity could not be persisted and will not survive a reload. */
   get isEphemeral() {
     return this.#ephemeral;
+  }
+
+  /**
+   * Human-readable platform label for diagnostics ONLY — see detectDeviceLabel.
+   * Never persisted alongside deviceId and never consulted by anything that
+   * identifies, orders, or merges: recomputed fresh on every boot precisely so
+   * it cannot drift into looking like durable state.
+   */
+  get label() {
+    return detectDeviceLabel();
   }
 
   /**

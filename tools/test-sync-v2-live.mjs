@@ -57,6 +57,13 @@ function assertEqual(actual, expected, label) {
   );
 }
 
+// Every ProfileSync built by a test is disposed when that test ends. Since the
+// convergence scheduler landed, a live instance keeps a real 3s timer running —
+// and because installations here share one globalThis.indexedDB, a stray timer
+// firing during a LATER test would read whichever database happened to be
+// selected. Disposing keeps each test's result caused only by that test.
+const liveInstances = [];
+
 async function test(name, fn) {
   console.log(`\n${name}`);
   try {
@@ -66,6 +73,14 @@ async function test(name, fn) {
     failureDetail.push(`${name} — threw: ${error && error.stack}`);
     console.log(`  FAIL  threw: ${error && error.message}`);
     console.log(String(error && error.stack).split("\n").slice(1, 4).join("\n"));
+  } finally {
+    for (const sync of liveInstances.splice(0)) {
+      try {
+        sync.dispose();
+      } catch {
+        /* already gone */
+      }
+    }
   }
 }
 
@@ -85,6 +100,7 @@ async function makeInstallation(dirHandle, { connect = true } = {}) {
   await store.whenFactsSettled();
 
   const sync = new ProfileSync(store);
+  liveInstances.push(sync);
   if (connect && dirHandle) {
     await sync.connectNewFolder(dirHandle);
     await settle();
@@ -840,6 +856,7 @@ await test("15. an installation whose activation failed writes neither V1 nor V2
   await store.whenFactsSettled();
 
   const sync = new ProfileSync(store);
+  liveInstances.push(sync);
   await sync.connectNewFolder(dir.handle);
   await settle();
 
@@ -883,6 +900,7 @@ await test("16. a page reload on an activated installation boots straight back i
   await settle();
   await store2.whenFactsSettled();
   const sync2 = new ProfileSync(store2);
+  liveInstances.push(sync2);
   await sync2.init();
   await settle();
 
