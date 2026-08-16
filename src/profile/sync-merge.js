@@ -62,15 +62,19 @@ export function stableStringify(value) {
 }
 
 // [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
-// [WHY: "the newest explicit mutation for the same fact wins" has to mean
-//  newest to a HUMAN, across machines whose clocks disagree, without ever
-//  letting a skewed clock win permanently or starve a device. A pure Lamport
-//  counter converges but can invert what the user actually did last; a raw
-//  wall clock matches intent but lets a machine an hour fast dominate forever
-//  and a machine an hour slow never win. The hybrid takes wall-clock time as
-//  the floor and the highest stamp ever OBSERVED as the other floor, so a
-//  device that has seen a peer's future timestamp immediately issues stamps
-//  above it — self-correcting within one exchange, with no clock sync.]
+// [WHY: "the newest explicit mutation for the same fact wins" needs an
+//  ordering that is wall-clock-aligned, so it generally tracks real-world
+//  mutation time, while remaining monotonic and deterministic across devices
+//  whose clocks disagree — without ever letting a skewed clock win permanently
+//  or starve a device. A pure Lamport counter is deterministic but need not
+//  track real time at all; a raw wall clock tracks real time but lets a machine
+//  an hour fast dominate forever and a machine an hour slow never win. The
+//  hybrid takes wall-clock time as one floor and the highest stamp ever
+//  OBSERVED as the other, so a device that has seen a peer's future timestamp
+//  immediately issues stamps above it — self-correcting within one exchange,
+//  with no clock sync. Alignment is a tendency, not a guarantee: the resulting
+//  order is always deterministic and convergent, but under skew it is not
+//  guaranteed to match the true real-world order of two concurrent mutations.]
 export class HybridClock {
   #deviceId;
   #now;
