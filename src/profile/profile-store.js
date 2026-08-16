@@ -33,6 +33,25 @@ import {
 //  fingerprinted. takeSnapshot() is the single boundary that guarantee lives
 //  behind — see profile-snapshot.js.]
 import { takeSnapshot } from "./profile-snapshot.js";
+// [PHASE-6-SYNC-V2]
+// [STAGE-D1-LOCAL-FOUNDATION]
+// [WHY: every synchronized mutation must be recorded as a stamped fact in the
+//  SAME turn it changes the in-memory state, and persisted in the SAME row
+//  write — otherwise a value and the stamp that orders it can disagree, and the
+//  merge engine reasons from a state that never existed. ProfileStore is the
+//  only place every curation mutation already funnels through, which makes it
+//  the only place that guarantee can be made structural rather than
+//  remembered.]
+import * as Facts from "./sync-facts.js";
+import * as MergeEngine from "./sync-merge.js";
+import { SyncIdentity } from "./sync-device.js";
+import {
+  seedFactsFromProfileData,
+  diffFactsAgainstProfileData,
+  diffLocalStates,
+  findProjectionDrift,
+  localSeedStamp,
+} from "./sync-translate.js";
 
 // Bumped from 1 -> 2 for Multi-Profile Foundation (Phase 8.1): exported
 // profiles now also carry profileId/profileName/masterFolder. This is
@@ -42,6 +61,48 @@ import { takeSnapshot } from "./profile-snapshot.js";
 // today's app unchanged.
 const SCHEMA_VERSION = 2;
 const KIND = "gallery-profile";
+
+// [PHASE-6-SYNC-V2]
+// [STAGE-D1-LOCAL-FOUNDATION]
+// [WHY: the projection/facts invariant is checked on the ordinary mutation path,
+//  which is exactly where it is useful and exactly where it must not cost a
+//  production user anything. It is therefore gated to development the same way
+//  profile-snapshot.js gates deep freezing — deliberately a SEPARATE flag, since
+//  a maintainer may well want one without the other, and a shared switch would
+//  make disabling a slow check also silently disable the freeze guard.
+//  Detection is duplicated rather than shared for one reason only: importing the
+//  gate from profile-snapshot.js would make that module's meaning "development
+//  switches in general", and its header states plainly that it is the snapshot
+//  boundary and nothing else.]
+const FACT_CHECK_FLAG = "__BG_FACT_CHECK__";
+let factCheckEnabled = null;
+
+function detectFactCheckDefault() {
+  try {
+    if (typeof globalThis[FACT_CHECK_FLAG] === "boolean") return globalThis[FACT_CHECK_FLAG];
+  } catch {
+    // Reading an exotic global can throw in some sandboxed contexts.
+  }
+
+  try {
+    const location = globalThis.location;
+    if (!location) return false; // non-browser (the Node harness) — opt in explicitly
+    const host = location.hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "";
+  } catch {
+    return false;
+  }
+}
+
+export function isFactCheckEnabled() {
+  if (factCheckEnabled === null) factCheckEnabled = detectFactCheckDefault();
+  return factCheckEnabled;
+}
+
+/** Forces the development invariant check on or off. Production never calls this. */
+export function setFactCheckEnabled(enabled) {
+  factCheckEnabled = Boolean(enabled);
+}
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -92,12 +153,253 @@ export class ProfileStore {
                    // the Profile Selector phase that follows this one.
   #ready;
 
-  constructor() {
+  // ---- Sync V2 facts (Phase 6, Stage D1) --------------------------------
+  //
+  // #facts is the ACTIVE profile's stamped-fact slice — the synchronized truth
+  // for this profile, held alongside (not instead of) #recordsByPath/#tags.
+  // Those remain the local working state and, critically, the carrier for every
+  // local-only field (tagActivity, favouritedAt bookkeeping, unknown fields
+  // from an imported profile) which has no representation in the fact model and
+  // must never be rewritten by it.
+  #facts = { items: {}, tags: {} };
+  #identity;
+  #factQueue = Promise.resolve();
+  // How many mutations have been applied to local state but not yet stamped.
+  // Used by the development invariant check AND, together with #pendingSaves,
+  // by #drainPendingWrites to know when a profile switch may safely proceed.
+  #pendingFacts = 0;
+  // How many row writes are queued but not yet committed. See #drainPendingWrites.
+  #pendingSaves = 0;
+
+  constructor({ identity } = {}) {
     // Loading is intentionally started by the store itself. Consumers keep
     // using the synchronous ProfileStore API; once saved records arrive, the
     // normal subscription mechanism refreshes any loaded media.
+    this.#identity = identity || new SyncIdentity();
     this.#ready = this.#resolveActiveProfile();
     this.#loadSavedRecords();
+  }
+
+  /** This installation's stable device identity. Null until it resolves. */
+  getDeviceId() {
+    return this.#identity.deviceId;
+  }
+
+  /**
+   * Resolves once every mutation issued so far has been stamped and recorded.
+   * Fact recording is queued behind the clock being ready (see #recordFact), so
+   * anything reading facts must wait on this rather than assuming the queue has
+   * drained.
+   */
+  async whenFactsSettled() {
+    await this.#ready;
+    await this.#identity.ready;
+    await this.#factQueue;
+  }
+
+  /** The active profile's fact slice, detached. */
+  getFacts() {
+    return takeSnapshot(this.#facts);
+  }
+
+  /**
+   * Every known profile's facts as a Sync V2 replica. The active profile comes
+   * from memory (always at least as fresh as IndexedDB); the rest are read from
+   * their own rows. Stage D2's transport publishes this.
+   */
+  async getFullReplica() {
+    await this.whenFactsSettled();
+
+    const replica = Facts.emptyReplica();
+    for (const entry of this.#profiles) {
+      if (entry.id === this.#profileId) {
+        replica.profiles[entry.id] = this.#facts;
+        continue;
+      }
+      try {
+        const data = await loadProfileData(entry.id);
+        if (data.facts) replica.profiles[entry.id] = data.facts;
+      } catch (error) {
+        console.warn(`[SYNC-V2] Could not read facts for profile "${entry.id}".`, error);
+      }
+    }
+    return takeSnapshot(replica);
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D1-LOCAL-FOUNDATION]
+  // [WHY: this is the observe-before-tick gate, made structural. A stamp issued
+  //  before the persisted clock floor is restored can land BELOW facts this
+  //  device already recorded, and sync-facts.js then correctly discards the
+  //  mutation — the user's click does nothing, silently, with no error anywhere.
+  //  Queueing every fact behind identity.ready makes that impossible to get
+  //  wrong at a call site. The UI path stays synchronous (items/tags and #emit
+  //  already happened); only the stamping is deferred, by milliseconds, and
+  //  #persist waits on this queue so a saved row is never missing the fact for
+  //  a value it contains.]
+  //
+  // `mutate` is (replica, profileId, stamp) => replica, i.e. any sync-facts.js
+  // builder. Facts are held as a one-profile slice and wrapped into a replica
+  // here so those builders can be used unmodified.
+  #recordFact(mutate) {
+    // Captured synchronously, for the same reason #persist captures its target
+    // profile id: this fact belongs to the profile that was active when the user
+    // acted, never to whatever happens to be active by the time the queue
+    // drains. Null means the mutation beat #ready — the only case where reading
+    // the id later is correct, since no switch can have happened yet.
+    const requestedProfileId = this.#profileId;
+    this.#pendingFacts += 1;
+
+    this.#factQueue = this.#factQueue
+      .catch(() => undefined)
+      // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+      // [WHY BOTH: #ready as well as the clock. A mutation can beat the registry
+      //  read — a favourite clicked the instant the page is interactive — and
+      //  until it resolves there is no Profile ID to record the fact under. The
+      //  local record survives that race already (#changedBeforeLoad); without
+      //  this wait the FACT does not, because the drain finds a null id and
+      //  drops it. The value would then be saved with no stamp ordering it, so
+      //  the click works locally and never leaves the machine.
+      //
+      //  Both are caught rather than awaited bare so the body always runs: it
+      //  owns the #pendingFacts decrement, and a stranded counter would silently
+      //  disable the development invariant check for the rest of the session.]
+      .then(() => this.#ready.catch(() => undefined))
+      .then(() => this.#identity.ready.catch(() => undefined))
+      .then(() => {
+        const profileId = requestedProfileId || this.#profileId;
+        if (!profileId) return undefined;
+
+        const stamp = this.#identity.tick();
+
+        if (profileId === this.#profileId) {
+          const replica = { schemaVersion: 2, profiles: { [profileId]: this.#facts }, associations: {} };
+          const next = mutate(replica, profileId, stamp);
+          this.#facts = next.profiles[profileId];
+          this.#reportFactDrift("after recording a mutation");
+          return undefined;
+        }
+
+        // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+        // [WHY: with #drainPendingWrites now counter-driven (see below) this
+        //  branch should be unreachable — #profileId cannot change while a fact
+        //  is still pending. It is kept as a hard backstop rather than an
+        //  assumption: if it IS somehow reached, the fact must never be applied
+        //  to the (already reused) in-memory #facts slice, which by now belongs
+        //  to a different profile, and it must never be dropped. It is instead
+        //  applied directly to the ORIGINAL profile's PERSISTED facts — read,
+        //  merged, written back — so the mutation/fact pair can never split: the
+        //  value already landed on this profile's row (see #persist, which
+        //  captures its target profileId the same way), and this guarantees the
+        //  fact lands there too.]
+        return this.#applyFactToStoredProfile(profileId, mutate, stamp);
+      })
+      .catch((error) => {
+        // Never let fact recording break curation — the same tolerance
+        // #persist already applies to a failed save.
+        console.warn("[SYNC-V2] Could not record a sync fact.", error);
+      })
+      .then(() => {
+        this.#pendingFacts -= 1;
+      });
+  }
+
+  // Backstop for #recordFact's stale-profile branch — see the WHY there. Reads
+  // the target profile's OWN persisted facts (never the active profile's
+  // in-memory slice), merges the mutation in, and writes it back under the same
+  // profileId. Correct regardless of what #facts/#profileId currently hold.
+  async #applyFactToStoredProfile(profileId, mutate, stamp) {
+    const { items, tags, facts: storedFacts } = await loadProfileData(profileId);
+    const current = storedFacts || { items: {}, tags: {} };
+    const replica = { schemaVersion: 2, profiles: { [profileId]: current }, associations: {} };
+    const next = mutate(replica, profileId, stamp);
+    await saveProfileData(profileId, { items, tags, facts: next.profiles[profileId] });
+    console.warn(
+      `[SYNC-V2] Recorded a fact for profile "${profileId}" via the stale-profile backstop — ` +
+        "the active profile changed while it was still queued."
+    );
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D1-LOCAL-FOUNDATION]
+  // [WHY: everything the outgoing profile has in flight must be BOTH stamped and
+  //  written before its fact slice is replaced. Draining only the fact queue is
+  //  not enough and fails silently: the fact lands in #facts, the switch then
+  //  discards #facts, and the pending save — which by then sees a different
+  //  active profile — writes the row WITHOUT it. The user's last action before
+  //  switching profiles simply disappears, with the value saved and the fact
+  //  gone, which is the worst of the two possible losses because the row still
+  //  looks complete.
+  //
+  //  COUNTER-DRIVEN, not a fixed pass count: a fixed count is provably
+  //  insufficient — a fact's own drain can synchronously trigger another
+  //  mutation (e.g. from code chained off it), extending the chain past
+  //  whatever number of passes was chosen. #pendingFacts/#pendingSaves are
+  //  incremented synchronously at the moment a mutation is ISSUED (before any
+  //  await), so the loop cannot exit while genuinely new work keeps arriving,
+  //  and #profileId is not reassigned until this returns — so no fact can ever
+  //  be queued against a profile that has already stopped being active. #recordFact's
+  //  stale-profile branch above exists purely as defence in depth for a
+  //  discipline violation elsewhere, not because this loop can legitimately miss
+  //  anything.]
+  async #drainPendingWrites() {
+    while (this.#pendingFacts > 0 || this.#pendingSaves > 0) {
+      await this.#factQueue;
+      await this.#saveQueue;
+    }
+  }
+
+  /**
+   * Development-only diagnostic: reports (never repairs) any disagreement
+   * between this profile's facts and its local records. See findProjectionDrift
+   * in sync-translate.js for why this is report-only.
+   *
+   * Also callable directly — checkFactInvariants() below — so a test or a
+   * console session can assert the invariant regardless of the gate.
+   */
+  #reportFactDrift(context) {
+    if (!isFactCheckEnabled()) return;
+
+    // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+    // [WHY: local state is updated synchronously and stamped asynchronously, so
+    //  during a burst — Presentation Quick Tagging is exactly this — local
+    //  legitimately runs ahead of the facts. Comparing them mid-burst reports
+    //  every not-yet-stamped mutation as missing, which is noise, not drift. The
+    //  two representations are only required to agree once nothing is in flight,
+    //  so that is the only moment worth checking.]
+    if (this.#pendingFacts > 0) return;
+
+    const problems = this.checkFactInvariants();
+    if (!problems.length) return;
+    console.warn(
+      `[SYNC-V2] Facts and local state disagree ${context} (profile ${this.#profileId}):\n  ` +
+        problems.join("\n  ")
+    );
+  }
+
+  // Same check, deferred behind everything currently queued. Load and switch run
+  // OUTSIDE the fact queue, so checking inline there would report a mutation
+  // that is stamped but not yet drained as missing — a false alarm, and a noisy
+  // one, which is the fastest way to get a useful diagnostic switched off.
+  #queueFactDriftReport(context) {
+    if (!isFactCheckEnabled()) return;
+    this.#factQueue = this.#factQueue.catch(() => undefined).then(() => this.#reportFactDrift(context));
+  }
+
+  /**
+   * Returns every way this profile's facts and local records currently
+   * disagree; empty means they are in step. Diagnostic only — calling it never
+   * changes any state.
+   */
+  checkFactInvariants() {
+    return findProjectionDrift(this.#facts, {
+      name: this.#profileName,
+      // Deliberately the RAW records, not #projectItems(): the projection hides
+      // assignments to tombstoned tags, which the check would then misread as
+      // local state that has gone missing.
+      items: this.#snapshotItems(),
+      tags: this.#tags,
+    });
   }
 
   // Determines which profile is active, creating one if none exists yet
@@ -193,6 +495,11 @@ export class ProfileStore {
     this.#profileName = trimmed;
     this.#emit();
     this.#persistProfileMeta();
+    this.#recordFact((replica, profileId, stamp) => Facts.setProfileName(replica, profileId, trimmed, stamp));
+    // The name lives in the registry, which #persistProfileMeta writes; the FACT
+    // lives in the profile row, which only #persist writes. Both must happen or
+    // a reload would show one and publish the other.
+    this.#persist();
   }
 
   // Master/Top Folder metadata (Phase 8.1): purely descriptive at this
@@ -291,6 +598,16 @@ export class ProfileStore {
       console.warn("Could not save the active profile pointer.", error);
     }
 
+    // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+    // [WHY: every fact already stamped for the OUTGOING profile must land in the
+    //  outgoing profile's slice before that slice is replaced. Without this
+    //  drain, a favourite the user set moments before switching resolves against
+    //  whichever slice happens to be loaded when the queue runs — the fact is
+    //  either lost or written into the wrong Gallery, and merge then propagates
+    //  the mistake to every device. Placed immediately before the reset, with no
+    //  await between, so nothing can queue into the gap.]
+    await this.#drainPendingWrites();
+
     // Full isolation reset — nothing from the outgoing profile carries
     // over. Same fresh state a brand-new ProfileStore would start with.
     this.#recordsByPath = new Map();
@@ -298,13 +615,16 @@ export class ProfileStore {
     this.#changedBeforeLoad = new Set();
     this.#tagIdsChangedBeforeLoad = new Set();
     this.#replaceBeforeLoad = false;
+    this.#facts = { items: {}, tags: {} };
 
     this.#profileId = target.id;
     this.#profileName = target.name || DEFAULT_PROFILE_NAME;
     this.#masterFolder = target.masterFolder || null;
 
+    let incomingFacts = null;
     try {
-      const { items, tags } = await loadProfileData(this.#profileId);
+      const { items, tags, facts } = await loadProfileData(this.#profileId);
+      incomingFacts = facts;
 
       for (const [path, record] of Object.entries(items)) {
         if (typeof path !== "string" || !path || !isPlainObject(record)) continue;
@@ -318,6 +638,10 @@ export class ProfileStore {
     } catch (error) {
       console.warn("Could not load the newly-active profile's data.", error);
     }
+
+    // Adopted (or seeded) AFTER the records above are in place: seeding reads
+    // this profile's items/tags, and adoption diffs against them.
+    await this.#adoptFacts(incomingFacts);
 
     this.#emit();
     return true;
@@ -388,6 +712,13 @@ export class ProfileStore {
       // same-id guard doesn't treat nextActiveId as a no-op; the registry
       // write above already persisted nextActiveId as active, so
       // switchProfile's own registry write is a harmless repeat.
+      //
+      // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+      // [WHY: drained BEFORE #profileId is cleared. #recordFact refuses to apply
+      //  a fact whose profile is no longer active, so a fact still queued when
+      //  the id is nulled would be dropped rather than recorded against the
+      //  profile the user was actually curating.]
+      await this.#drainPendingWrites();
       this.#profileId = null;
       await this.switchProfile(nextActiveId);
     } else {
@@ -441,7 +772,10 @@ export class ProfileStore {
           id: entry.id,
           name: this.#profileName,
           masterFolder: this.#masterFolder,
-          items: this.#snapshotItems(),
+          // Projected, not raw: this collection is serialized to the sync folder
+          // and fingerprinted, so it must carry what a reader can act on. See
+          // #projectItems.
+          items: this.#projectItems(),
           tags: this.#tags.map((tag) => ({ ...tag })),
         });
         continue;
@@ -524,6 +858,24 @@ export class ProfileStore {
         await saveProfileData(incoming.id, {
           items: isPlainObject(incoming.items) ? incoming.items : {},
           tags: Array.isArray(incoming.tags) ? incoming.tags : [],
+          // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+          // [WHY: an explicit null CLEARS the stored facts (omitting the field
+          //  would preserve them — see saveProfileData). This is the one place
+          //  that is correct, and it is required for correctness rather than
+          //  tidiness: this method is Sync V1's wholesale collection
+          //  replacement, so the facts describing the pre-replacement state are
+          //  no longer true of anything. Left in place they would be re-applied
+          //  by #adoptFacts on the very next load and silently revert the
+          //  collection the user just adopted. Clearing forces a fresh seed from
+          //  the adopted data, at the seed floor, which every later real
+          //  mutation outranks.
+          //
+          //  This is also the boundary the approved CONTROLLED HARD CUTOVER
+          //  policy describes: while V1 is still the writing path, V1 adoption
+          //  is authoritative and V2 facts are re-derived from its result. When
+          //  an installation is cut over to V2 (Stage D2), this call site is
+          //  replaced by a merge, not amended.]
+          facts: null,
         });
       } catch (error) {
         console.warn(`Could not save synced profile "${incoming.id}".`, error);
@@ -553,10 +905,14 @@ export class ProfileStore {
     }
 
     this.#profiles = profiles;
+    // Drained before the id is cleared, for the same reason as deleteProfile:
+    // #recordFact will not apply a fact to a profile that is no longer active.
+    await this.#drainPendingWrites();
     // Forced to null (rather than compared against activeId) so the reset
     // below always runs even when activeId === the currently-active id —
     // the ACTIVE profile's own item/tag content may itself be what changed.
     this.#profileId = null;
+    this.#facts = { items: {}, tags: {} };
     await this.switchProfile(activeId);
     return true;
   }
@@ -598,6 +954,39 @@ export class ProfileStore {
     return items;
   }
 
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D1-LOCAL-FOUNDATION]
+  // [WHY: deleting a tag now tombstones it and deliberately leaves the per-item
+  //  assignments underneath, so an explicit Restore brings the user's tagging
+  //  back instead of silently losing it (Stage C semantics). Those retained
+  //  assignments are internal bookkeeping, not user-visible state: no live tag
+  //  resolves the id, so exposing it would mean an export carrying ids that
+  //  resolve to nothing, and item-tag reads reporting tags the user cannot see.
+  //  Filtering therefore happens HERE, at the projection/export boundary only —
+  //  never on the storage path (#persist uses #snapshotItems), because
+  //  projecting into storage is what would destroy the facts Restore needs.]
+  #projectItems() {
+    const liveTagIds = new Set(this.#tags.map((tag) => tag.id));
+    const items = {};
+
+    for (const [path, record] of this.#recordsByPath.entries()) {
+      const projected = { ...record };
+
+      if (Array.isArray(record.tags)) {
+        const visible = record.tags.filter((tagId) => liveTagIds.has(tagId));
+        if (visible.length !== record.tags.length) projected.tags = visible;
+      }
+
+      // A record that exists ONLY to hold assignments to deleted tags carries
+      // nothing a reader can act on — same rule #setRecord already applies to a
+      // record whose every field is default.
+      if (isEmptyRecord(projected)) continue;
+      items[path] = projected;
+    }
+
+    return items;
+  }
+
   #persist() {
     // [PHASE-6-SYNC-V2][STAGE-B-SNAPSHOT-INTEGRITY]
     // [WHY: this snapshot is built synchronously but written asynchronously,
@@ -618,6 +1007,10 @@ export class ProfileStore {
     // queued, a lazy read would misfile this snapshot under the NEW
     // profile's id instead of the one it actually belongs to.
     const targetProfileId = this.#profileId;
+    // See #drainPendingWrites — counted the same way #pendingFacts is, so a
+    // profile switch cannot proceed while a write for the outgoing profile is
+    // still queued.
+    this.#pendingSaves += 1;
 
     // Serializing writes prevents an older save from finishing after a newer
     // favorite toggle and overwriting it in the database. Also waits on
@@ -626,14 +1019,29 @@ export class ProfileStore {
     this.#saveQueue = this.#saveQueue
       .catch(() => undefined)
       .then(() => this.#ready)
+      // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+      // [WHY: waiting on the fact queue means the row written below always
+      //  contains the facts for every mutation that preceded it. Values are
+      //  snapshotted at mutation time (Stage B) while facts are read at drain
+      //  time — deliberately different, because a value must record what the
+      //  user did at that instant, whereas facts are cumulative and monotone,
+      //  so the freshest set is always the correct one to store.]
+      .then(() => this.#factQueue)
       .then(() => {
         const profileId = targetProfileId || this.#profileId;
         if (!profileId) return;
-        return saveProfileData(profileId, snapshot);
+        // Facts are only supplied for the profile still active; a save queued
+        // before a profile switch passes undefined, which saveProfileData
+        // treats as "preserve what is stored" rather than "erase".
+        const facts = profileId === this.#profileId ? takeSnapshot(this.#facts) : undefined;
+        return saveProfileData(profileId, { ...snapshot, facts });
       })
       .catch((error) => {
         // Persistence must never make the in-memory profile unusable.
         console.warn("Could not save gallery profile.", error);
+      })
+      .then(() => {
+        this.#pendingSaves -= 1;
       });
   }
 
@@ -642,7 +1050,7 @@ export class ProfileStore {
       await this.#ready;
       if (!this.#profileId) return;
 
-      const { items, tags } = await loadProfileData(this.#profileId);
+      const { items, tags, facts } = await loadProfileData(this.#profileId);
 
       if (!this.#replaceBeforeLoad) {
         for (const [path, record] of Object.entries(items)) {
@@ -672,6 +1080,8 @@ export class ProfileStore {
         }
       }
 
+      await this.#adoptFacts(facts);
+
       this.#emit();
       this.#persist();
     } catch (error) {
@@ -679,6 +1089,136 @@ export class ProfileStore {
       // work for the current session if persistence is unavailable.
       console.warn("Could not load gallery profile.", error);
     }
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D1-LOCAL-FOUNDATION]
+  // [WHY: a profile arrives in exactly one of two states, and confusing them is
+  //  destructive. `null` facts means this profile predates Sync V2 and must be
+  //  seeded ONCE from its existing curation; stored facts mean it is already
+  //  under the fact model and must be adopted, never re-seeded — re-seeding
+  //  would re-stamp everything at the floor and throw away the real ordering
+  //  information the profile had earned. Seeding is also the moment the clock
+  //  floor is restored from what is already stored, so no stamp issued
+  //  afterwards can collide with or fall beneath the profile's own history.]
+  async #adoptFacts(storedFacts) {
+    // Awaited FIRST, so everything after it runs synchronously: the read of
+    // this.#facts, the merge, and the assignment must be one uninterrupted step
+    // or a fact draining between them would be overwritten.
+    await this.#identity.ready;
+
+    const profileId = this.#profileId;
+    if (!profileId) return;
+
+    if (storedFacts) {
+      // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+      // [WHY: MERGED into whatever is already held, never assigned over it. A
+      //  mutation can legitimately be stamped while this load is in flight — a
+      //  favourite clicked during a profile switch, or before the initial read
+      //  resolves — and assigning would discard it with no trace. Merge is the
+      //  right operation rather than a workaround: it is commutative and
+      //  idempotent, so "what was stored" and "what just happened" combine to
+      //  the same result in either order. In the ordinary case the held slice is
+      //  empty and this is exactly adoption.]
+      this.#facts = MergeEngine.mergeProfileFacts(this.#facts, storedFacts);
+      this.#identity.observeReplica({ profiles: { [profileId]: this.#facts }, associations: {} });
+
+      // Facts are authoritative for everything they describe, so any drift
+      // between them and the stored records self-heals here on every load.
+      if (this.#applyFactsToLocal(this.#facts)) this.#persist();
+      this.#queueFactDriftReport("after adopting stored facts");
+      return;
+    }
+
+    const seeded = seedFactsFromProfileData(
+      {
+        profileId,
+        name: this.#profileName,
+        items: this.#snapshotItems(),
+        tags: this.#tags,
+      },
+      localSeedStamp(this.#identity.deviceId)
+    );
+    // Same reasoning as above, and it matters more here: a seed stamp is the
+    // lowest in the system, so a real mutation merged against it always wins.
+    this.#facts = MergeEngine.mergeProfileFacts(this.#facts, seeded);
+    this.#persist();
+    this.#queueFactDriftReport("after seeding facts from local state");
+  }
+
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D1-LOCAL-FOUNDATION]
+  // [WHY: applies ONLY the fields that actually differ. Sync V1 adopted state
+  //  by replacing whole records, which silently took every local-only field on
+  //  them along too. Writing field by field is what lets tagActivity, an
+  //  unknown field from an imported profile, and a future schema addition all
+  //  survive a sync untouched — the record is only rewritten where a fact says
+  //  it must be. Returns whether anything changed so callers can avoid a
+  //  pointless emit/persist.]
+  #applyFactsToLocal(facts) {
+    const diff = diffFactsAgainstProfileData(facts, {
+      name: this.#profileName,
+      items: this.#snapshotItems(),
+      tags: this.#tags,
+    });
+
+    let changed = false;
+
+    if (diff.profileName !== null) {
+      this.#profileName = diff.profileName;
+      changed = true;
+    }
+
+    for (const tag of diff.tags.add) {
+      this.#tags.push({ id: tag.id, name: tag.name });
+      changed = true;
+    }
+    for (const tag of diff.tags.rename) {
+      const existing = this.#tags.find((candidate) => candidate.id === tag.id);
+      if (existing) {
+        existing.name = tag.name;
+        changed = true;
+      }
+    }
+    for (const tagId of diff.tags.remove) {
+      const index = this.#tags.findIndex((candidate) => candidate.id === tagId);
+      if (index >= 0) {
+        // Only the vocabulary entry goes. Per-item assignments stay on their
+        // records so an explicit restore brings them back (Stage C semantics);
+        // while the tag is tombstoned nothing can resolve the id to a name, so
+        // they are invisible.
+        this.#tags.splice(index, 1);
+        changed = true;
+      }
+    }
+
+    for (const item of diff.items) {
+      const existing = this.#getRecord(item.path) || {};
+      const record = { ...existing };
+
+      if ("favorite" in item) {
+        record.favorite = item.favorite;
+        if (item.favorite && item.favoritedAt !== null && item.favoritedAt !== undefined) {
+          record.favoritedAt = item.favoritedAt;
+        } else {
+          delete record.favoritedAt;
+        }
+      }
+      if ("hidden" in item) record.hidden = item.hidden;
+
+      if (item.addTags.length || item.removeTags.length) {
+        const tagIds = new Set(Array.isArray(existing.tags) ? existing.tags : []);
+        for (const tagId of item.addTags) tagIds.add(tagId);
+        for (const tagId of item.removeTags) tagIds.delete(tagId);
+        record.tags = [...tagIds];
+      }
+
+      this.#setRecord(item.path, record);
+      this.#changedBeforeLoad.add(item.path);
+      changed = true;
+    }
+
+    return changed;
   }
 
   // ---- Favorites (Phase 1) -------------------------------------------
@@ -715,6 +1255,13 @@ export class ProfileStore {
     this.#setRecord(relativePath, record);
     this.#changedBeforeLoad.add(relativePath);
     this.#emit();
+    // `at` is captured from the record written above, not re-read from
+    // Date.now() when the queue drains: the fact must carry the instant the user
+    // acted, which is what makes favourite ordering agree across devices.
+    const at = nextValue ? record.favoritedAt : null;
+    this.#recordFact((replica, profileId, stamp) =>
+      Facts.setFavorite(replica, profileId, relativePath, nextValue, stamp, { at })
+    );
     this.#persist();
   }
 
@@ -738,9 +1285,13 @@ export class ProfileStore {
     if (!relativePath) return;
 
     const existing = this.#getRecord(relativePath) || {};
-    this.#setRecord(relativePath, { ...existing, hidden: Boolean(value) });
+    const nextValue = Boolean(value);
+    this.#setRecord(relativePath, { ...existing, hidden: nextValue });
     this.#changedBeforeLoad.add(relativePath);
     this.#emit();
+    this.#recordFact((replica, profileId, stamp) =>
+      Facts.setHidden(replica, profileId, relativePath, nextValue, stamp)
+    );
     this.#persist();
   }
 
@@ -871,6 +1422,7 @@ export class ProfileStore {
     this.#tags.push(tag);
     this.#tagIdsChangedBeforeLoad.add(tag.id);
     this.#emit();
+    this.#recordFact((replica, profileId, stamp) => Facts.createTag(replica, profileId, tag.id, trimmed, stamp));
     this.#persist();
     return { ...tag };
   }
@@ -886,10 +1438,22 @@ export class ProfileStore {
     tag.name = trimmed;
     this.#tagIdsChangedBeforeLoad.add(id);
     this.#emit();
+    this.#recordFact((replica, profileId, stamp) => Facts.renameTag(replica, profileId, id, trimmed, stamp));
     this.#persist();
     return true;
   }
 
+  // [PHASE-6-SYNC-V2]
+  // [STAGE-D1-LOCAL-FOUNDATION]
+  // [WHY: this used to STRIP the deleted tag from every record that carried it.
+  //  That made deletion destructive and irreversible — the assignments were
+  //  gone, so a Restore could bring the tag back but never the tagging work, and
+  //  across devices a delete arriving before a peer's tagging would erase it
+  //  with nothing to replay. Deletion is now exactly one tombstone fact and the
+  //  assignments stay underneath it, which is what Stage C's restore semantics
+  //  require. The assignments are hidden rather than deleted: every read that
+  //  faces a user or a file goes through #projectItems/getItemTags, which report
+  //  only tags that currently exist.]
   deleteTag(id) {
     const index = this.#tags.findIndex((t) => t.id === id);
     if (index === -1) return false;
@@ -897,17 +1461,8 @@ export class ProfileStore {
     this.#tags.splice(index, 1);
     this.#tagIdsChangedBeforeLoad.add(id);
 
-    // Un-assign the deleted tag from anything it was applied to (Phase
-    // 6.2). Without this, every item that had it would carry a dangling id
-    // forever — one that no longer resolves to a name anywhere, including
-    // in exported JSON.
-    for (const [path, record] of this.#recordsByPath.entries()) {
-      if (!Array.isArray(record.tags) || !record.tags.includes(id)) continue;
-      this.#setRecord(path, { ...record, tags: record.tags.filter((tagId) => tagId !== id) });
-      this.#changedBeforeLoad.add(path);
-    }
-
     this.#emit();
+    this.#recordFact((replica, profileId, stamp) => Facts.deleteTag(replica, profileId, id, stamp));
     this.#persist();
     return true;
   }
@@ -920,9 +1475,17 @@ export class ProfileStore {
   // of tag ids — so it persists, exports, and imports for free via the
   // exact same machinery those fields already use.
 
+  // Reports only assignments to tags that currently EXIST. An assignment to a
+  // tombstoned tag is retained on the record (so Restore can bring it back) but
+  // is not user-visible state — nothing resolves the id to a name, so reporting
+  // it here would make item.userTags and the tag chips disagree. See
+  // #projectItems for the full reasoning.
   getItemTags(relativePath) {
     const record = this.#getRecord(relativePath);
-    return record && Array.isArray(record.tags) ? [...record.tags] : [];
+    if (!record || !Array.isArray(record.tags)) return [];
+
+    const liveTagIds = new Set(this.#tags.map((tag) => tag.id));
+    return record.tags.filter((tagId) => liveTagIds.has(tagId));
   }
 
   hasItemTag(relativePath, tagId) {
@@ -942,6 +1505,9 @@ export class ProfileStore {
     this.#setRecord(relativePath, { ...existing, tags: nextTags });
     this.#changedBeforeLoad.add(relativePath);
     this.#emit();
+    this.#recordFact((replica, profileId, stamp) =>
+      Facts.setItemTag(replica, profileId, relativePath, tagId, nextValue, stamp)
+    );
     this.#persist();
   }
 
@@ -971,10 +1537,9 @@ export class ProfileStore {
   //  "no live Profile reference leaves this class" a rule with no exceptions
   //  to remember.]
   toJSON() {
-    const items = {};
-    for (const [path, record] of this.#recordsByPath.entries()) {
-      items[path] = { ...record };
-    }
+    // Projected, not raw — an export must never contain a tag id that resolves
+    // to no tag. See #projectItems.
+    const items = this.#projectItems();
 
     return takeSnapshot({
       schemaVersion: SCHEMA_VERSION,
@@ -1032,6 +1597,14 @@ export class ProfileStore {
 
     const knownSet = skipMissingFiles ? new Set(knownRelativePaths) : null;
 
+    // Captured before ANY mutation below, in both modes — see diffLocalStates
+    // in sync-translate.js for why comparing this to the state once import has
+    // finished is what makes "no opinion" vs. "explicit removal" fall out
+    // automatically from each mode's existing, already-approved semantics
+    // rather than needing separate handling here.
+    const beforeItems = this.#snapshotItems();
+    const beforeTags = this.#tags.map((tag) => ({ ...tag }));
+
     if (mode === "replace") {
       this.#recordsByPath.clear();
       this.#tags = [];
@@ -1079,8 +1652,61 @@ export class ProfileStore {
       incomingTags.forEach((tag) => this.#tagIdsChangedBeforeLoad.add(tag.id));
     }
 
+    // [PHASE-6-SYNC-V2]
+    // [STAGE-D1-LOCAL-FOUNDATION]
+    // [WHY: imports must participate in Sync V2 facts, same as any other
+    //  mutation, or curation restored/changed via import would silently fail to
+    //  propagate. The diff runs against the FINISHED local state (after both
+    //  the item loop and the tag loop above), not incrementally per field,
+    //  because replace mode's tag removals are only knowable once the whole
+    //  tag list has been rebuilt.]
+    this.#stampImportDiff({ items: beforeItems, tags: beforeTags }, { items: this.#snapshotItems(), tags: this.#tags });
+
     this.#emit();
     this.#persist();
     return { applied, skipped, mode };
+  }
+
+  // See importJSON. One #recordFact call per changed field, so each gets its
+  // own stamp — identical to how a UI click on a single field would be
+  // recorded, just issued in a batch here instead of one at a time.
+  #stampImportDiff(before, after) {
+    const diff = diffLocalStates(before, after);
+
+    for (const tag of diff.tags.add) {
+      this.#recordFact((replica, profileId, stamp) => Facts.createTag(replica, profileId, tag.id, tag.name, stamp));
+    }
+    for (const tag of diff.tags.rename) {
+      this.#recordFact((replica, profileId, stamp) => Facts.renameTag(replica, profileId, tag.id, tag.name, stamp));
+    }
+    for (const tagId of diff.tags.remove) {
+      this.#recordFact((replica, profileId, stamp) => Facts.deleteTag(replica, profileId, tagId, stamp));
+    }
+
+    for (const item of diff.items) {
+      if ("favorite" in item) {
+        const at = item.favoritedAt;
+        this.#recordFact((replica, profileId, stamp) =>
+          Facts.setFavorite(replica, profileId, item.path, item.favorite, stamp, {
+            at: Number.isFinite(at) ? at : undefined,
+          })
+        );
+      }
+      if ("hidden" in item) {
+        this.#recordFact((replica, profileId, stamp) =>
+          Facts.setHidden(replica, profileId, item.path, item.hidden, stamp)
+        );
+      }
+      for (const tagId of item.addTags) {
+        this.#recordFact((replica, profileId, stamp) =>
+          Facts.setItemTag(replica, profileId, item.path, tagId, true, stamp)
+        );
+      }
+      for (const tagId of item.removeTags) {
+        this.#recordFact((replica, profileId, stamp) =>
+          Facts.setItemTag(replica, profileId, item.path, tagId, false, stamp)
+        );
+      }
+    }
   }
 }

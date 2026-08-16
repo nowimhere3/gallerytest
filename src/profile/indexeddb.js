@@ -146,6 +146,14 @@ export async function loadProfileData(profileId) {
     return {
       items: result && result.items && typeof result.items === "object" ? result.items : {},
       tags: result && Array.isArray(result.tags) ? result.tags : [],
+      // [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+      // [WHY: null means "this profile has never been seeded into the Sync V2
+      //  fact model", which is a genuinely different state from "seeded and
+      //  currently empty" — the first must trigger a one-time seed from the
+      //  existing items/tags, the second must not, or every load would
+      //  re-stamp the whole profile at the seed floor and quietly discard the
+      //  real stamps its facts already carry.]
+      facts: result && result.facts && typeof result.facts === "object" ? result.facts : null,
     };
   } finally {
     database.close();
@@ -158,13 +166,68 @@ export async function loadProfileData(profileId) {
  * put() replaces the entire stored record for this profileId, so saving
  * one field without the other would silently erase whichever field wasn't
  * included.
+ *
+ * [PHASE-6-SYNC-V2]
+ * [STAGE-D1-LOCAL-FOUNDATION]
+ * [WHY: `facts` rides in this SAME put() precisely because put() is atomic
+ *  over the whole row. A synchronized value and the stamp that orders it must
+ *  be impossible to separate — a row holding a favorite with a stale stamp, or
+ *  a stamp whose value never landed, would let the merge engine reason from
+ *  data that never existed. Storing facts in a second row or a second store
+ *  would require a dual write, which is a new tearing surface in a phase whose
+ *  entire purpose is removing one.]
+ *
+ * The `facts` argument has three distinct meanings, and they are not
+ * interchangeable:
+ *
+ *   omitted    PRESERVE whatever is already stored. put() replaces the entire
+ *              row, so simply leaving the key off would erase the profile's
+ *              stamps and force a re-seed at the floor, discarding every real
+ *              stamp it had. The existing row is therefore read inside the same
+ *              readwrite transaction.
+ *   an object  store it.
+ *   null       CLEAR the stored facts, forcing a fresh seed on the next load.
+ *              Only ProfileStore#replaceAllProfiles does this, and only because
+ *              a wholesale V1 collection replacement makes the previous facts
+ *              untrue — see the call site.
+ *
+ * [PHASE-6-SYNC-V2][STAGE-D1-LOCAL-FOUNDATION]
+ * [WHY THE READ IS CALLBACK-SHAPED: the put() MUST be issued from inside the
+ *  get()'s onsuccess handler, not after `await`ing it. An IndexedDB transaction
+ *  goes inactive once control returns to the event loop, and an `await` between
+ *  two requests in the same transaction does exactly that — the read succeeds,
+ *  the write is rejected as TransactionInactiveError, and the profile silently
+ *  does not save. Chaining the request the way the spec intends keeps read and
+ *  write in ONE atomic transaction, which is the whole point: nothing may
+ *  interleave between reading the stored facts and writing them back.]
+ *
+ * No DATABASE_VERSION bump is needed for this field: IndexedDB records are
+ * schema-less, so an older row simply has no `facts` key — see loadProfileData,
+ * which reports that as null.
  */
-export async function saveProfileData(profileId, { items, tags }) {
+export async function saveProfileData(profileId, { items, tags, facts }) {
   const database = await openDatabase();
 
   try {
     const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put({ id: profileId, items, tags });
+    const store = transaction.objectStore(STORE_NAME);
+
+    if (facts === undefined) {
+      const request = store.get(profileId);
+      request.onsuccess = () => {
+        const existing = request.result;
+        const record = { id: profileId, items, tags };
+        if (existing && existing.facts && typeof existing.facts === "object") {
+          record.facts = existing.facts;
+        }
+        store.put(record);
+      };
+    } else {
+      const record = { id: profileId, items, tags };
+      if (facts !== null) record.facts = facts;
+      store.put(record);
+    }
+
     await completeTransaction(transaction);
   } finally {
     database.close();
