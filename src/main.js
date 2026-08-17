@@ -126,9 +126,13 @@ const tagsFilterToggleBtn = document.getElementById("tags-filter-toggle-btn");
 const tagsFilterPanel = document.getElementById("tags-filter-panel");
 const tagsFilterEmpty = document.getElementById("tags-filter-empty");
 const tagsFilterGrid = document.getElementById("tags-filter-grid");
+// [UI-REDESIGN / STAGE 6] [TAG-DISCOVERY-HANDOFF]
+const manageTagsBtn = document.getElementById("manage-tags-btn");
 
 const profileSelect = document.getElementById("profile-select");
 const profileSectionDetails = document.querySelector(".profile-section");
+// [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN] [PROFILE-TAGS-DISCLOSURE]
+const tagsAdminSectionDetails = document.querySelector(".tags-admin-section");
 const profileAssociateBtn = document.getElementById("profile-associate-btn");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
@@ -206,7 +210,10 @@ const mobileLoadActivityBar = document.getElementById("mobile-load-activity-bar"
 const mobileLoadCountText = document.getElementById("mobile-load-count-text");
 const mobileLoadAscii = document.getElementById("mobile-load-ascii");
 const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
-const counterText = document.getElementById("counter-text");
+// [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] #counter-text and
+// its capture (formerly `counterText`) are gone — the Player transport is
+// actions only now; Gallery's target control (see syncGalleryJumpTarget())
+// is the normal visible position/context surface.
 const galleryCount = document.getElementById("gallery-count");
 
 const viewerPanel = document.getElementById("viewer-panel");
@@ -218,10 +225,26 @@ const galleryEmpty = document.getElementById("gallery-empty");
 const galleryGrid = document.getElementById("gallery-grid");
 
 const galleryJumpInput = document.getElementById("gallery-jump-input");
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] The valid-range
+// total, a plain non-editable readout next to the target input.
+const galleryJumpTotalText = document.getElementById("gallery-jump-total");
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] Replaces the
+// retired "Use Current" button — validates the target and advances to Step 2.
+const galleryJumpNextBtn = document.getElementById("gallery-jump-next-btn");
+// Step 2's two action buttons — same ids, same underlying jump logic as
+// before this pass; only the mode-toggle behavior around them changed.
 const galleryJumpModeFindBtn = document.getElementById("gallery-jump-mode-find-btn");
 const galleryJumpModePlayBtn = document.getElementById("gallery-jump-mode-play-btn");
-// [UI-REDESIGN / Stage 4]
-const galleryJumpUseCurrentBtn = document.getElementById("gallery-jump-use-current-btn");
+// [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT] Mobile-only
+// escape from Step 2 back to Step 1 — see its click handler for the exact,
+// deliberately narrow contract.
+const galleryJumpBackBtn = document.getElementById("gallery-jump-back-btn");
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] The two step
+// wrappers — see setGalleryJumpStep() for how they are driven. Real layout
+// containers on every viewport now, not a desktop-only display:contents
+// passthrough — see styles.css.
+const galleryJumpStepSelect = document.getElementById("gallery-jump-step-select");
+const galleryJumpStepAction = document.getElementById("gallery-jump-step-action");
 const nowPlayingStrip = document.getElementById("now-playing-strip");
 const nowPlayingName = document.getElementById("now-playing-name");
 const nowPlayingStopBtn = document.getElementById("now-playing-stop-btn");
@@ -238,12 +261,15 @@ const nowPlayingReturnBtn = document.getElementById("now-playing-return-btn");
 // pointing at nothing, silently.
 // FUTURE: A new workspace adds a static tab + panel to index.html, a pair
 // of captures here, and a row in WORKSPACES below. Nothing else.
+// [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] workspaceTabTaggingBtn /
+// workspaceTaggingPanel are gone — the Tagging workspace itself is removed
+// (its administration content now lives inside #workspace-settings, see
+// tagsAdminSectionDetails below). Three destinations remain: gallery,
+// cookbook (Automations), settings (Profile).
 const workspaceTabGalleryBtn = document.getElementById("workspace-tab-gallery");
-const workspaceTabTaggingBtn = document.getElementById("workspace-tab-tagging");
 const workspaceTabCookbookBtn = document.getElementById("workspace-tab-cookbook");
 const workspaceTabSettingsBtn = document.getElementById("workspace-tab-settings");
 const workspaceGalleryPanel = document.getElementById("workspace-gallery");
-const workspaceTaggingPanel = document.getElementById("workspace-tagging");
 const workspaceCookbookPanel = document.getElementById("workspace-cookbook");
 const workspaceSettingsPanel = document.getElementById("workspace-settings");
 
@@ -267,6 +293,15 @@ const overlayUndoHideBtn = document.getElementById("overlay-undo-hide-btn");
 const overlayExitBtn = document.getElementById("overlay-exit-btn");
 const overlaySettingsBtn = document.getElementById("overlay-settings-btn");
 const overlayAutomationBtn = document.getElementById("overlay-automation-btn");
+
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
+// The canonical PM Automations entry point (at every width now) and the
+// tray it opens — see index.html's own comments on these elements for the
+// full architecture.
+const overlayAutomationsMenuBtn = document.getElementById("overlay-automations-menu-btn");
+const pmAutomationsGroup = document.getElementById("pm-automations-group");
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-MEDIA-SUPPORT]
+const pmAutomationsPhotoEmpty = document.getElementById("pm-automations-photo-empty");
 
 const automationPanel = document.getElementById("automation-panel");
 const automationStepChoose = document.getElementById("automation-step-choose");
@@ -296,8 +331,8 @@ const automationTimerApplyBtn = document.getElementById("automation-timer-apply-
 
 // [UI-REDESIGN / Stage 1A]
 // WHAT: The whole workspace switcher. setActiveWorkspace() does exactly
-// three things — flip `hidden` on the four panels, flip `aria-selected`
-// and roving tabindex on the four tabs, and record which one is active.
+// three things — flip `hidden` on the panels, flip `aria-selected`
+// and roving tabindex on the tabs, and record which one is active.
 // WHY: It is deliberately this small. Switching workspaces must not reload
 // the library, reset filters, change Profiles, destroy the current item,
 // or stop playback — so this function touches no runtime, filter, profile,
@@ -312,9 +347,18 @@ const automationTimerApplyBtn = document.getElementById("automation-timer-apply-
 // needs to refresh on activation, give that workspace its own subscriber
 // rather than growing a render call here — and never swap `hidden` for the
 // app's `.hidden` class, which feature code already owns.
+// [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+// WHAT: Three permanent MVP V1 destinations — the "tagging" entry is gone.
+// WHY: primary navigation should represent frequent product destinations,
+// not every feature module; tag administration moved into the "settings"
+// (Profile) panel instead of keeping its own top-level entry — see
+// tagsAdminSectionDetails / expandAndScrollToTagsSection() below. Removing
+// the entry here is sufficient by itself: the click/keydown wiring loop and
+// the Left/Right/Home/End keyboard navigation just below both iterate this
+// array, so neither needed a separate edit to stop reaching a workspace
+// that no longer exists.
 const WORKSPACES = [
   { name: "gallery", tab: workspaceTabGalleryBtn, panel: workspaceGalleryPanel },
-  { name: "tagging", tab: workspaceTabTaggingBtn, panel: workspaceTaggingPanel },
   { name: "cookbook", tab: workspaceTabCookbookBtn, panel: workspaceCookbookPanel },
   { name: "settings", tab: workspaceTabSettingsBtn, panel: workspaceSettingsPanel },
 ];
@@ -526,7 +570,22 @@ let activeTagFilters = []; // tag ids — Gallery Tag Filtering (Phase 6.3), AND
 // WHY: Duplicate suppression must be reversible and must not become Profile or library-registry data.
 // FUTURE / DO-NOT-BREAK: Preferences may supply its initial value later; keep loaded media ownership in allItems.
 let skipDuplicates = false;
-let galleryJumpMode = "find"; // "find" | "play" — Gallery Media Navigation (Phase 2)
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+// Replaces the old galleryJumpMode "find" | "play" persistent toggle — Find
+// Below/Load in Player are one-shot actions now, so there is no longer a
+// standing "which mode is selected" to track between jumps.
+// galleryJumpConfirmedIndex: the zero-based index Next → validated, held only
+// for the brief window Step 2 is showing so Find Below/Load in Player know
+// what to act on. Cleared the moment either fires.
+let galleryJumpConfirmedIndex = null;
+// galleryJumpIsEditing: true while the target input holds user-authored
+// content that has not yet been confirmed (Next) or abandoned-and-restored
+// (blur while empty). The ONLY thing this gates is whether
+// syncGalleryJumpTarget() is allowed to overwrite `.value` from runtime
+// truth on the next render() — it exists specifically so a background state
+// change (playback advancing, a filter changing the total) cannot silently
+// clobber what the user is mid-typing.
+let galleryJumpIsEditing = false;
 let fillModeActive = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
@@ -756,6 +815,29 @@ function expandAndScrollToProfileSection() {
   }
 }
 
+// [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN] [PROFILE-TAGS-DISCLOSURE]
+// [TAG-DISCOVERY-HANDOFF]
+// WHAT: The Tags-section equivalent of expandAndScrollToProfileSection()
+// immediately above — same shape, same reasoning, reusing the same
+// ensureSettingsWorkspaceVisible() navigation path rather than inventing a
+// second one. Expands <details class="tags-admin-section"> if collapsed,
+// scrolls it into view, and focuses the tag-creation input.
+// WHY: removing Tagging from top-level navigation must not make tag
+// creation/administration harder to reach — every "go manage tags"
+// affordance (the Gallery tag-filter empty state's Manage Tags button
+// today; any future one) should call this rather than leaving the user to
+// find Profile → Tags and open it manually.
+// FUTURE: Any future "take me to tag administration" control calls THIS —
+// never a second Tags-opening mechanism.
+function expandAndScrollToTagsSection() {
+  ensureSettingsWorkspaceVisible();
+  if (tagsAdminSectionDetails && !tagsAdminSectionDetails.open) {
+    tagsAdminSectionDetails.open = true;
+  }
+  tagsAdminSectionDetails?.scrollIntoView({ behavior: "smooth", block: "start" });
+  tagCreateInput?.focus();
+}
+
 // [Phase 8.4-3] Debug breadcrumbs for legacy folder matching, privacy-safe
 // by construction — every call site below only ever passes counts, short
 // hashes, or internally-generated record ids, never filenames/paths/root
@@ -768,15 +850,58 @@ function logLegacyIdentity(event, details) {
 
 // ---- Undo Last Hide ---------------------------------------------------
 //
-// Deliberately NOT a history/command system — single-level only, per spec.
-// Remembers just the relativePath of the most recently hidden item so one
-// accidental 🙈 can be reversed. Lives here (main.js), not ProfileStore or
-// MediaRuntime: it's an ephemeral UI affordance, not curation data (that's
-// still just isHidden on the Profile record) and not playback/session
-// state. Restoring goes straight through ProfileStore.setHidden (the same
-// path toggleHidden uses), so this never becomes a second source of truth
-// for hidden state — it only ever remembers *which* record to restore.
-let lastHiddenRelativePath = null;
+// [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] [PM-HIDE-UNDO-WAYPOINT-RUNTIME-FIX]
+// WHAT: Deliberately NOT a general history/command stack — one short-lived
+// navigation WAYPOINT, per spec. Remembers the most recent Hide as three
+// things: which item was hidden (hiddenRelativePath — restorable via
+// ProfileStore, same as before), which item MediaRuntime landed on
+// immediately afterward (landingItemId — the waypoint itself), and the
+// runtime's OWN navigationStep counter value at that moment
+// (landingNavigationStep — the expiration baseline; see below).
+// WHY a waypoint keyed to the landing position, not a global "something is
+// undoable" flag: Undo belongs to the specific media position reached
+// immediately after a Hide, not to the user globally wherever they wander
+// next. syncUndoHideButton() below only offers Undo while the CURRENT item
+// is literally that landing item — see its own comment.
+// landingItemId uses MediaItem.id (the same in-memory position identity
+// `preserveId`/`pendingFilterReloadItemId` already use elsewhere), not
+// relativePath — this is a live, in-session position comparison, never
+// touching persisted storage. hiddenRelativePath still uses relativePath,
+// because restoring it goes straight through ProfileStore.setHidden (the
+// same path toggleHidden uses, keyed by file path, same as before) — this
+// never becomes a second source of truth for hidden state, only for which
+// record to restore and whether that offer is still honest right now.
+//
+// ROOT CAUSE of an earlier version of this waypoint failing in real-browser
+// testing (an isolated Node simulation of the SAME logic passed cleanly,
+// which is why this needed tracing rather than re-guessing): forward-step
+// counting used to be driven by wrapping the SIX manual Prev/Next call
+// sites (goToPreviousMedia/goToNextMedia, the PM overlay buttons, PM's
+// keyboard Left/Right). But MediaRuntime.next() is ALSO called from two
+// places no external wrapper can ever see: the slideshow's own interval
+// timer (armed by #scheduleAdvance() any time Presentation is playing,
+// including immediately after a Hide auto-advances onto the landing item
+// itself) and a video's "ended" event via notifyVideoEnded(). Any one of
+// those firing between "land on B" and "click Back" moved the real
+// position without the external counter ever knowing — the exact "main.js
+// cannot get in front of them" problem handlePendingFilterReloadOnAdvance()
+// elsewhere in this file already had to solve for a different feature.
+// FIX: MediaRuntime itself now maintains navigationStep — a plain
+// increment-on-next/decrement-on-previous counter touched in every branch
+// that actually moves the current position, shuffle and sequential alike,
+// regardless of what triggered the call (see that field's own comment in
+// media-runtime.js). recentHideUndo captures navigationStep's value at the
+// moment it lands on B; expiration is then a REACTIVE comparison —
+// `runtime.getState().navigationStep - recentHideUndo.landingNavigationStep`
+// — recomputed on every render (see syncUndoHideButton()), so it can never
+// be bypassed by a navigation this file didn't directly initiate.
+let recentHideUndo = null; // { hiddenRelativePath, landingItemId, landingNavigationStep } | null
+
+// How many net steps past the landing waypoint's navigationStep baseline
+// remain recoverable (0 through 3 all still recover Undo by returning to
+// B; a net distance of 4 discards the waypoint outright) — see
+// syncUndoHideButton()'s own comment for exactly how this is applied.
+const HIDE_UNDO_RECOVERY_WINDOW_STEPS = 3;
 
 // Bumped any time the underlying item *list* changes (new load, filter
 // switch, an item dropping out of Favorites Only). Slideshow navigation
@@ -1127,7 +1252,11 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // takeover shows correct numbers from its very first frame rather than
   // sitting blank until the first batch completes.
   renderMobileLoadProgress("Loading media…", 0, total);
-  lastHiddenRelativePath = null;
+  // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] A new media load is
+  // exactly the kind of major context change that makes any waypoint
+  // ambiguous — clearing it here is safer than pretending Undo (or its
+  // recovery window) still means anything against a different media set.
+  recentHideUndo = null;
   syncUndoHideButton();
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
@@ -1373,7 +1502,9 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // stays hidden and its activity bar runs the indeterminate sweep instead
   // of a fabricated percentage.
   renderMobileLoadProgress("Scanning folder…", 0, null);
-  lastHiddenRelativePath = null;
+  // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] Same reasoning as the
+  // legacy-picker load path above — a new media load clears any waypoint.
+  recentHideUndo = null;
   syncUndoHideButton();
   // [FSA] Switching TO the FSA path — release whatever the local <input>
   // picker had loaded.
@@ -2051,6 +2182,10 @@ function renderTagsFilterGrid() {
   const tags = profile.getTags();
 
   tagsFilterEmpty.classList.toggle("hidden", tags.length > 0);
+  // [UI-REDESIGN / STAGE 6] [TAG-DISCOVERY-HANDOFF] Same visibility rule as
+  // tagsFilterEmpty above — Manage Tags is part of that empty state, not a
+  // permanent fixture of the filter panel.
+  manageTagsBtn.classList.toggle("hidden", tags.length > 0);
   tagsFilterGrid.classList.toggle("hidden", tags.length === 0);
   tagsFilterGrid.innerHTML = "";
 
@@ -2079,43 +2214,69 @@ function renderTagsFilterGrid() {
 }
 
 // ---- [UI-REDESIGN / STAGE 6] [TRANSIENT-FOCUS-SHORTCUT-RELEASE] ----------
+// ---- extended by [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE] -------------------
 //
-// WHAT: ONE small mechanism, shared by every transient disclosure in this
-// app that returns focus to its own trigger on close — the Tags filter
-// panel below, the Playback popover/sheet, and the Folders drawer, all
-// further down this file. A Set of trigger elements currently in a "just
-// closed, Browser Gallery shortcut ownership is restored" grace period.
+// WHAT: ONE small mechanism covering every case in this app where an element
+// legitimately keeps keyboard focus after the interaction it was focused FOR
+// has already finished — a Set of elements currently in a "shortcut
+// ownership is restored" grace period. Two families of caller share it:
+//   1. Transient disclosures that return focus to their own trigger on
+//      close — the Tags filter panel, the Playback popover/sheet, and the
+//      Folders drawer, all further down this file.
+//   2. [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE] Ordinary one-shot transport
+//      commands activated FROM THE KEYBOARD — specifically only Play/Pause,
+//      Previous, Next, Fill, and Favorite — via
+//      releaseFocusAfterPointerActivation()'s new opt-in `grantShortcutGrace`
+//      parameter (default false). That function's keyboard branch always
+//      left focus alone already; passing `true` from exactly these five
+//      call sites additionally grants the grace period there, since a
+//      completed command is the identical situation transient-close already
+//      handles: focus stayed exactly where genuine keyboard navigation put
+//      it, and the guard needs to stop treating that as an ongoing reason to
+//      block shortcuts. The parameter defaults to false so every OTHER
+//      caller of that shared function (Gallery filter/type buttons, Tag
+//      filter chips, the Gallery card grid) is untouched — see that
+//      function's own comment for why those specifically must NOT get this
+//      treatment.
 //
-// WHY: closing any of the three correctly returns focus to its trigger —
-// that focus-return contract is REQUIRED and untouched by this. But
+// WHY: in every one of these cases, the element ends up correctly,
+// legitimately focused — that focus is REQUIRED and untouched by this. But
 // isKeyboardFocusedControl() (consulted by handleTransportKeydown()'s guard
-// further down) then correctly reports that trigger as keyboard-focused,
-// and has no way to tell "focus landed here because a close path just
-// returned it" from "the user tabbed here fresh, wanting to operate this
-// control" — those are otherwise IDENTICAL DOM state (same element, same
-// :focus-visible). Without this, every shortcut but L stayed suppressed for
-// as long as a just-closed trigger held focus, until the user clicked or
-// tabbed elsewhere.
+// further down) then correctly reports it as keyboard-focused, and has no
+// way to tell "the interaction this focus was for is already finished" from
+// "the user tabbed here fresh and is about to drive this control" — those
+// are otherwise IDENTICAL DOM state (same element, same :focus-visible).
+// Without this, every shortcut but L stayed suppressed for as long as the
+// element held focus, until the user clicked or tabbed elsewhere — reported
+// for the three transient triggers first, then again for Tab-to-Play(or
+// Previous/Next/Fill/Favorite)-then-Enter, which is the same failure class
+// wearing a different trigger.
 //
-// WHY one shared Set rather than three copies of a flag + blur listener +
-// guard exemption: the rule is identical for all three triggers —
-// "returned focus after a transient close means shortcut ownership is
-// restored, until focus genuinely leaves and re-enters the trigger." One
-// place expresses that rule; each surface's own open/close functions opt
-// its one trigger in or out at exactly the point they already touch focus,
-// and the guard below consults it once, for whichever trigger is currently
-// active. Nothing here is a second keyboard system or a new global key
-// listener — it only gates whether the EXISTING isKeyboardFocusedControl()
-// guard is allowed to fire while one specific, already-known element holds
-// focus, and it changes no shortcut's meaning.
+// WHY one shared Set rather than a copy of a flag + blur listener + guard
+// exemption per caller: the rule is identical everywhere it applies —
+// "focus staying somewhere legitimate does not mean shortcut ownership stays
+// blocked, until focus genuinely leaves and re-enters that element." One
+// place expresses that rule; each caller opts its one element in or out at
+// exactly the point it already touches focus, and the guard below consults
+// it once, for whichever element currently holds focus. Nothing here is a
+// second keyboard system or a new global key listener — it only gates
+// whether the EXISTING isKeyboardFocusedControl() guard is allowed to fire
+// while one specific, already-known element holds focus, and it changes no
+// shortcut's meaning: see releaseFocusAfterPointerActivation()'s own comment
+// for why the native activation and the global shortcut it is now exempt
+// from call the exact same underlying function for all five transport
+// commands, so which path fires is not user-observable.
 const transientTriggersReleased = new Set();
 
 // Call from a transient surface's OWN close function, at the same point it
-// may also return focus to its trigger. Safe to call unconditionally, even
-// when focus is NOT on the trigger (the outside-click case, which never
-// returns focus): hasTransientShortcutGracePeriod() below always re-checks
-// document.activeElement too, so an entry for a trigger that isn't
-// currently focused has no effect on anything.
+// may also return focus to its trigger — or, per
+// [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE], from
+// releaseFocusAfterPointerActivation()'s keyboard branch, right after a
+// transport command has finished running. Safe to call unconditionally,
+// even when focus is NOT on the element (the outside-click case, which
+// never returns focus): hasTransientShortcutGracePeriod() below always
+// re-checks document.activeElement too, so an entry for an element that
+// isn't currently focused has no effect on anything.
 function releaseTransientTriggerFocus(trigger) {
   transientTriggersReleased.add(trigger);
 }
@@ -2136,15 +2297,17 @@ function hasTransientShortcutGracePeriod(el) {
   return Boolean(el) && transientTriggersReleased.has(el);
 }
 
-// ONE shared listener, not one per trigger. `focusout` bubbles, so this
-// single document-level listener catches any of the three triggers losing
-// focus, without three separate element-level blur listeners to keep in
-// sync. This is what ends a trigger's grace period the moment the ambiguity
-// it exists for is gone: once focus actually leaves a trigger, a LATER
-// arrival back on it (a fresh Tab) is unambiguously the ordinary case and
-// must get the ordinary button-activation guard back, not this exemption.
-// Deleting an element that was never in the Set is a harmless no-op, so
-// this does not need to know which elements are triggers.
+// ONE shared listener, not one per element. `focusout` bubbles, so this
+// single document-level listener catches ANY element in the Set losing
+// focus — the three transient triggers AND, per
+// [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE], Play/Previous/Next/Fill/Favorite —
+// without a separate element-level blur listener per caller to keep in
+// sync. This is what ends an element's grace period the moment the
+// ambiguity it exists for is gone: once focus actually leaves it, a LATER
+// arrival back (a fresh Tab) is unambiguously the ordinary case and must get
+// the ordinary button-activation guard back, not this exemption. Deleting an
+// element that was never in the Set is a harmless no-op, so this does not
+// need to know which elements are currently opted in.
 document.addEventListener("focusout", (event) => {
   transientTriggersReleased.delete(event.target);
 });
@@ -2520,6 +2683,67 @@ function syncVideoLoopControl() {
     // than waiting for that video to happen to end first.
     applyLoopRuleToCurrentVideo();
   }
+
+  // [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-ACTIVE-INDICATOR]
+  // Called from every path that already runs through this function — the
+  // checkbox's own change handler, #overlay-automation-btn's toggle,
+  // completeFiniteLoopAutomationAndAdvance() (natural completion), and
+  // stopAllPresentationAutomations() (the ⚡ universal stop) — so ⚡'s
+  // active indicator can never drift from `videoLoopInput.checked`, the
+  // one existing truthful "is any Presentation automation active" signal
+  // (Forever/Times/Timer all require it checked to actually arm — see
+  // applyLoopRuleToCurrentVideo()'s own gate — and turning it off already
+  // resets activeLoopRule and clears any timer, above).
+  syncAutomationsActiveIndicator();
+}
+
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-ACTIVE-INDICATOR]
+// WHAT: The ONE derivation of "is a Presentation automation active" for ⚡'s
+// own state — videoLoopInput.checked, not a separate tracked flag. Updates
+// the dashed-ring spin trigger class and the accessible name/tooltip to
+// match: active = "Stop automations" (a click stops it); inactive =
+// "Automations" (a click opens/closes the disclosure) — see
+// #overlay-automations-menu-btn's click handler for how this label meaning
+// is enforced by the actual click priority, not just described in text.
+// WHY not a separate `isPresentationAutomationActive` variable: that would
+// be a second place this fact could drift from the real engine state this
+// pass was explicitly told not to touch — reading videoLoopInput.checked
+// directly is one source of truth, not a CSS class or a stale guess.
+// KNOWN EDGE CASE (existing engine behavior, not touched by this pass):
+// manually navigating away from a video mid-FINITE-automation calls
+// invalidateActiveFiniteAutomation(), which resets activeLoopRule to
+// "forever" but does NOT itself uncheck videoLoopInput — so the checkbox
+// (and therefore this indicator) can stay truthfully "on" as a plain
+// Forever loop after leaving the video, including onto a photo, where
+// Loop/🤖 are hidden by syncAutomationsMediaAvailability() but the ring
+// keeps spinning. This is arguably correct (Loop genuinely resumes the
+// moment the user returns to a video) rather than a bug, and changing it
+// would mean altering existing Loop/navigation engine behavior — out of
+// scope for this pass; see the STAGE 6 report for this exact note.
+function syncAutomationsActiveIndicator() {
+  const isActive = videoLoopInput.checked;
+  overlayAutomationsMenuBtn.classList.toggle("is-automation-active", isActive);
+  const label = isActive ? "Stop automations" : "Automations";
+  overlayAutomationsMenuBtn.setAttribute("aria-label", label);
+  overlayAutomationsMenuBtn.setAttribute("title", label);
+}
+
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-ACTIVE-STOP]
+// WHAT: The one reliable stop path from ⚡ while an automation is active —
+// composed entirely from the EXISTING authoritative "Loop OFF" path
+// (setting the checkbox, then calling the same syncVideoLoopControl() the
+// checkbox's own change handler and #overlay-automation-btn's toggle-off
+// already call), not a second engine. That path already resets
+// activeLoopRule to "forever", clears loopRuleCompletedPlays, clears any
+// pending timer via clearLoopRuleTimer(), and closes the nested automation
+// editor — covering plain Loop, Forever, X Times, and Until Timer alike,
+// since all four are represented by the exact same
+// videoLoopInput.checked/activeLoopRule state.
+// Deliberately does NOT call runtime.notifyVideoEnded() or navigate —
+// stopping an automation must not itself advance or move media.
+function stopAllPresentationAutomations() {
+  videoLoopInput.checked = false;
+  syncVideoLoopControl();
 }
 
 // ---- Loop Automations engine ----------------------------------------------
@@ -2596,8 +2820,14 @@ function completeFiniteLoopAutomationAndAdvance() {
   loopRuleCompletedPlays = 0;
 
   videoLoopInput.checked = false;
-  syncVideoLoopControl(); // turns 🔁 UI off, disables/greys 🤖 — Loop is now genuinely off
-  closeAutomationEditor();
+  syncVideoLoopControl(); // turns 🔁 UI off, disables/greys 🤖, clears ⚡'s active indicator
+  // [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-ACTIVE-INDICATOR] closeAutomationsTray()
+  // (was closeAutomationEditor() alone) — defensive completeness: the tray
+  // should already be closed by this point (starting the automation
+  // auto-closed it — see [PM-AUTOMATIONS-COMMIT-AND-CLOSE]), but this also
+  // resets ⚡'s own aria-expanded/is-open state if it ever drifted, which
+  // closeAutomationEditor() alone does not touch.
+  closeAutomationsTray();
 
   runtime.notifyVideoEnded(); // advance exactly once
 }
@@ -2708,6 +2938,43 @@ function setAutomationEditorStep(step) {
   renderAutomationEditor();
 }
 
+// ---- Canonical PM Automations tray (every width) ---------------------------
+//
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
+// #pm-automations-group is a closed-by-default tray at every width now —
+// see its own comment in styles.css for the "was display: contents above
+// ≤448px, now a tray everywhere" history. This open/close pair governs it
+// uniformly.
+//
+// closeAutomationsTray() always closes the nested 🤖 editor first (via the
+// existing closeAutomationEditor(), never duplicated) — per the "avoid
+// orphaned child panels" requirement, closing the outer tray while that
+// editor is still open must not leave it stranded, visually hidden but
+// still logically mid-edit.
+function closeAutomationsTray() {
+  closeAutomationEditor();
+  pmAutomationsGroup.classList.remove("is-open");
+  overlayAutomationsMenuBtn.classList.remove("is-open");
+  overlayAutomationsMenuBtn.setAttribute("aria-expanded", "false");
+}
+
+function toggleAutomationsTray() {
+  const willOpen = !pmAutomationsGroup.classList.contains("is-open");
+
+  if (!willOpen) {
+    closeAutomationsTray();
+    return;
+  }
+
+  // Only one pop-out panel makes sense open at a time — same rule
+  // #overlay-automation-btn and #overlay-settings-btn already follow.
+  presentationSettings.classList.add("hidden");
+  closeGhostPopunder();
+  pmAutomationsGroup.classList.add("is-open");
+  overlayAutomationsMenuBtn.classList.add("is-open");
+  overlayAutomationsMenuBtn.setAttribute("aria-expanded", "true");
+}
+
 // ---- Fill Panel (simulated fullscreen) ---------------------------------
 
 function enterFillMode() {
@@ -2754,6 +3021,13 @@ function exitFillMode() {
   presentationSettings.classList.add("hidden");
   closeGhostPopunder();
   automationPanel.classList.add("hidden");
+  // [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-ENTRY] Same direct reset as the
+  // automation panel line above, not the toggle helper — a hard exit needs
+  // the tray's state cleared unconditionally, not the mutual-exclusion
+  // side effects toggleAutomationsTray()/closeAutomationsTray() carry.
+  pmAutomationsGroup.classList.remove("is-open");
+  overlayAutomationsMenuBtn.classList.remove("is-open");
+  overlayAutomationsMenuBtn.setAttribute("aria-expanded", "false");
   // "Ending Presentation clears the active Loop Rule. Nothing is
   // persisted." — Loop Rules are session-local by design (Phase 5).
   resetLoopRuleToDefault();
@@ -2792,6 +3066,16 @@ function closeGhostPopunder() {
 // is-open styling stay correct. #presentation-settings is the one panel with
 // no close helper of its own — its own toggle handler hides it inline the
 // same way.
+//
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-ENTRY] #pm-automations-group's
+// check sits between #automation-panel and #presentation-settings: at
+// deep-compact widths the tray is the OUTER surface 🤖's editor opens
+// inside, so one press closes just the editor (drops back to the Loop/🤖
+// tray view) and a second closes the tray itself — the same "layered, like
+// a back button" behavior this function already gives every other nested
+// PM pop-out. At every width above the ≤448px tier the tray never opens
+// (see toggleAutomationsTray()'s own comment), so this check is inert
+// there.
 function closeTopmostPresentationPanel() {
   if (!ghostPopunder.classList.contains("hidden")) {
     closeGhostPopunder();
@@ -2799,6 +3083,10 @@ function closeTopmostPresentationPanel() {
   }
   if (!automationPanel.classList.contains("hidden")) {
     closeAutomationEditor();
+    return true;
+  }
+  if (pmAutomationsGroup.classList.contains("is-open")) {
+    closeAutomationsTray();
     return true;
   }
   if (!presentationSettings.classList.contains("hidden")) {
@@ -3244,8 +3532,88 @@ function syncHideButton(item) {
   overlayHideBtn.classList.toggle("is-hidden", isHidden);
 }
 
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-MEDIA-SUPPORT]
+// WHAT: Loop and 🤖 Loop Automations are video-only automations — the
+// existing engine already gates their real EXECUTION on `isShowingVideo`
+// (see applyLoopRuleToCurrentVideo()); this is the matching PRESENTATION
+// gate, so the controls never visually invite a click that would silently
+// do nothing on a photo. ⚡ itself is NEVER gated by this — it stays
+// available as a destination for both photos and videos; only the
+// CONTENT inside the tray is media-aware. Exactly one of "Loop + 🤖" or
+// the empty-state message is visible at a time.
+// WHY read item.kind fresh here rather than caching "is this a video"
+// anywhere: media changes on every ordinary navigation, and this is called
+// from the same render()-adjacent sites as syncHideButton/
+// syncUndoHideButton, so it never trusts a stale assumption — video → photo
+// mid-tray-open immediately swaps to the empty state, and photo → video
+// immediately restores Loop/🤖, using nothing but the current runtime
+// truth.
+// Does NOT touch videoLoopInput.checked, activeLoopRule, or any automation
+// engine state — purely presentational. The existing engine's own
+// isShowingVideo gating (untouched) is what actually keeps a stale
+// Loop-on/finite-automation-active state from doing anything on a photo;
+// see this function's own audit note in the STAGE 6 report for the one
+// case where that state can outlive a manual navigation to a photo
+// (`videoLoopInput.checked` staying true after a finite automation
+// resets to "forever" without itself unchecking the box) — this is
+// exactly the case hiding the controls here is a real, needed safety net
+// for, not merely decorative.
+function syncAutomationsMediaAvailability(item) {
+  const isVideo = Boolean(item && item.kind === "video");
+  videoLoopControl.classList.toggle("hidden", !isVideo);
+  overlayAutomationBtn.classList.toggle("hidden", !isVideo);
+  pmAutomationsPhotoEmpty.classList.toggle("hidden", isVideo);
+}
+
+// [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT] [PM-HIDE-UNDO-WAYPOINT] [PM-HIDE-UNDO-WAYPOINT-RUNTIME-FIX]
+// WHAT: Two independent questions answered fresh on every call — never
+// cached, never computed anywhere else:
+//   1. Has the waypoint expired? `runtime.getState().navigationStep`
+//      (MediaRuntime's own counter — see its declaration in
+//      media-runtime.js — incremented/decremented on EVERY next()/
+//      previous() call, whichever triggered it: manual click, keyboard, the
+//      slideshow's own interval timer, or a video's "ended" event) minus
+//      recentHideUndo.landingNavigationStep is the NET distance moved since
+//      the waypoint was created. Once that distance exceeds
+//      HIDE_UNDO_RECOVERY_WINDOW_STEPS, the waypoint is cleared outright —
+//      permanently, not just "currently out of range": clearing it here
+//      (not merely skipping the Undo offer) is what makes this a one-way
+//      ratchet, matching the brief's "F is the fourth forward step; the
+//      waypoint may be discarded" rather than something the user could
+//      un-expire by wandering back into range.
+//   2. Is Undo offered right now? Only if a (still-unexpired) waypoint
+//      exists AND the CURRENT item is literally the one MediaRuntime landed
+//      on right after the hide (recentHideUndo.landingItemId) — not merely
+//      "something was hidden at some point."
+// `.pm-hide-undo-inactive` toggles the mutually-exclusive deep-compact slot
+// from that same hasUndo condition; it only has a CSS effect inside the
+// ≤448px tier (see styles.css) — at every wider width it sits on the DOM
+// inertly, so Hide and Undo keep rendering side-by-side there exactly as
+// before.
+// WHY this must be called on every render, not only from the Hide/Undo
+// click handlers: both questions above depend on live runtime state that
+// changes on ordinary navigation — see the two render()-adjacent call
+// sites (render() itself and the background-sync badge refresh) as well as
+// the Hide/Undo click handlers, every waypoint-clearing site, and once at
+// boot.
+// WHY one shared function rather than splitting expiry and display into
+// two: they read the exact same two pieces of state — computing them
+// separately is how they could drift out of sync with each other.
 function syncUndoHideButton() {
-  overlayUndoHideBtn.disabled = lastHiddenRelativePath === null;
+  if (recentHideUndo) {
+    const stepsSinceLanding = runtime.getState().navigationStep - recentHideUndo.landingNavigationStep;
+    if (stepsSinceLanding > HIDE_UNDO_RECOVERY_WINDOW_STEPS) {
+      recentHideUndo = null;
+    }
+  }
+
+  const currentItem = runtime.getCurrentItem();
+  const hasUndo = Boolean(
+    recentHideUndo && currentItem && currentItem.id === recentHideUndo.landingItemId
+  );
+  overlayUndoHideBtn.disabled = !hasUndo;
+  overlayHideBtn.classList.toggle("pm-hide-undo-inactive", hasUndo);
+  overlayUndoHideBtn.classList.toggle("pm-hide-undo-inactive", !hasUndo);
 }
 
 // ---- Presentation Mode Tags panel (Phase 6.2 — Fast Tagging) --------------
@@ -3327,12 +3695,23 @@ function renderPresentationTagsPanel(item) {
 // the Gallery's lazy thumbnail mounting (scrollIntoView just brings a
 // card into the IntersectionObserver's view like scrolling by hand would).
 
-function setGalleryJumpMode(mode) {
-  galleryJumpMode = mode;
-  galleryJumpModeFindBtn.classList.toggle("active", mode === "find");
-  galleryJumpModePlayBtn.classList.toggle("active", mode === "play");
-  galleryJumpModeFindBtn.setAttribute("aria-pressed", mode === "find" ? "true" : "false");
-  galleryJumpModePlayBtn.setAttribute("aria-pressed", mode === "play" ? "true" : "false");
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+// WHAT: which of the two .gallery-jump-step wrappers is visible — "select"
+// (target input + Next →) or "action" (Find Below + Load in Player). Real,
+// unconditional layout everywhere now — see styles.css — so this is the
+// single, same-everywhere state Presentation Mode's Loop Automations panel
+// already models with its own step variable.
+// WHY a plain module variable rather than deriving it from something else:
+// there is no existing piece of state this could be read from — it is
+// genuinely new, UI-only information ("which half of the workflow is the
+// user looking at"), unrelated to galleryJumpConfirmedIndex (WHICH target
+// was confirmed) or galleryJumpIsEditing (whether the target is mid-edit).
+let galleryJumpStep = "select"; // "select" | "action"
+
+function setGalleryJumpStep(step) {
+  galleryJumpStep = step;
+  galleryJumpStepSelect.classList.toggle("gallery-jump-step-inactive", step !== "select");
+  galleryJumpStepAction.classList.toggle("gallery-jump-step-inactive", step !== "action");
 }
 
 // [UI-REDESIGN / Stage 4] The find highlight is now TEMPORARY: it fades
@@ -3356,11 +3735,21 @@ function clearGalleryJumpTarget() {
   galleryJumpTargetIndex = null;
 }
 
-// Placeholder-only — never becomes the input's actual value. Native
-// `placeholder` already guarantees focusing the field doesn't populate it,
-// so no extra focus/blur handling is needed to satisfy that requirement.
-function updateGalleryJumpPlaceholder(state) {
-  galleryJumpInput.placeholder = state.hasItems ? `${state.currentIndex + 1} / ${state.total}` : "";
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+// WHAT: the ONE place that writes the target input's `.value` from runtime
+// truth, and the total span's text. Called from render() on every runtime
+// state change — the same hook updateGalleryJumpPlaceholder() used, just
+// writing a real value now instead of a placeholder (see the input's own
+// HTML comment for why a placeholder would have meant "greyed out").
+// WHY galleryJumpIsEditing gates the value write but not the total: the
+// total is system information the user never edits, so a background change
+// (a filter shrinking it, for instance) should always be reflected
+// immediately; the target is user-editable, so a background change must
+// never silently overwrite content the user is actively typing.
+function syncGalleryJumpTarget(state) {
+  galleryJumpTotalText.textContent = state.hasItems ? `/ ${state.total}` : "";
+  if (galleryJumpIsEditing) return;
+  galleryJumpInput.value = state.hasItems ? String(state.currentIndex + 1) : "";
 }
 
 function flashInvalidGalleryJumpInput() {
@@ -3372,19 +3761,14 @@ function flashInvalidGalleryJumpInput() {
   window.setTimeout(() => galleryJumpInput.classList.remove("is-invalid"), 500);
 }
 
-// [8.5] "find"/"play" (galleryJumpMode) ARE the search-vs-direct jump
-// distinction the product spec asks for — not a separate mechanism to
-// build. Both already jump within whatever search/filter context is
-// currently active (state.total already reflects getVisibleItems(), see
-// the comment at this control's HTML). "find" = SEARCH jump: locate a
-// position in that context (scroll/highlight only, nothing loads).
-// "play" = DIRECT jump: unconditionally load that position into the
-// Viewer. Keeping these two names/behaviors distinct (rather than
-// collapsing to one "jump" now that 8.3 adds a real filter-apply action)
-// matters for the next phase too: once FSA master-folder auto-detection
-// exists, "direct jump" must keep meaning "load it, full stop" even if a
-// future profile/folder switch changes what's in the search context.
-function performGalleryJump() {
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+// WHAT: the SAME validation performGalleryJump() used to run inline —
+// identical regex, identical range check, identical flash — factored into
+// its own function purely so Next → can run it before Step 2's actions
+// exist to consume the result. Returns the zero-based index on success, or
+// null (having already flashed) on failure. No behavior changed, no
+// duplicate rule written anywhere.
+function validateGalleryJumpTarget() {
   const state = runtime.getState();
   const raw = galleryJumpInput.value.trim();
 
@@ -3393,18 +3777,71 @@ function performGalleryJump() {
   // outright rather than guessed at.
   if (!/^\d+$/.test(raw)) {
     flashInvalidGalleryJumpInput();
-    return;
+    return null;
   }
 
   const oneBased = Number(raw);
   if (!state.total || oneBased < 1 || oneBased > state.total) {
     flashInvalidGalleryJumpInput();
-    return;
+    return null;
   }
 
-  const zeroBasedIndex = oneBased - 1;
+  return oneBased - 1;
+}
 
-  if (galleryJumpMode === "play") {
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+// WHAT: Step 1's Next → and Enter-in-the-input both call this. Validates,
+// and only on success stores the confirmed target and shows Step 2.
+// On failure the row stays on Step 1 exactly as it was — the invalid value
+// is left visible with the flash already fired by validateGalleryJumpTarget()
+// above, never silently cleared or replaced (this is what "explicit empty
+// Next fails honestly" and "invalid Next stays Step 1" require).
+function advanceGalleryJumpToActionStep() {
+  const index = validateGalleryJumpTarget();
+  if (index === null) return;
+  galleryJumpConfirmedIndex = index;
+  // [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT] Kept true
+  // (previously cleared here) — Step 2 can lead back to Step 1 via Back
+  // without executing anything, and the confirmed target must still be
+  // exactly what Step 1 shows when that happens. If this were cleared now, a
+  // background render() firing while Step 2 is up (playback advancing, for
+  // instance) would silently overwrite the hidden input with the CURRENT
+  // runtime position before Back ever runs — the user would tap ↩ and see
+  // the wrong number. Cleared instead in the Back handler and in
+  // finishGalleryJumpAction(), both of which return to Step 1 through an
+  // explicit, deliberate path rather than a background one.
+  galleryJumpIsEditing = true;
+  setGalleryJumpStep("action");
+  // Step 1's Next → is about to be hidden by the step change above, which
+  // would otherwise silently drop keyboard focus to <body>. Unconditional
+  // (not gated to keyboard-only) because nothing else claims the scroll
+  // position at this point — unlike the Step 2 -> Step 1 transition below,
+  // where Find Below/Load in Player's own scrollIntoView() calls make an
+  // equivalent auto-focus here actively harmful, so it is deliberately NOT
+  // added there.
+  galleryJumpModeFindBtn.focus();
+}
+
+// [8.5] "find"/"play" ARE the search-vs-direct jump distinction the product
+// spec asks for — not a separate mechanism to build. Both already jump
+// within whatever search/filter context is currently active (state.total
+// already reflects getVisibleItems(), see the comment at this control's
+// HTML). "find" = SEARCH jump: locate a position in that context
+// (scroll/highlight only, nothing loads). "play" = DIRECT jump:
+// unconditionally load that position into the Viewer. Keeping these two
+// names/behaviors distinct matters for the next phase too: once FSA
+// master-folder auto-detection exists, "direct jump" must keep meaning
+// "load it, full stop" even if a future profile/folder switch changes
+// what's in the search context.
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] Takes the
+// zero-based index EXPLICITLY now, rather than re-reading and re-parsing
+// galleryJumpInput.value — by the time either button can call this, the
+// value has already been validated once (by Next →) and the input itself is
+// hidden (Step 2 is showing), so re-reading it here would be reading a
+// stale, currently-invisible field instead of the one number Step 2 is
+// actually acting on.
+function executeGalleryJump(zeroBasedIndex, mode) {
+  if (mode === "play") {
     // "Take me there and load it" — the exact same call a Gallery card
     // click already makes.
     clearGalleryJumpTarget();
@@ -3428,52 +3865,144 @@ function performGalleryJump() {
       );
     }
   }
-
-  galleryJumpInput.value = "";
 }
 
-// [UI-REDESIGN / Stage 4]
-// WHAT: Populates the jump input with the current media's 1-based position
-// in the current visible/filtered sequence.
-// WHY: Deliberately inert beyond that — it does not navigate, load or
-// scroll. The user still chooses Find Below or Load in Player, which is the
-// whole point: it removes the transcription step, not the decision.
-// The number comes straight from runtime.getState().currentIndex, the same
-// sequence performGalleryJump() validates against, so this introduces no
-// second numbering system.
-function useCurrentGalleryPosition() {
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+// WHAT: the shared "an action just ran" tail for both Find Below and Load in
+// Player — resets to Step 1, then repopulates the target from CURRENT
+// runtime truth.
+// WHY reading runtime truth AFTER the action, unconditionally, is correct
+// for BOTH modes without needing to know which one just ran: Load in Player
+// already called runtime.setCurrentIndex() above, so
+// runtime.getState().currentIndex now IS the confirmed target; Find Below
+// never touches the runtime's current index at all, so the same read
+// correctly yields the UNCHANGED original position. Never present a
+// custom search target as though it became current when it did not — this
+// is what makes that true without a mode-specific branch.
+function finishGalleryJumpAction() {
+  galleryJumpConfirmedIndex = null;
+  setGalleryJumpStep("select");
   const state = runtime.getState();
-  if (!state.hasItems) return;
-  galleryJumpInput.value = String(state.currentIndex + 1);
-  // Focus so the next action is a keystroke away, and because a field that
-  // silently changed under the user should be the thing they are looking at.
+  galleryJumpInput.value = state.hasItems ? String(state.currentIndex + 1) : "";
+  galleryJumpIsEditing = false;
+}
+
+// [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT]
+// WHAT: ↩ Back — mobile-only in the UI, but the handler itself does not need
+// to know that; the button simply does not exist as a reachable control on
+// desktop (see styles.css), so this can never fire there.
+// WHY this is NOT finishGalleryJumpAction(): that function is the "an action
+// just ran" tail — it clears the confirmed target and REWRITES the input
+// from current runtime truth, which is correct after Find Below/Load in
+// Player actually did something. Back did nothing. Returning through that
+// same tail would silently replace whatever custom target the user backed up
+// to reconsider with the current Player position — exactly what this task
+// forbids. Back's entire contract is narrower: flip the step back, leave
+// every other piece of state (the input's value, runtime, filters,
+// galleryJumpConfirmedIndex's target index itself) untouched. Only the
+// bookkeeping flag changes, and only because Step 1 is now "the ordinary
+// idle state" again and should resync from live truth the next time
+// something legitimately changes it (see galleryJumpIsEditing's own comment
+// in advanceGalleryJumpToActionStep()).
+// executeGalleryJump() is never called, runtime.setCurrentIndex() is never
+// called, no filter or clearGalleryJumpTarget() call happens — nothing here
+// can move the Player or the Gallery.
+function returnToGalleryJumpSelectStep() {
+  galleryJumpConfirmedIndex = null;
+  galleryJumpIsEditing = false;
+  setGalleryJumpStep("select");
+  // Step 2's ↩ is about to be hidden by the step change above; focusing the
+  // now-visible target input is both the natural "you're back, here's the
+  // field" landing point and what stops focus silently dropping to <body>.
+  // Unconditional, not pointer-only: unlike the Find Below/Load in Player
+  // handlers, nothing here calls scrollIntoView(), so there is no competing
+  // scroll to protect and no reason to withhold this from a pointer click.
   galleryJumpInput.focus();
 }
 
-galleryJumpUseCurrentBtn.addEventListener("click", () => useCurrentGalleryPosition());
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+// WHAT: the target input's click/tap-to-clear contract. A `click` event on a
+// plain text input is ONLY ever dispatched by an actual pointer (mouse or
+// touch) activation — Tab-arrival and other keyboard focus changes never
+// synthesize one — so this listener alone already gives Tab focus a free
+// pass without any extra modality check.
+// WHY clear unconditionally rather than only when non-empty: clicking an
+// already-empty/mid-edit field again is a harmless no-op repeat of the same
+// intent ("I want to replace what's here"), and guarding it would only add
+// a branch that changes nothing observable.
+galleryJumpInput.addEventListener("click", () => {
+  galleryJumpIsEditing = true;
+  galleryJumpInput.value = "";
+});
+
+// Marks an edit as genuinely in progress the moment the value actually
+// changes — covers keyboard-driven editing (Tab to the field, then type)
+// which the click handler above never sees, so syncGalleryJumpTarget()
+// cannot clobber mid-typing here either.
+galleryJumpInput.addEventListener("input", () => {
+  galleryJumpIsEditing = true;
+});
+
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+// WHAT: restores the actual current runtime target ONLY when the field is
+// abandoned genuinely empty — "clicked, cleared, typed nothing, focus moved
+// away". Deliberately skipped when relatedTarget is Next →: a click on Next
+// fires `blur` on this input BEFORE Next's own `click` handler runs (browsers
+// dispatch blur synchronously ahead of the new element's click), so restoring
+// here unconditionally would silently replace an intentionally-submitted
+// empty value with the current position before validateGalleryJumpTarget()
+// ever saw it — exactly the "explicit empty Next silently substituted"
+// outcome this app must not produce. Next's own validation already handles
+// an empty submission honestly (flashes invalid, stays Step 1); this handler
+// only needs to cover every OTHER way focus can leave the field.
+// A non-empty value left behind (typed but never submitted) is deliberately
+// NOT touched here — only genuinely empty abandonment is in scope.
+galleryJumpInput.addEventListener("blur", (event) => {
+  if (event.relatedTarget === galleryJumpNextBtn) return;
+  if (galleryJumpInput.value.trim() !== "") return;
+  galleryJumpIsEditing = false;
+  const state = runtime.getState();
+  galleryJumpInput.value = state.hasItems ? String(state.currentIndex + 1) : "";
+});
+
+galleryJumpNextBtn.addEventListener("click", () => advanceGalleryJumpToActionStep());
+
+// [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT] Mobile-only in
+// the UI; see returnToGalleryJumpSelectStep()'s own comment for the exact,
+// narrow contract this routes through.
+galleryJumpBackBtn.addEventListener("click", () => returnToGalleryJumpSelectStep());
 
 galleryJumpModeFindBtn.addEventListener("click", () => {
-  setGalleryJumpMode("find");
-  performGalleryJump();
+  if (galleryJumpConfirmedIndex === null) return;
+  executeGalleryJump(galleryJumpConfirmedIndex, "find");
+  finishGalleryJumpAction();
 });
 galleryJumpModePlayBtn.addEventListener("click", (event) => {
-  setGalleryJumpMode("play");
-  performGalleryJump();
+  if (galleryJumpConfirmedIndex === null) return;
+  executeGalleryJump(galleryJumpConfirmedIndex, "play");
+  finishGalleryJumpAction();
   // [UI-REDESIGN / Stage 5 fix] Load in Player hands the user back to the
   // Player — so it must hand the keyboard back too. Without this the button
   // kept focus, and the :focus-visible latch then swallowed
   // ArrowLeft/ArrowRight/Space/F until the user clicked elsewhere.
   //
-  // Deliberately NOT applied to Find Below or Use Current: those leave the
-  // user working in the command row, where the controls keeping focus is
-  // correct. Pointer-only, as everywhere else — a keyboard activation
-  // (detail === 0) keeps its focus and its ring.
+  // Deliberately NOT applied to Find Below: that leaves the user working in
+  // the command row, where the control keeping focus is correct. Moot here
+  // for the KEYBOARD path regardless, since finishGalleryJumpAction() has
+  // already hidden this button by returning to Step 1 — the browser drops
+  // focus to <body> on its own in that case, same as Find Below now does.
+  // Pointer-only, as everywhere else — a keyboard activation (detail === 0)
+  // is a no-op here.
   releaseFocusAfterPointerActivation(event);
 });
+// [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] While on Step 1,
+// Enter behaves exactly like Next → — same function, same validation, same
+// advance-on-success. Step 2 has no input to receive Enter from; its two
+// buttons use their own native Enter/Space activation, unchanged.
 galleryJumpInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
-  performGalleryJump();
+  advanceGalleryJumpToActionStep();
 });
 
 // [UI-REDESIGN / Stage 6] The two states of the ONE Play/Pause icon. They are
@@ -3527,9 +4056,13 @@ function syncControls(state) {
   // button and the shortcut agree about when Fill is available.
   fillPanelBtn.disabled = !state.currentItem;
 
-  // [UI-REDESIGN / Stage 4] There is no position to copy without items, and
-  // useCurrentGalleryPosition() guards on the same flag.
-  galleryJumpUseCurrentBtn.disabled = !hasItems;
+  // [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] There is no
+  // target to confirm without items — validateGalleryJumpTarget() would
+  // reject any input anyway (state.total is falsy), so this just keeps the
+  // button from inviting a click that can only fail. The target input itself
+  // is disabled for the same reason: nothing to type toward.
+  galleryJumpNextBtn.disabled = !hasItems;
+  galleryJumpInput.disabled = !hasItems;
 
   overlayPrevBtn.disabled = !canNavigate;
   overlayNextBtn.disabled = !canNavigate;
@@ -3548,12 +4081,23 @@ function syncControls(state) {
   }
 
   selectedText.textContent = state.currentItem ? state.currentItem.name : "—";
-  counterText.textContent = hasItems ? `${state.currentIndex + 1} / ${state.total}` : "0 / 0";
+  // [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] The
+  // `counterText.textContent = ...` write that stood here is gone with
+  // #counter-text — see syncGalleryJumpTarget(), called from this same
+  // render() a few lines below, for the surface that now shows this.
 
   overlayPlayBtn.textContent = state.isPlaying ? "⏸" : "⏯";
 
   syncFavoriteButtons(state.currentItem);
   syncHideButton(state.currentItem);
+  // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] Must re-run on every
+  // render, not just after Hide/Undo itself — the waypoint's display
+  // condition depends on the CURRENT item, which changes on ordinary
+  // navigation.
+  syncUndoHideButton();
+  // [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-MEDIA-SUPPORT] Same reasoning —
+  // photo/video availability must track the CURRENT item on every render.
+  syncAutomationsMediaAvailability(state.currentItem);
   renderPresentationTagsPanel(state.currentItem);
 }
 
@@ -3561,7 +4105,7 @@ function render(state) {
   renderGallery(state);
   buildViewer(state);
   syncControls(state);
-  updateGalleryJumpPlaceholder(state);
+  syncGalleryJumpTarget(state);
   // [UI-REDESIGN / Stage 4] Catches the playback half of the strip's
   // condition — starting, stopping, and advancing to a new filename. The
   // workspace half is caught by setActiveWorkspace().
@@ -3650,7 +4194,20 @@ loopInput.addEventListener("change", () => {
   savePlaybackPreferences({ loopPlaylist: loopInput.checked });
 });
 
-videoLoopInput.addEventListener("change", syncVideoLoopControl);
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-COMMIT-AND-CLOSE]
+// `change` only fires from genuine user interaction with the checkbox or
+// its label — never from #overlay-automation-btn's own programmatic
+// `videoLoopInput.checked = true` (a plain property assignment does not
+// dispatch `change`), which is what makes this the correct, narrow place
+// for "the user directly chose plain Loop" auto-close: 🤖's own path
+// (which also turns Loop on, then immediately opens the nested Forever/X
+// Times/Until Timer chooser) is untouched and must NOT auto-close here.
+videoLoopInput.addEventListener("change", () => {
+  syncVideoLoopControl();
+  if (videoLoopInput.checked) {
+    closeAutomationsTray();
+  }
+});
 
 // [UI-REDESIGN / Stage 3] The #fill-input change listener is retired with
 // the checkbox. It was the mechanism that made Fill a side effect of a
@@ -3689,16 +4246,53 @@ autoplayOnFillInput.addEventListener("change", () => {
 // the button they just released — gives it up.
 //
 // FUTURE: This is deliberately NOT a global blur-on-click. It is attached
-// to the specific Gallery filter controls named below, because they are the
-// ones that sit between the user and the Player they are filtering. Do not
-// generalize it into a document-level handler, and do not weaken
-// isKeyboardFocusedControl() itself — that guard is what keeps Space from
-// stealing a tabbed-to button's activation and arrows from stealing the
-// workspace tablist.
-function releaseFocusAfterPointerActivation(event) {
-  // Keyboard-synthesized click — the user is driving this control from the
-  // keyboard and must keep it.
-  if (event.detail === 0) return;
+// to the specific controls named at each call site, because those are the
+// ones that sit between the user and the Player. Do not generalize it into
+// a document-level handler, and do not weaken isKeyboardFocusedControl()
+// itself — that guard is what keeps Space from stealing a tabbed-to
+// button's activation and arrows from stealing the workspace tablist.
+//
+// [UI-REDESIGN / STAGE 6] [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE]
+// WHAT: `grantShortcutGrace`, an opt-in second parameter, defaulting to
+// false so every EXISTING call site (Gallery filter/type/tag buttons, the
+// Tags filter chips, the Gallery card grid) is completely unaffected unless
+// it explicitly asks for the new behavior. Only the five ordinary transport
+// commands — Play/Pause, Previous, Next, Fill, Favorite — pass `true`.
+// CONFIRMED REPRODUCTION this closes for those five: Tab to one of them,
+// press Enter — the command runs, and the `detail === 0` branch below
+// correctly leaves focus and its ring exactly where genuine keyboard
+// navigation put them, same as always. But the COMMAND is now finished, and
+// until this fix nothing told handleTransportKeydown()'s guard that:
+// isKeyboardFocusedControl() kept reporting the still-focused button as
+// genuinely keyboard-driven, so every shortcut but L stayed blocked for as
+// long as it held focus.
+// releaseTransientTriggerFocus() is the SAME grace mechanism the three
+// transient disclosures already use for the identical shape of problem
+// (focus legitimately staying somewhere after an interaction has already
+// concluded) — see its own block's WHAT/WHY further up this file.
+// WHY this needed to be OPT-IN rather than unconditional for every caller:
+// the five transport commands share a property the other callers do NOT —
+// native Enter/Space activation and the corresponding global shortcut
+// (Space, ←/→, F, L) call the EXACT SAME underlying function for all five,
+// so granting the grace changes no observable outcome there. A Gallery
+// filter button (All media, Type, a Tag chip) has no such equivalence: Space
+// pressed a second time while one of THOSE still holds focus is supposed to
+// re-activate THAT button via native semantics, not fall through to a
+// global shortcut with unrelated meaning. Making this unconditional for
+// every caller would have silently broken repeated-Space-on-a-focused-
+// filter-button for exactly that reason — the parameter is what keeps the
+// fix scoped to the five controls it was proven safe for.
+// The grace ends the moment focus actually leaves the button — see the
+// shared `focusout` listener next to transientTriggersReleased's own
+// declaration — so Tab-away-then-Tab-back-to-Play is unaffected and gets
+// ordinary focused-button semantics again, exactly as before this fix.
+function releaseFocusAfterPointerActivation(event, grantShortcutGrace = false) {
+  if (event.detail === 0) {
+    // Keyboard-synthesized click — the user is driving this control from
+    // the keyboard and must keep both its focus and its ring.
+    if (grantShortcutGrace) releaseTransientTriggerFocus(event.currentTarget);
+    return;
+  }
   event.currentTarget?.blur?.();
 }
 
@@ -3766,8 +4360,35 @@ tagsFilterToggleBtn.addEventListener("click", (event) => {
   releaseFocusAfterPointerActivation(event);
 });
 
-prevBtn.addEventListener("click", () => goToPreviousMedia());
-nextBtn.addEventListener("click", () => goToNextMedia());
+// [UI-REDESIGN / STAGE 6] [TAG-DISCOVERY-HANDOFF]
+manageTagsBtn.addEventListener("click", () => {
+  expandAndScrollToTagsSection();
+});
+
+// [UI-REDESIGN / STAGE 6] [BROWSER-FOCUS-SHORTCUT-RESTORE] See playBtn's own
+// click handler below for the full ROOT CAUSE — Previous/Next share it
+// exactly: neither ever released focus after a pointer click, so either
+// button could be left as document.activeElement indefinitely. The bug
+// requires no keypress to surface: switching the whole browser tab away and
+// back is enough (`:focus-visible` heuristics apply on browsing-context
+// refocus, not only on the next keydown), so a session that starts with a
+// mouse click on Previous or Next and includes so much as an alt-tab and
+// back has always been able to reach the same stuck-shortcuts state — this
+// was already broken by omission, not something the tab-switch introduces.
+// [UI-REDESIGN / STAGE 6] [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE] `true` here
+// is the opt-in that grants the shortcut grace period on a keyboard
+// activation — see releaseFocusAfterPointerActivation()'s own comment for
+// why Previous/Next are safe additions (native Enter/Space activation and
+// the ←/→ global shortcuts already call the exact same goToPreviousMedia()/
+// goToNextMedia() functions, so the grace changes no observable outcome).
+prevBtn.addEventListener("click", (event) => {
+  goToPreviousMedia();
+  releaseFocusAfterPointerActivation(event, true);
+});
+nextBtn.addEventListener("click", (event) => {
+  goToNextMedia();
+  releaseFocusAfterPointerActivation(event, true);
+});
 
 // [UI-REDESIGN / Stage 3] The ordinary Player's single "start" path. It is
 // now reached only through toggleTransportPlayback(), which both the
@@ -3842,10 +4463,54 @@ function enterFillPanelDeliberately() {
 // the click and the key doing different things, so both go through the
 // toggle. startPlaybackFromTransport() is still the shared "start" half
 // inside it, and Autoplay on Fill still reaches playback its own way.
-playBtn.addEventListener("click", () => toggleTransportPlayback());
+//
+// [UI-REDESIGN / STAGE 6] [BROWSER-FOCUS-SHORTCUT-RESTORE]
+// ROOT CAUSE (confirmed reproduction: leave the browser tab, return, click
+// Play, global shortcuts are now suppressed): this button never released
+// focus after a pointer click, unlike every OTHER clickable control in the
+// app (favoriteBtn, the Gallery filter/jump buttons, the three transient
+// disclosure triggers) — all of those already call
+// releaseFocusAfterPointerActivation() and are immune. A pointer click on
+// #play-btn left it as document.activeElement indefinitely, with
+// :focus-visible initially false (a pure pointer click never sets it) — so
+// shortcuts kept working right up until either (a) a later keypress caused
+// the browser to re-evaluate :focus-visible against "recent input modality"
+// and flip it true, or (b) — the reported case — the whole browsing context
+// lost and regained focus, which the CSS :focus-visible spec's own suggested
+// heuristic explicitly treats as reason enough to make the
+// currently-focused element focus-visible on its own, with no keypress
+// required at all. Either path lands on the same place:
+// isKeyboardFocusedControl() then sees #play-btn as genuinely
+// keyboard-focused and the guard in handleTransportKeydown() blocks every
+// shortcut but L, exactly matching the report.
+// THE FIX: the same one-line pattern already used everywhere else in this
+// file, extended to this button (and Previous/Next above, and Fill below —
+// see A4: these three share the identical gap; Favorite and the three
+// transient triggers already had it). This is not a window blur/focus
+// listener and does not touch :focus-visible itself — it removes the
+// PRECONDITION (a transport control left holding focus after an ordinary
+// click) that both trigger paths depend on. Keyboard activation (detail ===
+// 0) is untouched — Tab-to-Play-then-Enter still activates the button
+// natively and keeps its focus ring, exactly as intended.
+// [UI-REDESIGN / STAGE 6] [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE] The `true`
+// argument closes the remaining half of that same keyboard path — see
+// releaseFocusAfterPointerActivation()'s own comment: without it, Tab to
+// Play, press Enter, and every shortcut but L stayed blocked afterward even
+// though the command had already completed.
+playBtn.addEventListener("click", (event) => {
+  toggleTransportPlayback();
+  releaseFocusAfterPointerActivation(event, true);
+});
 
 // [UI-REDESIGN / Stage 3] Same shared entry path as the `F` shortcut.
-fillPanelBtn.addEventListener("click", () => enterFillPanelDeliberately());
+// [UI-REDESIGN / STAGE 6] [BROWSER-FOCUS-SHORTCUT-RESTORE] Same gap, same
+// fix as #play-btn above — see its comment for the full root cause.
+// [UI-REDESIGN / STAGE 6] [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE] Same `true`
+// opt-in as Play above, for the same keyboard-Enter reason.
+fillPanelBtn.addEventListener("click", (event) => {
+  enterFillPanelDeliberately();
+  releaseFocusAfterPointerActivation(event, true);
+});
 
 // [UI-REDESIGN / Stage 4] The now-playing strip's two controls. Both are
 // distinct elements calling EXISTING functions — runtime.stop() is the same
@@ -3911,7 +4576,9 @@ clearBtn.addEventListener("click", () => {
   allItems = [];
   clearViewerNode();
   exitFillMode();
-  lastHiddenRelativePath = null;
+  // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] Nothing is loaded
+  // anymore, so any waypoint is meaningless — clear it.
+  recentHideUndo = null;
   syncUndoHideButton();
   // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
   // Library…" click after this point would have nothing to associate.
@@ -3945,7 +4612,14 @@ favoriteBtn.addEventListener("click", (event) => {
   // Nothing about persistence, the deferred Favorites-filter removal, or the
   // preserved history is touched — this runs after handleFavoriteToggle()
   // and only moves focus.
-  releaseFocusAfterPointerActivation(event);
+  // [UI-REDESIGN / STAGE 6] [TRANSPORT-KEYBOARD-SHORTCUT-RELEASE] `true`
+  // grants the same keyboard-Enter shortcut grace Play/Previous/Next/Fill
+  // now get — safe here for the same reason: native activation and the `L`
+  // shortcut both call handleFavoriteToggle(), and L was already exempt from
+  // the guard regardless, so this closes the same gap for Space/←/→/F
+  // instead of leaving it as the one command still stuck after a keyboard
+  // Enter.
+  releaseFocusAfterPointerActivation(event, true);
 });
 
 // -- overlay / fill-panel controls --
@@ -3976,20 +4650,33 @@ overlayHideBtn.addEventListener("click", () => {
   runtime.toggleHidden();
 
   if (item) {
-    lastHiddenRelativePath = item.relativePath;
+    // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] [PM-HIDE-UNDO-WAYPOINT-RUNTIME-FIX]
+    // The item MediaRuntime landed on immediately after hiding `item`
+    // becomes the new waypoint, and the runtime's own navigationStep value
+    // at this exact moment becomes the expiration baseline — see
+    // recentHideUndo's own declaration comment for the full model. A
+    // second Hide while an older waypoint is still active simply replaces
+    // it wholesale (this pass is deliberately single-waypoint, not a
+    // history stack).
+    const landingItem = runtime.getCurrentItem();
+    recentHideUndo = {
+      hiddenRelativePath: item.relativePath,
+      landingItemId: landingItem ? landingItem.id : null,
+      landingNavigationStep: runtime.getState().navigationStep,
+    };
     syncUndoHideButton();
   }
 });
 
 overlayUndoHideBtn.addEventListener("click", () => {
-  if (lastHiddenRelativePath === null) return;
+  if (!recentHideUndo) return;
 
   // Go straight through ProfileStore rather than toggleHidden — this is
   // always meant as "restore," regardless of the record's current state,
   // not a toggle.
-  profile.setHidden(lastHiddenRelativePath, false);
+  profile.setHidden(recentHideUndo.hiddenRelativePath, false);
 
-  lastHiddenRelativePath = null;
+  recentHideUndo = null;
   syncUndoHideButton();
 });
 
@@ -4006,10 +4693,15 @@ overlayExitBtn.addEventListener("click", () => {
 // than two copies that can drift. The two closes are load-bearing and came
 // with it: only one pop-out makes sense open at a time, so opening the Tags
 // row closes the Automations editor and the Ghost popunder first.
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-ENTRY] closeAutomationsTray() —
+// not closeAutomationEditor() — is called here now: it already closes the
+// editor as its own first step, and also closes the deep-compact tray
+// itself, so opening Settings at ≤448px does not leave an orphaned,
+// visually-empty tray open behind it.
 // FUTURE: Any new way to open this row calls this — never toggle
 // presentationSettings' class directly.
 function togglePresentationSettingsPanel() {
-  closeAutomationEditor();
+  closeAutomationsTray();
   closeGhostPopunder();
   presentationSettings.classList.toggle("hidden");
 }
@@ -4018,6 +4710,27 @@ overlaySettingsBtn.addEventListener("click", () => togglePresentationSettingsPan
 
 ghostToggleBtn.addEventListener("click", () => {
   toggleGhostPopunder();
+});
+
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL] [PM-AUTOMATIONS-ACTIVE-STOP]
+// WHAT: The canonical PM Automations entry point at every width, now a
+// genuine two-state control:
+//   ACTIVE (videoLoopInput.checked — see syncAutomationsActiveIndicator()'s
+//   own comment for why this is the single source of truth): one click
+//   STOPS all active Presentation automation behavior and closes the tray.
+//   Does NOT open the tray first — active means this button IS the stop
+//   command, not a route to go find one.
+//   INACTIVE: ordinary open/close disclosure toggle, unchanged.
+// This priority check must come first, exactly in this order — an active
+// automation always wins over the open/close toggle, per the brief's own
+// "IF automation active: stop... ELSE: toggle menu" state machine.
+overlayAutomationsMenuBtn.addEventListener("click", () => {
+  if (videoLoopInput.checked) {
+    stopAllPresentationAutomations();
+    closeAutomationsTray();
+    return;
+  }
+  toggleAutomationsTray();
 });
 
 overlayAutomationBtn.addEventListener("click", () => {
@@ -4055,9 +4768,13 @@ automationChoiceForeverBtn.addEventListener("click", () => {
   // Forever is a complete selection with nothing to configure — apply
   // immediately and close, per the refinement's "simplest interaction"
   // guidance, rather than adding an unnecessary confirmation step.
+  // [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-COMMIT-AND-CLOSE]
+  // closeAutomationsTray() (was closeAutomationEditor() alone) — a
+  // successful automation choice closes the WHOLE tray, not just the
+  // nested chooser, per "the controls have completed their job."
   activeLoopRule = { type: "forever" };
   applyLoopRuleToCurrentVideo();
-  closeAutomationEditor();
+  closeAutomationsTray();
 });
 
 automationChoiceTimesBtn.addEventListener("click", () => {
@@ -4112,18 +4829,29 @@ automationTimerSecondsIncreaseBtn.addEventListener("click", () => {
   renderAutomationEditor();
 });
 
-// -- Apply copies the draft into the applied rule, then closes the row --
+// -- Apply copies the draft into the applied rule, then closes the tray --
+//
+// [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-COMMIT-AND-CLOSE]
+// closeAutomationsTray() (was closeAutomationEditor() alone) — a
+// successful Apply closes the WHOLE tray, not just the nested
+// configuration row. Both draft values (automationDraftTotalPlays,
+// automationDraftMinutes/Seconds) are already clamped to always-valid
+// ranges by their own stepper handlers above (times ≥ 1; minutes ≥ 0;
+// seconds 0–50 in steps of 10) — there is no existing "invalid Apply"
+// state in this engine to preserve validation for, so both Apply handlers
+// close unconditionally, exactly as before this pass, just closing one
+// level higher.
 
 automationTimesApplyBtn.addEventListener("click", () => {
   activeLoopRule = { type: "times", totalPlays: automationDraftTotalPlays };
   applyLoopRuleToCurrentVideo();
-  closeAutomationEditor();
+  closeAutomationsTray();
 });
 
 automationTimerApplyBtn.addEventListener("click", () => {
   activeLoopRule = { type: "timer", minutes: automationDraftMinutes, seconds: automationDraftSeconds };
   applyLoopRuleToCurrentVideo();
-  closeAutomationEditor();
+  closeAutomationsTray();
 });
 
 ghostOpacityInput.addEventListener("input", () => {
@@ -4572,7 +5300,7 @@ function formatTagActivityTime(timestamp) {
 // as if the user had read the number off this card and typed it in
 // themselves. No new navigation system, no tag filter applied. Whether
 // that number still lands on the same item depends on the current visible
-// set matching the one that existed at tag time — performGalleryJump's
+// set matching the one that existed at tag time — validateGalleryJumpTarget's
 // existing range check already guards against a now-invalid number
 // (smaller current total, etc.) exactly as it would for any manually
 // typed value, so nothing extra is needed here for that case.
@@ -4584,6 +5312,13 @@ function resumeTagActivityToJump(slot) {
   // scrollIntoView()/focus() are no-ops on a hidden element and this would
   // otherwise fail silently. Behavior is otherwise unchanged.
   ensureGalleryWorkspaceVisible();
+  // [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] The target
+  // input only exists on Step 1 — force the row back there first, or the
+  // writes below land on a hidden field while Step 2's buttons are what's
+  // actually on screen. Marks the value as a genuine edit in progress so a
+  // background render cannot overwrite it before the user acts on it.
+  setGalleryJumpStep("select");
+  galleryJumpIsEditing = true;
 
   galleryJumpInput.value = String(slot.position);
   galleryJumpInput.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -5138,6 +5873,12 @@ profile.subscribe(() => {
   renderGallery(projectedState);
   syncFavoriteButtons(projectedState.currentItem);
   syncHideButton(projectedState.currentItem);
+  // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] Same reasoning as
+  // render()'s own call — keeps the waypoint's display truthful here too.
+  syncUndoHideButton();
+  // [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-MEDIA-SUPPORT] Same reasoning as
+  // render()'s own call.
+  syncAutomationsMediaAvailability(projectedState.currentItem);
   renderPresentationTagsPanel(projectedState.currentItem);
 });
 

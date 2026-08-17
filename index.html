@@ -354,7 +354,30 @@
            `Automations` deliberately uses the cookbook-* / workspace-*
            id namespace: automation-* belongs to Presentation Mode's Loop
            Automations and must never be shadowed here. -->
+      <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+           WHAT: The three permanent MVP V1 destinations — Gallery owns
+           media work, Automations owns automated behavior, Profile owns
+           persistent identity/configuration. Tagging is no longer a
+           top-level destination; its administration now lives inside
+           Profile (see the <details class="tags-admin-section"> in
+           #workspace-settings below) and its contextual use (Gallery tag
+           filter, Presentation Mode tag controls) is completely unchanged.
+           WHY: primary navigation should represent frequent product
+           destinations, not every feature module. Tag administration is
+           low-frequency configuration, not a creative workspace on par
+           with Gallery/Automations.
+           Internal ids/workspace names (workspace-tab-cookbook="cookbook",
+           workspace-tab-settings="settings") are deliberately UNCHANGED —
+           only the user-facing label/identity moved, per the "do not
+           rename dozens of implementation symbols" guidance; see
+           WORKSPACES in main.js. -->
       <nav class="workspace-nav" role="tablist" aria-label="Workspace">
+        <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+             "▦" is a deliberately simple, temporary CSS-compatible glyph —
+             not final Gallery icon artwork, which is out of scope for this
+             pass (see this section's own IA breadcrumb above). aria-label
+             pins the accessible name to "Gallery" regardless of that
+             decorative glyph. -->
         <button
           id="workspace-tab-gallery"
           class="workspace-tab"
@@ -362,25 +385,39 @@
           role="tab"
           aria-selected="true"
           aria-controls="workspace-gallery"
-        >Gallery</button>
-        <button
-          id="workspace-tab-tagging"
-          class="workspace-tab"
-          type="button"
-          role="tab"
-          aria-selected="false"
-          aria-controls="workspace-tagging"
-          tabindex="-1"
-        >Tagging</button>
+          aria-label="Gallery"
+          title="Gallery"
+        >▦ Gallery</button>
+        <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+             Icon-only — the dashed-ring lightning bolt already established
+             as the Automations identity in Presentation Mode (see
+             .overlay-btn-automations-menu in styles.css). This is a
+             deliberate, reported minimal duplication of that CSS
+             construction (.workspace-tab-automations::before/::after)
+             rather than a shared class, since the two live in differently
+             sized/scaled contexts (PM's --pm-control-size square vs. this
+             nav tab's own padding-driven box); the visual language is
+             identical. No rotation here — that behavior is specific to the
+             PM tray's open/closed state, not this tab's selected state. -->
         <button
           id="workspace-tab-cookbook"
-          class="workspace-tab"
+          class="workspace-tab workspace-tab-automations"
           type="button"
           role="tab"
           aria-selected="false"
           aria-controls="workspace-cookbook"
+          aria-label="Automations"
+          title="Automations"
           tabindex="-1"
-        >Automations</button>
+        ></button>
+        <!-- [UI-REDESIGN / STAGE 6] [PROFILE-WORKSPACE-IDENTITY]
+             User-facing label changed from "⚙ Settings" to "⚙ Profile" —
+             the right-side utility destination now represents the user's
+             persistent Profile, sync, tags, associations and preferences.
+             This button's own id and the internal workspace name "settings"
+             are deliberately retained (see main.js's WORKSPACES /
+             ensureSettingsWorkspaceVisible()) for DOM-contract stability;
+             only the visible identity changed. -->
         <button
           id="workspace-tab-settings"
           class="workspace-tab workspace-tab-utility"
@@ -389,22 +426,26 @@
           aria-selected="false"
           aria-controls="workspace-settings"
           tabindex="-1"
-        >⚙ Settings</button>
+        >⚙ Profile</button>
       </nav>
 
       <!-- [UI-REDESIGN / Stage 1A]
-           WHAT: The four workspace panels. All four ship in static markup;
-           only their `hidden` attribute changes at runtime.
+           WHAT: The workspace panels. Each ships in static markup; only
+           its `hidden` attribute changes at runtime.
            WHY: src/main.js captures every element it uses as a module-scope
            const at parse time. A panel created on first activation would
            make those captures resolve to null, and the failure would be
            silent. Gallery therefore wraps the EXISTING #viewer-panel and
            .gallery-panel sections in place — the nodes are re-parented once
            here, never rebuilt.
-           FUTURE: Stage 1B fills #workspace-tagging, Stage 1C fills
-           #workspace-settings and #workspace-cookbook. Never populate a
-           panel with innerHTML/replaceChildren/replaceWith — move the real
-           element into this markup instead. -->
+           [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] #workspace-tagging
+           (Stage 1B) is gone — its content now lives inside
+           #workspace-settings as <details class="tags-admin-section">; see
+           TAGS-PROFILE-ADMIN there.
+           FUTURE: #workspace-settings and #workspace-cookbook were filled
+           in Stage 1C. Never populate a panel with
+           innerHTML/replaceChildren/replaceWith — move the real element
+           into this markup instead. -->
       <div
         id="workspace-gallery"
         class="workspace-panel workspace-panel-gallery"
@@ -443,10 +484,13 @@
         <!-- [UI-REDESIGN / Stage 3]
              WHAT: The transport row, directly beneath the Player. Every
              control in it is an EXISTING element moved here — #favorite-btn
-             and #counter-text from the viewer header above, and #prev-btn /
-             #play-btn / #next-btn from the rail's now-removed
-             section.playback-section. Only #playback-settings-btn and its
-             popover are new.
+             from the viewer header above, and #prev-btn / #play-btn /
+             #next-btn from the rail's now-removed section.playback-section.
+             Only #playback-settings-btn and its popover are new.
+             [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE]
+             #counter-text used to be part of this row too (moved from the
+             viewer header the same way) — it is deleted now, not moved
+             anywhere; see .player-transport-cluster's own comment below.
              WHY: These controls act on what is on screen, so they belong
              under it rather than in a sidebar the eye has to leave the
              media to reach.
@@ -465,12 +509,21 @@
           <!-- [UI-REDESIGN / Stage 6]
                WHAT: The transport is ICON-ONLY and reads, left to right:
 
-                 ♡  ⏮  ▶/⏸  ⏭   ·flexible space·   ⚙  ⛶  [counter]
+                 ♡  ⏮  ▶/⏸  ⏭   ·flexible space·   ⚙  ⛶
 
-               Three groups, in DOM order: .player-transport-cluster (the four
-               PRIMARY controls that drive what is on screen),
+               Two groups, in DOM order: .player-transport-cluster (the four
+               PRIMARY controls that drive what is on screen) and
                .player-transport-utility (the two UTILITY controls that open
-               something), and .player-transport-meta (the counter readout).
+               something).
+               [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] A
+               third group, .player-transport-meta, held a trailing position
+               counter (#counter-text) here — deleted, not hidden, on every
+               viewport. The transport is actions only now; Gallery's own
+               target control (Select [ target / total ] Next →) is the
+               normal visible position/context surface, desktop and mobile
+               alike. See MediaRuntime / syncGalleryJumpTarget() in main.js —
+               that is still the one source of truth, nothing about state
+               ownership moved with the display.
                WHY: Text labels ("Previous", "Start", "Stop", "Next",
                "Playback ⚙", "Fill ⛶") made the row ~640px wide at rest —
                wider than a half-width Stream Loop panel, so it wrapped to two
@@ -490,7 +543,8 @@
                FUTURE: DOM order IS visual order here (no `order` values), so
                the tab sequence matches the row. Anything added needs an entry
                in the width budget in styles.css — the arithmetic there assumes
-               exactly these six controls. -->
+               exactly these six controls. A future, separate Player-position
+               overlay may be considered later; not part of this pass. -->
           <div class="player-transport-cluster">
             <!-- Favorite keeps its EXISTING heart visuals: syncFavoriteButtons()
                  in main.js writes ♡ / ♥ into this button's textContent and
@@ -633,19 +687,6 @@
                 />
               </svg>
             </button>
-          </div>
-
-          <!-- [UI-REDESIGN / Stage 6]
-               WHAT: The counter, alone, last in the row. It is a READOUT, not
-               a control, which is why it is the only thing allowed to give
-               way: it truncates, then hides outright at phone widths, before
-               any of the six buttons is allowed to shrink past its floor. None
-               of the six is ever hidden to keep it.
-               FUTURE: Do not put a control back in here. A control in this
-               group is a control outside the approved order, and it would
-               break the one-row width budget in styles.css. -->
-          <div class="player-transport-meta">
-            <span id="counter-text">0 / 0</span>
           </div>
 
           <!-- [UI-REDESIGN / Stage 3]
@@ -863,8 +904,23 @@
       <!-- [UI-REDESIGN / Stage 5] role/aria-label added: the panel is the
            Tag button's disclosure and is now a named region its
            aria-controls can point at, rather than an anonymous div. -->
+      <!-- [UI-REDESIGN / STAGE 6] [TAG-DISCOVERY-HANDOFF]
+           WHAT: #manage-tags-btn hands off to Profile → Tags — switches to
+           the Profile workspace, opens the Tags disclosure, scrolls it into
+           view, and focuses the tag-creation input, via
+           expandAndScrollToTagsSection() in main.js. Reuses the exact same
+           workspace-navigation / disclosure-opening pattern
+           expandAndScrollToProfileSection() already uses for the Associate
+           Profile hand-off — not a second navigation mechanism.
+           WHY: removing Tagging from primary navigation must not make tag
+           creation harder to discover; this empty state is the most common
+           place a user first looks for it. Wording is deliberately
+           user-facing (no "workspace", "settings section", or internal
+           term) — see PROFILE-TAGS-DISCLOSURE in index.html's Settings
+           section for the destination this opens. -->
       <div id="tags-filter-panel" class="tags-filter-panel hidden" role="group" aria-label="Filter by tag">
-        <p id="tags-filter-empty" class="hint">No tags yet — create some in the Tagging workspace.</p>
+        <p id="tags-filter-empty" class="hint">No tags yet. Create and manage tags in Profile → Tags.</p>
+        <button id="manage-tags-btn" class="secondary hint-action-btn" type="button">Manage Tags</button>
         <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
       </div>
 
@@ -906,52 +962,187 @@
              is only meaningful against the visible-item total that existed
              at tag time, which is exactly what this control already
              validates against (an out-of-range number is rejected, same as
-             any manually-typed one) — no separate resume mechanism. -->
+             any manually-typed one) — no separate resume mechanism.
+             [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] That
+             validation now lives in validateGalleryJumpTarget() in main.js —
+             same regex, same range check, same flash, just factored out of
+             the old performGalleryJump() so Step 1's Next button can run it
+             BEFORE Step 2's actions exist to run. resumeTagActivityToJump()
+             (the function behind the Status Update Center's Find/Resume) also
+             now forces the row back to Step 1 before writing into this
+             input, since Step 1 is the only step where it is ever visible. -->
+        <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+             WHAT: The Gallery navigation workflow, now a two-step disclosure
+             on BOTH desktop and mobile — one JS-owned step variable
+             (galleryJumpStep in main.js), exactly one `.gallery-jump-step`
+             visible at a time, the next step REPLACING the previous one
+             rather than stacking below it. Modelled directly on Presentation
+             Mode's Loop Automations panel (#automation-panel: same shape,
+             one step visible, next step replaces).
+             This SUPERSEDES the old one-line desktop sentence (Select →
+             input → Use Current → "then →" → Find Below → "or" → Load in
+             Player). "Use Current" is GONE — the target input now defaults
+             to and stays in sync with the actual current runtime position on
+             its own (see syncGalleryJumpTarget() in main.js), so there is
+             nothing left for a separate "use current" action to do. The
+             "then →" connective text is gone with it: Step 1 and Step 2 are
+             now always mutually exclusive, so nothing ever bridges them
+             visually.
+             STEP 1 (#gallery-jump-step-select): "Select [ target / total ]
+             [ Next → ]". The target INPUT is the interactive control — see
+             its own comment for the click/tap-to-clear contract. The total
+             (#gallery-jump-total) is a plain, non-editable readout.
+             STEP 2 (#gallery-jump-step-action): "[ Find Below ] or [ Load in
+             Player ]" on desktop — both EXISTING action buttons, ids
+             unchanged, now pure one-shot actions rather than a persistent
+             mode-toggle pair (aria-pressed/.active retired — see main.js;
+             nothing is "pressed" once every click both executes and
+             immediately resets the row).
+             [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT] On the
+             compact layout Step 2 gains a third, leading control — ↩ Back —
+             and drops the "or" text: "[ ↩ ] [ Find Below ] [ Load in
+             Player ]". Both are mobile-only (see styles.css); desktop Step 2
+             is untouched by this refinement.
+             WHY one workflow everywhere rather than desktop getting the old
+             sentence back: a Browser Preview pass showed the sentence
+             genuinely doesn't fit a compact width no matter how it's
+             trimmed, and keeping two different interactions for the same
+             feature was itself confusing. The step model reads identically
+             at every width — only the GEOMETRY (see styles.css) adapts.
+             FUTURE: setGalleryJumpStep() in main.js is the ONLY thing that
+             toggles which step is visible — do not hide either wrapper
+             directly. Do not add a third step; this models exactly one
+             disclosure (target confirmation → action choice), not a wizard. -->
         <div class="gallery-jump-group" role="group" aria-label="Select and navigate to media">
-          <span class="toolbar-filter-label">Select</span>
-          <input
-            id="gallery-jump-input"
-            type="text"
-            inputmode="numeric"
-            autocomplete="off"
-            class="gallery-jump-input"
-            aria-label="Media number to jump to"
-          />
-          <!-- [UI-REDESIGN / Stage 4]
-               WHAT: Fills the box with the current media's 1-based position
-               in the CURRENT visible/filtered sequence — the same sequence
-               the input already validates against.
-               WHY: The position was previously only visible as the input's
-               placeholder, so acting on it meant reading it and retyping it.
-               FUTURE: This populates and nothing else. It must never
-               navigate, load, or scroll — Find Below and Load in Player
-               remain the only actions, and this deliberately leaves the
-               choice between them to the user. It also introduces no
-               numbering of its own: the value comes straight from
-               runtime.getState().currentIndex. -->
-          <button
-            id="gallery-jump-use-current-btn"
-            class="secondary gallery-jump-use-current-btn"
-            type="button"
-            title="Fill in the current media's position in this filtered view (does not navigate or load)"
-            disabled
-          >Use Current</button>
-          <span class="gallery-jump-separator">then →</span>
-          <button
-            id="gallery-jump-mode-find-btn"
-            class="filter-btn active"
-            type="button"
-            aria-pressed="true"
-            title="Search: scroll to this position in your current filtered Gallery view (does not load it)"
-          >Find Below</button>
-          <span class="gallery-jump-separator">or</span>
-          <button
-            id="gallery-jump-mode-play-btn"
-            class="filter-btn"
-            type="button"
-            aria-pressed="false"
-            title="Direct jump: load this media into the Viewer immediately"
-          >Load in Player</button>
+          <div id="gallery-jump-step-select" class="gallery-jump-step">
+            <span class="toolbar-filter-label">Select</span>
+            <div class="gallery-jump-target">
+              <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+                   WHAT: The target position. Defaults to, and re-syncs with,
+                   the actual current runtime position (see
+                   syncGalleryJumpTarget() in main.js, called from render() on
+                   every runtime state change) — never a second, competing
+                   idea of "current". A click or tap clears the digits
+                   immediately and focuses the field so the user can type a
+                   replacement without any select-all/backspace step; Tab
+                   arrival does NOT clear it, since keyboard traversal is not
+                   edit intent (main.js distinguishes the two by listening for
+                   `click`, which a text input only receives from a real
+                   pointer activation, never from Tab).
+                   WHY not greyed out: this is a live, always-correct value,
+                   not a placeholder hint — it is written as the input's
+                   actual `.value`, not its `placeholder`, specifically so it
+                   never picks up the muted placeholder color and reads as
+                   disabled. The border/hover/focus-visible states it already
+                   inherited from every other text input in this app ARE the
+                   affordance; nothing else (no pencil icon, no "Edit" label)
+                   is added.
+                   FUTURE: Do not write to `.value` from anywhere except
+                   syncGalleryJumpTarget() (idle sync), the click handler
+                   (clear-to-edit), the blur handler (abandoned-empty
+                   restore), and finishGalleryJumpAction() (post-action
+                   refresh) — four call sites, one meaning each. -->
+              <input
+                id="gallery-jump-input"
+                type="text"
+                inputmode="numeric"
+                autocomplete="off"
+                class="gallery-jump-input"
+                aria-label="Target media position"
+                aria-describedby="gallery-jump-total"
+              />
+              <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+                   WHAT: The valid-range total. A plain, non-editable <span> —
+                   there is no freeform "/ 17117" text a user could edit into
+                   something else, because it is never part of the input's own
+                   value at all. Written by syncGalleryJumpTarget() from
+                   state.total, the SAME total Gallery Jump validation already
+                   checks against. -->
+              <span id="gallery-jump-total" class="gallery-jump-total"></span>
+            </div>
+            <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+                 WHAT: Validates the target (the SAME check performGalleryJump
+                 used to run inline — see validateGalleryJumpTarget() in
+                 main.js) and, only if valid, advances to Step 2. It does not
+                 itself navigate anywhere; Find Below/Load in Player in Step 2
+                 do that, exactly as before.
+                 WHY this replaces "Use Current": that button existed only to
+                 populate the target with the current position before the
+                 user still had to choose Find Below or Load in Player
+                 anyway. Now the target already defaults to the current
+                 position on its own, so pressing Next with no edits reaches
+                 the identical outcome — "confirm the current item, then
+                 choose what to do with it" — in one fewer step, and typing a
+                 custom number first works through the exact same button. -->
+            <button
+              id="gallery-jump-next-btn"
+              class="secondary gallery-jump-next-btn"
+              type="button"
+              title="Confirm this target, then choose Find Below or Load in Player"
+              disabled
+            >Next →</button>
+          </div>
+          <div id="gallery-jump-step-action" class="gallery-jump-step gallery-jump-step-inactive">
+            <!-- [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT]
+                 WHAT: Mobile-only escape from Step 2 back to Step 1, without
+                 executing either action. `display: none` at every width by
+                 default (see styles.css) — desktop Step 2 stays exactly
+                 [ Find Below ] or [ Load in Player ], no Back button, per
+                 this pass's explicit scope.
+                 WHY an icon and not text: the button must read as visually
+                 quiet — secondary to the two real actions beside it — while
+                 still being a full accessible control; whatever glyph is
+                 there is presentational only, aria-label carries the real
+                 name. It returns to Step 1 via setGalleryJumpStep("select")
+                 alone — see its click handler in main.js. It does not touch
+                 galleryJumpConfirmedIndex (the confirmed target the user
+                 backed up TO SEE is exactly what Step 1 shows again — the
+                 input already holds it, since nothing has reset it), does
+                 not call executeGalleryJump(), and does not touch
+                 runtime/currentIndex/filters in any way.
+                 [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT]
+                 The literal ↩ character this button started with is gone —
+                 the icon is CSS-drawn from two border-only pseudo-elements
+                 (a rotated chevron + a short line), the same "empty button,
+                 icon in CSS, name in aria-label" pattern #mobile-controls-btn
+                 already uses. See that button's own comment in styles.css
+                 for why borders specifically, not a filled background, are
+                 the resistant choice against dark-mode/theme browser
+                 extensions. -->
+            <button
+              id="gallery-jump-back-btn"
+              class="secondary gallery-jump-back-btn"
+              type="button"
+              aria-label="Back to media selection"
+              title="Back"
+            ></button>
+            <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+                 aria-pressed/.active retired: these are one-shot actions now
+                 (see the WHAT/WHY on .gallery-jump-group above), not a
+                 persistent mode pair — nothing about either button is ever
+                 "pressed" once every click both executes and resets Step 1.
+                 Ids, click handlers' underlying jump logic, and tooltips are
+                 unchanged from before this pass. -->
+            <button
+              id="gallery-jump-mode-find-btn"
+              class="filter-btn"
+              type="button"
+              title="Search: scroll to this position in your current filtered Gallery view (does not load it)"
+            >Find Below</button>
+            <!-- [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT]
+                 Mobile hides this — see styles.css. Two clearly-presented,
+                 mutually-exclusive buttons plus a Back control read as one
+                 system on a narrow row without needing prose between them;
+                 desktop, with more room and no Back button competing for it,
+                 keeps "or". -->
+            <span class="gallery-jump-separator">or</span>
+            <button
+              id="gallery-jump-mode-play-btn"
+              class="filter-btn"
+              type="button"
+              title="Direct jump: load this media into the Viewer immediately"
+            >Load in Player</button>
+          </div>
         </div>
       </div>
  
@@ -963,62 +1154,19 @@
       </section>
       </div>
 
-      <div
-        id="workspace-tagging"
-        class="workspace-panel"
-        role="tabpanel"
-        tabindex="0"
-        aria-labelledby="workspace-tab-tagging"
-        hidden
-      >
-      <!-- [UI-REDESIGN / Stage 1B]
-           WHAT: The Tags section, moved here intact from the left rail —
-           same elements, same ids, same listeners, same status messages.
-           The <details>/<summary> disclosure was unwrapped to a plain
-           <section>; the heading now reads "Tagging" to match the tab.
-           WHY: This section has no id and no JavaScript reference of any
-           kind — nothing reads or writes its `.open` — so the disclosure
-           was pure chrome. Inside a workspace that exists to show it, a
-           disclosure you must open every time is friction, and removing the
-           <summary> shortens the tab order rather than lengthening it.
-           (details.profile-section is NOT comparable: main.js captures it
-           via querySelector(".profile-section") and sets .open, so it stays
-           a <details> — see Stage 1C.)
-           FUTURE: Keep Gallery's Tag *filter* separate from this Tag
-           *management* surface. They are two containers rendered by two
-           functions (renderTagsFilterGrid / renderTagsGrid) over one
-           ProfileStore; do not merge them or let one render the other. -->
-      <section class="panel tags-section">
-        <h2>Tagging</h2>
-
-        <div id="tag-activity-center" class="tag-activity-center" role="status" aria-live="polite" aria-label="Tag Status Update Center">
-          <div id="tag-activity-neutral" class="tag-activity-neutral">Select a tag to view its latest activity.</div>
-          <div id="tag-activity-content" class="hidden">
-            <div class="tag-activity-row">
-              <span id="tag-activity-name" class="tag-activity-value"></span>
-              <span class="tag-activity-description">(last tagged)</span>
-            </div>
-            <!-- [Phase 8.3-2] Built dynamically in main.js — up to three
-                 rows (Shuffle OFF / Shuffle ON / legacy-unknown), each with
-                 its own "Find" action that populates the existing Gallery
-                 Jump input rather than applying a tag filter. See
-                 renderTagActivityCenter() / resumeTagActivityToJump(). -->
-            <div id="tag-activity-rows" class="tag-activity-rows"></div>
-            <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
-          </div>
-        </div>
-
-        <div class="tag-create-row">
-          <input id="tag-create-input" type="text" placeholder="New tag name" maxlength="40" />
-          <button id="tag-create-btn" class="secondary" type="button">Add</button>
-        </div>
-
-        <p id="tags-status-text" class="hint" role="status"></p>
-
-        <div id="tags-empty" class="hint">No tags yet.</div>
-        <div id="tags-grid" class="tags-grid hidden"></div>
-      </section>
-      </div>
+      <!-- [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN]
+           WHAT: #workspace-tagging (the standalone Tagging workspace) is
+           removed. Its administration content — same elements, same ids,
+           same listeners, same status messages, nothing cloned — now lives
+           inside #workspace-settings below, as the
+           <details class="tags-admin-section"> sibling of
+           <details class="profile-section">.
+           WHY: tags are used contextually in Gallery/Presentation (that
+           functionality is completely untouched — see .tags-filter-panel
+           in the Gallery section above and the Presentation Mode tags row
+           further down), but creation and administration are low-frequency
+           configuration tasks that belong in Profile rather than permanent
+           top-level navigation. -->
 
       <div
         id="workspace-cookbook"
@@ -1076,8 +1224,8 @@
       <!-- [UI-REDESIGN / Stage 1C]
            WHAT: The Profile section, moved here intact from the left rail —
            same elements, same ids, same listeners, same storage calls, same
-           import/export schema, same confirmation flows. Unlike Tags it
-           stays a <details>, because main.js captures it via
+           import/export schema, same confirmation flows. It stays a
+           <details>, because main.js captures it via
            querySelector(".profile-section") and sets `.open` in
            expandAndScrollToProfileSection(); unwrapping it would make that
            assignment a no-op on a plain <section>. It now ships with the
@@ -1085,13 +1233,24 @@
            disclosure — nothing ever sets `.open = false`, and the expand
            helper already no-ops when it is open.
            WHY: Profiles are supporting infrastructure, not a creative
-           workspace. Settings is where rare administration lives.
+           workspace. This workspace is where rare administration lives.
            FUTURE: The rail must never grow a second Profile-management
            implementation. Its Associate/Change shortcut is navigation only
            — it calls expandAndScrollToProfileSection(), which now brings
-           this workspace forward first. Keep it that way. -->
+           this workspace forward first. Keep it that way.
+           [UI-REDESIGN / STAGE 6] [PROFILE-WORKSPACE-IDENTITY]
+           WHAT: The visible heading below reads "Profile" now, not
+           "Settings" — see the workspace tab's own comment for the full
+           rename note. The CSS class `settings-panel` and this workspace's
+           internal name ("settings", matching this panel's own id) are
+           deliberately UNCHANGED — only the user-facing identity moved.
+           [TAGS-PROFILE-ADMIN] This section also now contains
+           <details class="tags-admin-section"> — see its own comment,
+           right after </details> below — as a second, sibling disclosure
+           for the Tagging administration content relocated from the
+           now-removed top-level Tagging workspace. -->
       <section class="panel settings-panel">
-        <h2>Settings</h2>
+        <h2>Profile</h2>
 
         <details class="profile-section" open>
         <summary>Profile</summary>
@@ -1234,6 +1393,58 @@
         <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
 
         </details>
+
+        <!-- [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN] [PROFILE-TAGS-DISCLOSURE]
+             WHAT: Tag administration, relocated intact from the removed
+             top-level Tagging workspace — same elements, same ids, same
+             listeners, same status messages, nothing cloned or rebuilt.
+             Collapsed by default (no `open` attribute), unlike
+             .profile-section above: Profile is this workspace's primary
+             identity and stays open; Tags administration is intentionally
+             lower-frequency and was removed from top-level navigation
+             specifically so it does not permanently consume attention or
+             space here either.
+             main.js captures this via querySelector(".tags-admin-section")
+             and opens it explicitly from expandAndScrollToTagsSection() —
+             the same "Manage Tags" / tag-activity "Find"-style hand-off
+             pattern expandAndScrollToProfileSection() already uses for
+             Profile, not a second navigation mechanism.
+             WHY: tags are used contextually in Gallery/Presentation (see
+             .tags-filter-panel and Presentation Mode's own tags row —
+             completely unaffected by this move); creation and
+             administration are the low-frequency configuration task that
+             belongs here instead. -->
+        <details class="tags-admin-section">
+        <summary>Tags</summary>
+
+        <div id="tag-activity-center" class="tag-activity-center" role="status" aria-live="polite" aria-label="Tag Status Update Center">
+          <div id="tag-activity-neutral" class="tag-activity-neutral">Select a tag to view its latest activity.</div>
+          <div id="tag-activity-content" class="hidden">
+            <div class="tag-activity-row">
+              <span id="tag-activity-name" class="tag-activity-value"></span>
+              <span class="tag-activity-description">(last tagged)</span>
+            </div>
+            <!-- [Phase 8.3-2] Built dynamically in main.js — up to three
+                 rows (Shuffle OFF / Shuffle ON / legacy-unknown), each with
+                 its own "Find" action that populates the existing Gallery
+                 Jump input rather than applying a tag filter. See
+                 renderTagActivityCenter() / resumeTagActivityToJump(). -->
+            <div id="tag-activity-rows" class="tag-activity-rows"></div>
+            <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
+          </div>
+        </div>
+
+        <div class="tag-create-row">
+          <input id="tag-create-input" type="text" placeholder="New tag name" maxlength="40" />
+          <button id="tag-create-btn" class="secondary" type="button">Add</button>
+        </div>
+
+        <p id="tags-status-text" class="hint" role="status"></p>
+
+        <div id="tags-empty" class="hint">No tags yet.</div>
+        <div id="tags-grid" class="tags-grid hidden"></div>
+        </details>
+
       </section>
       </div>
 
@@ -1281,16 +1492,75 @@
   <div id="presentation-controls" class="presentation-controls hidden" tabindex="0" aria-label="Presentation controls">
     <div class="presentation-controls-bar">
       <button id="overlay-favorite-btn" class="overlay-btn overlay-btn-favorite hidden" type="button" aria-label="Toggle favorite">♡</button>
-      <label id="video-loop-control" class="loop-toggle-control overlay-loop-toggle" title="Loop: OFF (click to enable)">
-        <input id="video-loop-input" type="checkbox" />
-        <span id="video-loop-state-text">🔁</span>
-      </label>
-      <button id="overlay-automation-btn" class="overlay-btn overlay-btn-automation" type="button" title="Loop Automations" aria-label="Loop Automations">🤖</button>
+      <!-- [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
+           WHAT: The canonical PM Automations entry point at EVERY width now
+           — was deep-compact-only/desktop-off; that split is gone. Opens
+           #pm-automations-group below, which now replaces the OLD permanent
+           Loop + 🤖 primary-toolbar buttons everywhere, not just <448px.
+           WHY: Loop and Loop Automations belong to one scalable automation
+           family; future PM automations should expand inside that secondary
+           row rather than consuming new primary-toolbar slots. See that
+           element's own comment for the full architecture note. -->
+      <button
+        id="overlay-automations-menu-btn"
+        class="overlay-btn overlay-btn-automations-menu"
+        type="button"
+        aria-label="Automations"
+        title="Automations"
+        aria-haspopup="true"
+        aria-expanded="false"
+        aria-controls="pm-automations-group"
+      ></button>
+      <!-- [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
+           WHAT: Wraps the EXISTING Loop toggle and 🤖 Loop Automations
+           button — same ids, same handlers, nothing cloned or rebuilt. This
+           is now the ONE PM Automations model at every width: closed by
+           default, opened by #overlay-automations-menu-btn above, with a
+           `flex-basis: 100%` / `order: 99` layout inside
+           .presentation-controls-bar's own `flex-wrap` (see styles.css)
+           that becomes a real second row when open. There is no longer a
+           wide-width "inline in the primary toolbar" state.
+           [PM-AUTOMATIONS-MEDIA-SUPPORT] #pm-automations-photo-empty is the
+           third child — Loop/🤖 are video-only automations (main.js's
+           existing engine already gates their actual EXECUTION on
+           `isShowingVideo`; this is the matching PRESENTATION-layer gate,
+           so the controls never visually invite a click that would do
+           nothing). Exactly one of "Loop + 🤖" or the empty-state message
+           is visible at a time, driven by the current item's real `kind` —
+           see syncAutomationsMediaAvailability() in main.js. ⚡ itself is
+           NEVER gated — Automations remains available as a destination for
+           both photos and videos; only its CONTENT is media-aware.
+           FUTURE: This secondary row is the intended expansion point for
+           future Presentation/Playback Automations and recipes — add new
+           automation controls HERE, not as new permanent primary-toolbar
+           buttons. -->
+      <div id="pm-automations-group" class="pm-automations-group">
+        <label id="video-loop-control" class="loop-toggle-control overlay-loop-toggle" title="Loop: OFF (click to enable)">
+          <input id="video-loop-input" type="checkbox" />
+          <span id="video-loop-state-text">🔁</span>
+        </label>
+        <button id="overlay-automation-btn" class="overlay-btn overlay-btn-automation" type="button" title="Loop Automations" aria-label="Loop Automations">🤖</button>
+        <p id="pm-automations-photo-empty" class="pm-automations-photo-empty hint hidden">No automations available for photos yet.</p>
+      </div>
       <button id="overlay-prev-btn" class="overlay-btn" type="button">◀</button>
       <button id="overlay-play-btn" class="overlay-btn" type="button">⏯</button>
       <button id="overlay-next-btn" class="overlay-btn" type="button">▶</button>
-      <button id="overlay-hide-btn" class="overlay-btn overlay-btn-hide" type="button" aria-label="Hide from presentation">🙈 Hide</button>
-      <button id="overlay-undo-hide-btn" class="overlay-btn overlay-btn-undo-hide" type="button" aria-label="Undo last hide" disabled>↩ Undo</button>
+      <!-- [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT]
+           WHAT: Wraps the EXISTING #overlay-hide-btn/#overlay-undo-hide-btn
+           — same ids, same handlers, nothing cloned. `display: contents`
+           (the base/desktop rule in styles.css) makes this wrapper
+           invisible to layout above 448px, so both buttons render exactly
+           as direct flex items of .presentation-controls-bar, precisely
+           where they always have — the wide/normalized PM toolbar (Hide
+           AND Undo both visible, Undo greyed out when unavailable) is
+           completely unchanged. Only the ≤448px deep-compact tier turns
+           this into a real single, fixed-size slot showing exactly one of
+           the two, driven by syncUndoHideButton()'s truthful
+           lastHiddenRelativePath check — see that function in main.js. -->
+      <div id="pm-hide-undo-slot" class="pm-hide-undo-slot">
+        <button id="overlay-hide-btn" class="overlay-btn overlay-btn-hide" type="button" aria-label="Hide from presentation">🙈 Hide</button>
+        <button id="overlay-undo-hide-btn" class="overlay-btn overlay-btn-undo-hide" type="button" aria-label="Undo last hide" disabled>↩ Undo</button>
+      </div>
       <button id="overlay-exit-btn" class="overlay-btn overlay-btn-danger" type="button">Exit</button>
       <button id="overlay-settings-btn" class="overlay-btn overlay-btn-gear" type="button">⚙</button>
     </div>
@@ -1329,7 +1599,13 @@
           title="Ghost Opacity"
         >👻</button>
         <span class="presentation-settings-label">Tags</span>
-        <p id="presentation-tags-empty" class="hint presentation-tags-empty">No tags yet — create some in Gallery Settings.</p>
+        <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] Wording only — tag
+             creation moved from the (now-removed) Tagging workspace into
+             Profile → Tags; see TAGS-PROFILE-ADMIN. No button added here:
+             Presentation Mode is a focused overlay, and sending the user to
+             a different workspace mid-presentation is a bigger interaction
+             than this compact settings row should take on unprompted. -->
+        <p id="presentation-tags-empty" class="hint presentation-tags-empty">No tags yet — create and manage tags in Profile → Tags.</p>
         <div id="presentation-tags-row" class="presentation-tags-row hidden"></div>
       </div>
       <div id="presentation-tags-overflow" class="presentation-tags-overflow hidden"></div>

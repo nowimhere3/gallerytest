@@ -8,6 +8,34 @@ export class MediaRuntime {
   #isPlaying = false;
   #listeners = new Set();
 
+  // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT-RUNTIME-FIX]
+  // WHAT: A plain incrementing/decrementing counter — +1 on every
+  // successful next() move, -1 on every successful previous() move,
+  // touched in EVERY branch that actually moves #currentIndex (shuffle
+  // and sequential alike), regardless of what triggered the call: a
+  // manual button/keyboard press, the slideshow's own interval timer, or
+  // a video's "ended" event calling notifyVideoEnded() -> next(). Exposed
+  // read-only via getState().navigationStep.
+  // WHY this exists: a caller (main.js) that wants to know "how far has
+  // the user moved past some earlier position" cannot reliably track that
+  // by wrapping its OWN button click handlers — next()/previous() are also
+  // called directly from INSIDE this class (the interval timer, video-end)
+  // where no external caller ever runs, so any external interception
+  // silently undercounts real movement the moment autoplay is involved.
+  // This counter is instead updated at the one place both paths already
+  // funnel through, so it can never be bypassed by an internal auto-advance
+  // the way a call-site hook can.
+  // Deliberately NOT reset by load()/clear() — a caller wanting to measure
+  // "steps since some checkpoint" reads this value AT the checkpoint and
+  // compares the DELTA later; resetting it here would just move the
+  // bookkeeping burden onto guessing when a caller's checkpoint should also
+  // reset, for zero benefit (a delta computation is agnostic to the
+  // absolute baseline). #advanceIfCurrentHidden() deliberately does NOT
+  // touch it either — that moves the CURRENT item off a newly-hidden one,
+  // which is a landing point a caller measures FROM, not a step away from
+  // anywhere.
+  #navigationStep = 0;
+
   // Shuffle "back history" — a browser-style history stack. #history holds
   // the sequence of indices actually visited (oldest first); #historyCursor
   // points at the currently-displayed entry. Only used in shuffle mode —
@@ -120,6 +148,11 @@ export class MediaRuntime {
       // true while we're playing but deliberately NOT running a timer,
       // because the current item is a video we're letting play to completion
       waitingOnVideo: this.#isPlaying && this.#timerId === null && this.#isCurrentItemVideo(),
+      // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT-RUNTIME-FIX]
+      // See #navigationStep's own declaration comment for the full WHAT/WHY
+      // — a caller measuring "steps since some earlier position" reads this
+      // at that earlier position and compares the delta later.
+      navigationStep: this.#navigationStep,
     };
   }
 
@@ -276,6 +309,7 @@ export class MediaRuntime {
         if (this.#isItemVisible(this.#items[candidateIndex])) {
           this.#historyCursor = cursor;
           this.#currentIndex = candidateIndex;
+          this.#navigationStep += 1;
           this.#scheduleAdvance();
           this.#emit();
           return;
@@ -314,6 +348,7 @@ export class MediaRuntime {
       this.#historyCursor = this.#history.length - 1;
       this.#visitedShuffleIndices.add(nextIndex);
       this.#capHistory();
+      this.#navigationStep += 1;
 
       this.#scheduleAdvance();
       this.#emit();
@@ -330,6 +365,7 @@ export class MediaRuntime {
     }
 
     this.#currentIndex = targetIndex;
+    this.#navigationStep += 1;
     this.#scheduleAdvance();
     this.#emit();
   }
@@ -348,6 +384,7 @@ export class MediaRuntime {
         if (this.#isItemVisible(this.#items[candidateIndex])) {
           this.#historyCursor = cursor;
           this.#currentIndex = candidateIndex;
+          this.#navigationStep -= 1;
           this.#scheduleAdvance();
           this.#emit();
           return;
@@ -362,6 +399,7 @@ export class MediaRuntime {
     const targetIndex = this.#findVisibleBackward(this.#currentIndex);
     if (targetIndex === -1) return;
 
+    this.#navigationStep -= 1;
     this.#currentIndex = targetIndex;
     this.#scheduleAdvance();
     this.#emit();
