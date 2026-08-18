@@ -85,6 +85,21 @@ function generateLibraryId() {
   return `lib-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// [PHASE-6-SYNC-V2]
+// [STAGE-D3-LIBRARY-IDENTITY]
+// [WHY: this is a DIFFERENT identity from the `id` above. `id` is minted the
+//  instant a folder is FSA-picked, purely to key this local row — it exists on
+//  every library, associated or not, and never leaves this device. `libraryId`
+//  is the SHARED identity two installations agree a physical folder (each on
+//  its own machine) refers to the same logical library — it must be minted
+//  only on an explicit association (see ensureLibraryId below), never merely
+//  because a folder was opened, or every folder anyone ever picks would
+//  acquire a synchronized identity nobody asked for.]
+export function generateSharedLibraryId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `sharedlib-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function requestToPromise(request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -288,6 +303,119 @@ export async function setLibraryProfile(id, profileId) {
     writeTx.objectStore(STORE_NAME).put(updated);
     await completeTransaction(writeTx);
 
+    return updated;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * [PHASE-6-SYNC-V2]
+ * [STAGE-D3-LIBRARY-IDENTITY]
+ * [WHY: mint-once, preserve-forever. Called from ProfileStore#setLibraryAssociation
+ *  at the moment the user explicitly associates this library with a Profile —
+ *  never from a folder-open path. An existing libraryId is returned unchanged
+ *  (re-associating, or changing WHICH Profile, must never mint a second
+ *  identity for the same physical folder — that would fork it into two
+ *  logical libraries as far as any peer is concerned).]
+ *
+ * No-op (returns null) if the local library id isn't known.
+ */
+export async function ensureLibraryId(id) {
+  const database = await openDatabase();
+
+  try {
+    const readTx = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(readTx.objectStore(STORE_NAME).get(id));
+    await completeTransaction(readTx);
+    if (!record) return null;
+    if (record.libraryId) return record;
+
+    const updated = { ...record, libraryId: generateSharedLibraryId() };
+    const writeTx = database.transaction(STORE_NAME, "readwrite");
+    writeTx.objectStore(STORE_NAME).put(updated);
+    await completeTransaction(writeTx);
+    return updated;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Every local library id currently linked to a shared libraryId, as
+ * { id, libraryId } pairs. Used to self-heal a local row's UI-facing
+ * `profileId` against whatever ProfileStore currently holds for that
+ * libraryId — not just rows whose association changed in the CURRENT sync
+ * pass. Without this, a row freshly linked via linkLocalLibraryToSharedId (a
+ * raw storage operation with no ProfileStore involvement) would only pick up
+ * the already-known association value on some FUTURE pass where the fact
+ * itself happens to change again.
+ */
+export async function listKnownLibraryIds() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const records = await requestToPromise(transaction.objectStore(STORE_NAME).getAll());
+    await completeTransaction(transaction);
+    return records.filter((record) => record.libraryId).map((record) => ({ id: record.id, libraryId: record.libraryId }));
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Finds the local library row (if any) already linked to a given SHARED
+ * libraryId. Used to keep a local row's UI-facing `profileId` in step after
+ * an association fact for it arrives via sync — see
+ * ProfileStore#adoptMergedReplica. Returns null if no local row carries it,
+ * which is the ordinary case for a library another device owns.
+ */
+export async function getLibraryByLibraryId(libraryId) {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const records = await requestToPromise(transaction.objectStore(STORE_NAME).getAll());
+    await completeTransaction(transaction);
+    return records.find((record) => record.libraryId === libraryId) || null;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * [PHASE-6-SYNC-V2]
+ * [STAGE-D3-LIBRARY-IDENTITY]
+ * [WHY: this is the ONLY way a second device's local physical folder acquires
+ *  an EXISTING shared libraryId — an explicit user action supplying the exact
+ *  id (Stage E surfaces the picker; this just performs the link), never a
+ *  folder-name or signature guess. Refuses to relink a row that already
+ *  carries a DIFFERENT libraryId — that would silently fork one physical
+ *  folder's identity onto another logical library's history, which no amount
+ *  of "the user probably meant this" heuristic can safely undo.]
+ *
+ * No-op (returns null) if the local id isn't known, or if it is already
+ * linked to a different shared libraryId.
+ */
+export async function linkLocalLibraryToSharedId(id, sharedLibraryId) {
+  if (typeof sharedLibraryId !== "string" || !sharedLibraryId) return null;
+  const database = await openDatabase();
+
+  try {
+    const readTx = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(readTx.objectStore(STORE_NAME).get(id));
+    await completeTransaction(readTx);
+    if (!record) return null;
+    if (record.libraryId && record.libraryId !== sharedLibraryId) {
+      console.warn(`[SYNC-V2] Library "${id}" is already linked to a different shared libraryId; refusing to relink.`);
+      return null;
+    }
+
+    const updated = { ...record, libraryId: sharedLibraryId };
+    const writeTx = database.transaction(STORE_NAME, "readwrite");
+    writeTx.objectStore(STORE_NAME).put(updated);
+    await completeTransaction(writeTx);
     return updated;
   } finally {
     database.close();

@@ -16,6 +16,11 @@
      saturation/brightness family, just blue. Used for "selected tag". */
   --neon-blue: #00d2ff;
   --neon-blue-glow: rgba(0, 210, 255, 0.55);
+  /* [UI-REDESIGN / Stage 4] The Find Below target colour. Deliberately warm
+     and outside the blue/purple selection family (--accent / --accent-2) so
+     "found" can never be mistaken for "selected". */
+  --find-yellow: #ffd23f;
+  --find-yellow-glow: rgba(255, 210, 63, 0.45);
 }
 
 * {
@@ -31,8 +36,18 @@ body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+/* [UI-REDESIGN / Stage 2]
+   WHAT: The page's exterior gutter, 24px -> 18px.
+   WHY: The approved composition asks for a restrained outside gutter
+   (~16-18px at desktop) rather than a banner-sized margin. This is the
+   ONE place that gutter is expressed — it is deliberately not re-added as
+   internal padding on .panel or on the rail's header, which would read as
+   card padding instead of page margin.
+   FUTURE: Stage 6 owns the responsive story. If a phone breakpoint needs
+   a tighter gutter, override this single declaration in that media query
+   rather than introducing a wrapper. */
 body {
-  padding: 24px;
+  padding: 18px;
 }
 
 button,
@@ -45,18 +60,92 @@ input {
   margin: 0 auto;
 }
 
-.topbar {
-  margin-bottom: 20px;
+/* [UI-REDESIGN / Stage 2]
+   WHAT: `.topbar`, `.topbar h1` and `.subtitle` retired with header.topbar
+   itself. Replaced by the rail identity rules below.
+   WHY: All three were dead the moment the element was removed — no other
+   markup carried those classes (checked). See also the retired
+   `.simulated-fullscreen .topbar` rule further down, which existed only to
+   hide this header during Fill Panel.
+   FUTURE: Do not resurrect a top banner to hold a title. Identity lives in
+   the rail; the workspace nav is the only thing above the content. */
+
+/* [UI-REDESIGN / Stage 2]
+   WHAT: The compact [BG] Browser Gallery identity at the top of the rail.
+   WHY: Sized to read as a label, not as a heading — the old 2rem <h1>
+   competed with every real section title on the page. The mark is a
+   bordered monogram rather than an image so the placeholder cannot be
+   mistaken for finished branding.
+   FUTURE: Placeholder. Swapping in real branding is a content change to
+   the two spans; it should not need new layout rules here. */
+.rail-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
-.topbar h1 {
-  margin: 0 0 6px;
-  font-size: 2rem;
+.rail-identity-mark {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--neon-blue-glow);
+  border-radius: 8px;
+  color: var(--neon-blue);
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
 }
 
-.subtitle {
-  margin: 0;
+.rail-identity-name {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--text);
+}
+
+/* [UI-REDESIGN / Stage 5]
+   WHAT: The rail's section-label type treatment, applied to the Libraries
+   heading.
+   WHY: The approved composition uses a small uppercase label here, not a
+   panel-sized heading. It shares the .rail-profile-summary-label treatment
+   deliberately, so the two rail sections read as the same kind of thing.
+   The element stays an <h2>; only its appearance changes. */
+.rail-section-label {
+  margin: 0 0 12px;
   color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Same label treatment inside the green status box, which sets its own
+   colour and monospace family — so this only needs the shape, and inherits
+   the terminal language from its parent. */
+.status-box-title {
+  margin: 0 0 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* [UI-REDESIGN / Stage 5]
+   Clear Media as an outlined danger button rather than a filled one, per the
+   composition. It is destructive and permanently visible, so it should read
+   as available-but-not-inviting; a solid red block competes with the Start
+   button for the eye. The border and text still carry the danger colour, so
+   nothing about its severity is softened.
+   Scoped through .controls-panel deliberately: `button.danger` further down
+   this file is (0,1,1) and would otherwise win on both specificity and
+   source order, leaving the fill in place. */
+.controls-panel .clear-media-btn {
+  background: transparent;
+  color: #ff8a9b;
+  border-color: #6b202b;
+}
+
+.controls-panel .clear-media-btn:not(:disabled):hover {
+  background: rgba(107, 32, 43, 0.28);
 }
 
 .layout {
@@ -77,7 +166,9 @@ input {
 
 .controls-panel h2,
 .viewer-panel h2,
-.gallery-panel h2 {
+.gallery-panel h2,
+.settings-panel h2,
+.cookbook-panel h2 {
   margin-top: 0;
 }
 
@@ -86,46 +177,59 @@ input {
   flex-direction: column;
 }
 
-.playback-section {
+/* [UI-REDESIGN / Stage 2]
+   WHAT: The rail's flex order, restated for the approved IA:
+     (unordered, 0) identity, Load Media / Libraries, divider
+     1 Associated Profile summary
+     2 Clear Media
+     3 Live Status
+     4 Slideshow transport      <- temporary, Stage 3 removes
+     5 Playback settings        <- temporary, Stage 3 removes
+   WHY: Libraries -> association -> destructive action -> live state is the
+   approved reading order, and Live Status has to clear the interval and
+   checkbox controls so a large load's progress is visible without
+   scrolling. Transport and Playback settings keep their relative order but
+   are pushed below; the brief keeps them in the rail only until Stage 3.
+   The three moved elements are direct children of .controls-panel now
+   because `order` applies to flex children only.
+   [UI-REDESIGN / Stage 3] Orders 4 and 5 are now gone, exactly as the note
+   above anticipated: `.playback-section` and `.slideshow-settings-section`
+   were removed from the rail once their controls existed beneath the
+   Player. The rail's final shape is the unordered group plus 1..3.
+   FUTURE: Anything new added to the rail still needs its own explicit
+   `order`, or it silently joins the unordered group at the top. */
+.rail-profile-summary {
   order: 1;
 }
 
-.slideshow-settings-section {
+.clear-media-btn {
   order: 2;
 }
 
-.tags-section {
+.status-box {
   order: 3;
 }
 
-/* The <hr> between Tags and Profile is a direct flex child of
-   .controls-panel, same as .tags-section/.profile-section. Every other
-   section here gets an explicit `order` — this divider needs one too, or
-   it defaults to order:0 and gets flex-reordered to the very top of the
-   panel (grouped with the other unordered elements), nowhere near Tags or
-   Profile. Tying it to order:3 keeps it in document order right after
-   .tags-section (ties resolve by source order) and still before
-   .profile-section's order:4. Targeted by adjacency so the HTML itself
-   never has to change. */
-.tags-section + hr {
-  order: 3;
-}
-
-.tags-section summary {
-  cursor: pointer;
-  font-size: 1.5em;
-  font-weight: 700;
-  list-style-position: inside;
-}
-
-.tags-section[open] summary {
-  margin-bottom: 16px;
-}
-
-.profile-section {
-  order: 4;
-}
-
+/* [UI-REDESIGN / Stage 1B]
+   WHAT: Four rules retired with the Tags section's move to the Tagging
+   workspace — `.tags-section { order: 3 }`, the `.tags-section + hr`
+   order fix, and the two `summary` rules.
+   WHY: All four only existed to place a <details> among the flex-`order`
+   children of .controls-panel. .tags-section is no longer a child of that
+   panel and no longer has a <summary>, so every one of them was dead. The
+   divider they positioned went with the section: .slideshow-settings-section
+   already ends with its own <hr>, so keeping a second one here would have
+   drawn a double rule above Profile.
+   FUTURE: The rail's remaining sections still depend on explicit `order`.
+   Anything added there needs its own `order`, or it silently jumps to the
+   top of the panel with the other unordered elements. */
+/* [UI-REDESIGN / Stage 1C]
+   WHAT: `.profile-section { order: 4 }` retired with the Profile section's
+   move to the Settings workspace. The two summary rules below stay — unlike
+   Tags, Profile is still a <details> with a <summary>.
+   WHY: `order` only ever positioned it among the flex children of
+   .controls-panel, which it is no longer a child of. The rail's remaining
+   sections still depend on explicit `order`; see the Stage 1B note above. */
 .profile-section summary {
   cursor: pointer;
   font-size: 1.5em;
@@ -134,6 +238,36 @@ input {
 }
 
 .profile-section[open] summary {
+  margin-bottom: 16px;
+}
+
+/* [UI-REDESIGN / STAGE 6] [PROFILE-TAGS-DISCLOSURE]
+   WHAT: The Tags administration disclosure, relocated from the removed
+   top-level Tagging workspace — see TAGS-PROFILE-ADMIN in index.html.
+   Reuses .profile-section's exact summary language (same cursor/size/
+   weight/open-state rules) rather than inventing a second disclosure
+   style. The top border + spacing mirrors .profile-inline-hr's own divider
+   rhythm (14px → 20px here, since this separates two top-level sections
+   rather than two rows within one), giving this second disclosure the same
+   breathing room from Profile's own content that a plain <hr> would,
+   without adding one more element to the markup.
+   Collapsed by default (no [open] styling needed at rest) — see this
+   section's own HTML comment for why, and
+   expandAndScrollToTagsSection() in main.js for how it opens on demand. */
+.tags-admin-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.tags-admin-section summary {
+  cursor: pointer;
+  font-size: 1.5em;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.tags-admin-section[open] summary {
   margin-bottom: 16px;
 }
 
@@ -159,6 +293,252 @@ input {
   flex-direction: column;
   gap: 20px;
   min-width: 0;
+}
+
+/* [UI-REDESIGN / Stage 1A]
+   WHAT: The workspace shell — the tab bar and the four panels it switches
+   between.
+   WHY: Switching workspaces is a pure visibility change over persistent
+   DOM (see setActiveWorkspace() in main.js), so ALL of the switching lives
+   here in CSS plus one `hidden` attribute. Nothing is rendered, injected,
+   or torn down.
+   FUTURE: Keep `hidden` as the only runtime hook. The app's own `.hidden`
+   class carries `display:none !important` and is already toggled by ~40
+   feature call sites; keeping the two mechanisms separate is what stops a
+   workspace and a feature from fighting over the same element. */
+/* [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+   WHAT: Three permanent MVP V1 destinations — Gallery, Automations,
+   Profile — laid out on a genuine 3-column grid (1fr / auto / 1fr) rather
+   than the previous flex-row-plus-auto-margin approach the 4-tab layout
+   (Gallery/Tagging/Automations/Settings) used.
+   WHY a grid instead of carrying the old flex mechanism forward: the old
+   approach only ever solved "push ONE utility item to the far right" —
+   correct for 4 tabs where the other three simply cluster left, but it has
+   no way to also hold a SECOND item (Automations) stable at the row's true
+   center. A grid's two symmetric `1fr` outer tracks naturally centre
+   whatever sits in the `auto` middle track, regardless of the outer
+   tracks' own content width — Gallery anchors column 1's start, Profile
+   anchors column 3's end, and Automations sits wherever the middle track's
+   own content puts it, which — because both outer tracks are equal `1fr`
+   — is always the row's horizontal centre. `justify-items: start` is the
+   column-axis default (Gallery needs no per-item override); Automations
+   and Profile each set their own `justify-self` below. */
+.workspace-nav {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  justify-items: start;
+  gap: 6px;
+  width: 100%;
+  padding: 8px;
+  background: rgba(18, 25, 51, 0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow-x: auto;
+}
+
+.workspace-tab {
+  min-height: 40px;
+  padding: 8px 18px;
+  background: transparent;
+  color: var(--muted);
+  border-color: transparent;
+  white-space: nowrap;
+}
+
+.workspace-tab:not(:disabled):hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.workspace-tab[aria-selected="true"] {
+  background: var(--accent);
+  color: #081121;
+  border-color: transparent;
+}
+
+/* [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+   Automations is the grid's middle (`auto`-sized) column — see the
+   .workspace-nav comment above for why that alone gives it a stable
+   centred position regardless of Gallery/Profile's own widths. Its
+   `justify-self: center` (declared on the fuller rule a few lines below,
+   alongside its icon geometry) is set explicitly anyway, rather than
+   relying on the auto track's own hugged sizing, so this stays correct
+   even if the surrounding padding/content ever changes enough to leave
+   slack in that column. */
+
+/* [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] [PROFILE-WORKSPACE-IDENTITY]
+   Profile is the right-side utility destination, anchored to column 3's
+   end — the grid equivalent of the previous `margin-inline-start: auto`
+   mechanism (see git history for that approach's own long ROOT CAUSE note,
+   no longer relevant now the mechanism is a grid, not a flex auto-margin).
+   Column 3 is the same `1fr` width as column 1 (Gallery's column), so
+   Profile's right inset mirrors Gallery's left inset exactly, which is the
+   balance this pass's brief specifically asked for. */
+.workspace-tab-utility {
+  justify-self: end;
+}
+
+.workspace-tab-utility[aria-selected="true"] {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] [AUTOMATIONS-NAV-CHIP]
+   WHAT: The nav-tab-scale build of the dashed-ring lightning bolt already
+   established as the Automations identity in Presentation Mode (see
+   .overlay-btn-automations-menu in this file) — same construction
+   technique (a dashed-border circle + a currentColor clip-path bolt), a
+   deliberate, minimal duplication rather than a shared class, since the
+   two live in differently sized contexts (PM's --pm-control-size square vs.
+   this nav tab box) — see index.html's own comment on this button for the
+   full note.
+   `min-width: 44px` (was 40px) is a REAL button, not a small floating
+   glyph: it matches the same comfortable tap-target floor used throughout
+   this redesign (the global `button` rule's own `min-height: 44px`), and —
+   because this rule sets no width/height CAP, only a floor — the icon
+   keeps genuine breathing room around it (18px ring inside a ≥44px box)
+   rather than being scaled up to fill the box. `border-radius: 12px`
+   giving the "rounded-square, not a circle" shape the brief specifically
+   asked for (to avoid a circular button around an already-circular ring)
+   comes for free from the global `button` rule — nothing new needed here.
+   Height, hover treatment (`.workspace-tab:not(:disabled):hover`),
+   selected-state fill (`.workspace-tab[aria-selected="true"]`), and
+   focus-visible ring all come from the base `.workspace-tab`
+   class already on this element (see index.html) — this is deliberately
+   NOT a special one-off visual language: Automations reads as equal
+   hierarchy to Gallery/Profile precisely because it shares their exact
+   rest/hover/selected/focus rules, not a custom set of its own.
+   No text content, so font-size: 0 the same way .gallery-jump-back-btn and
+   .overlay-btn-automations-menu do; color is inherited from those same
+   shared .workspace-tab rules — currentColor means this icon never needs
+   its own color rule and automatically matches whichever state is active,
+   INCLUDING the selected fill's dark foreground (#081121). */
+.workspace-tab-automations {
+  justify-self: center;
+  position: relative;
+  min-width: 44px;
+  padding: 8px;
+  font-size: 0;
+  line-height: 1;
+  /* [UI-REDESIGN / STAGE 6] [AUTOMATIONS-NAV-CHIP]
+     WHAT: A permanent, subtle boundary at rest — Gallery/Profile stay
+     transparent until hover/selected (matching their own established
+     rest state), but Automations is icon-only with no text to otherwise
+     read as "a real button" at a glance, so it gets its own faint
+     background + border unconditionally. Hover and selected still come
+     from the shared .workspace-tab rules unchanged (see this rule's own
+     WHAT/WHY comment above) — this only replaces the base
+     `background: transparent; border-color: transparent;` .workspace-tab
+     sets for every OTHER tab, so Automations alone has a visible chip
+     boundary even when neither hovered nor selected. */
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border);
+}
+
+/* [UI-REDESIGN / STAGE 6] [AUTOMATIONS-ICON-CENTERING]
+   Centered via `transform: translate(-50%, -50%)` — see
+   .overlay-btn-automations-menu::before's own comment in this file for the
+   full reasoning; same technique, same coordinate system shared with the
+   bolt below. [AUTOMATIONS-ACTIVE-IDENTITY] Static at rest; rotates only
+   while this tab is the selected workspace — see the rotation rule below,
+   which targets `[aria-selected="true"] &` the same truthful DOM state
+   Gallery/Profile's own selected styling already reads, not a second
+   "active" flag. */
+.workspace-tab-automations::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border: 2px dashed currentColor;
+  border-radius: 50%;
+}
+
+/* [UI-REDESIGN / STAGE 6] [AUTOMATIONS-ICON-CENTERING] Same transform-based
+   centering and the same verified-centroid polygon as
+   .overlay-btn-automations-menu::after — see that rule's own comment for
+   the centroid math. Stationary: only the ring above ever animates. */
+.workspace-tab-automations::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 13px;
+  transform: translate(-50%, -50%);
+  background: currentColor;
+  clip-path: polygon(65% 0%, 15% 55%, 45% 55%, 35% 100%, 85% 40%, 50% 40%);
+}
+
+/* [UI-REDESIGN / STAGE 6] [AUTOMATIONS-ACTIVE-IDENTITY]
+   The ONE motion rule shared with Presentation Mode's own Automations
+   entry point: static while inactive, slow rotation only while the
+   associated Automations surface is genuinely active — here, "this
+   workspace tab is the selected one," read from the same
+   `aria-selected="true"` attribute Gallery/Profile's own selected fill
+   already uses, not a separately tracked flag. Reuses the exact
+   `pm-automations-ring-spin` keyframes PM's tray-open state uses (same
+   cadence, same translate+rotate combination so the ring spins in place
+   rather than orbiting off its own center — see that keyframe's own
+   comment) rather than declaring a second, identical set. Reduced motion
+   is handled by the shared override at the end of this file, which already
+   covers this selector too. */
+.workspace-tab-automations[aria-selected="true"]::before {
+  animation: pm-automations-ring-spin 7s linear infinite;
+}
+
+/* [UI-REDESIGN / Stage 5]
+   WHAT: One visible focus indicator for every interactive control, not just
+   the workspace tabs and panels that already had one.
+   WHY: Nothing in this stylesheet suppresses the UA outline, so focus was
+   technically visible — but as a thin default ring on a near-black surface
+   it was very hard to see, and it differed from the deliberate neon ring the
+   tabs use. A keyboard user should get the same unmistakable indicator
+   everywhere.
+   :focus-visible rather than :focus so a pointer click does not paint a ring
+   on a button the user has already released — the same modality distinction
+   the shortcut guards rely on.
+   FUTURE: Add new interactive elements to this selector. Never suppress the
+   outline to tidy a layout; adjust outline-offset instead. */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible,
+.button-like:focus-within,
+.workspace-tab:focus-visible,
+.workspace-panel:focus-visible {
+  outline: 2px solid var(--neon-blue);
+  outline-offset: 2px;
+}
+
+/* Segments sit flush against each other, so an offset ring would be clipped
+   by the neighbour it overlaps. Pulling it inside keeps the whole ring
+   visible, and the raised z-index keeps it above both neighbours. */
+.gallery-filter-row .filter-btn:focus-visible {
+  outline-offset: -2px;
+  z-index: 2;
+}
+
+.workspace-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* Attribute selectors tie with class selectors on specificity, so this is
+   spelled out rather than relying on `[hidden]`'s UA rule beating
+   `.workspace-panel`'s `display:flex`. */
+.workspace-panel[hidden] {
+  display: none;
 }
 
 .control-stack {
@@ -196,8 +576,46 @@ input {
   pointer-events: none;
 }
 
+/* [UI-REDESIGN / Stage 2]
+   WHAT: The Associated Profile summary block in the rail.
+   WHY: Reuses .panel's border/radius language at a smaller scale rather
+   than introducing a new card style, and deliberately does NOT reuse the
+   green monospace .status-box treatment — that language means "live file
+   state", and this is durable context about the current library, not a
+   progress readout.
+   FUTURE: Presentation only. If this block ever needs to show more than
+   the label, the value, and the existing shortcut, check the placement
+   rule first — it is a summary, not a Profile manager. */
+.rail-profile-summary {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(9, 16, 29, 0.4);
+}
+
+.rail-profile-summary-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Wraps rather than truncates: a Profile name the user cannot read in full
+   defeats the point of showing the association at all. */
+.rail-profile-summary-value {
+  margin: 0;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 /* [LIBRARY-PROFILE-ASSOCIATION] Deliberately understated — this is an
-   occasional, easy-to-miss-on-purpose affordance, not a primary action. */
+   occasional, easy-to-miss-on-purpose affordance, not a primary action.
+   [UI-REDESIGN / Stage 2] The 8px top margin now separates it from the
+   summary value directly above it instead of from the FSA status line. */
 .fsa-associate-btn {
   width: 100%;
   margin-top: 8px;
@@ -334,12 +752,16 @@ button:not(:disabled):hover,
   margin-bottom: 14px;
 }
 
-.control-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 10px;
-}
+/* [UI-REDESIGN / Stage 3]
+   WHAT: `.control-grid` retired. It only ever laid out the rail's 2x2
+   Slideshow button block (.control-grid.playback-grid), which no longer
+   exists — the same four buttons are now a single left-aligned flex row in
+   .player-transport-cluster below. `.playback-grid` never had a rule of its
+   own.
+   WHY: A 2x2 grid was right for a 340px rail and wrong under a wide Player,
+   where the approved composition is one horizontal cluster.
+   FUTURE: Nothing else in index.html carries either class — verified before
+   removal. */
 
 .clear-media-btn {
   width: 100%;
@@ -414,6 +836,7 @@ button:not(:disabled):hover,
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 10px;
+  max-width: 520px;
 }
 
 .tag-create-row input[type="text"] {
@@ -434,6 +857,21 @@ button:not(:disabled):hover,
 
 /* Profile Selector / Creation (Phase 8.3) — deliberately styled to match
    .tag-create-row above rather than introducing a new visual language. */
+
+/* [UI-REDESIGN / Stage 1C]
+   WHAT: A width cap on the two Profile form rows, matching the one Stage 1B
+   put on .tag-create-row.
+   WHY: Both rows use `flex: 1 1 …` on their field, which was sized for a
+   340px rail. In the ~1000px Settings workspace the profile <select> and
+   the "New profile name" input would otherwise stretch the full panel
+   width. Width adaptation forced by the move — no ids, no behavior, no
+   markup involved.
+   FUTURE: Stage 5 owns final fidelity here. */
+.profile-current-row,
+.profile-create-row {
+  max-width: 620px;
+}
+
 .profile-current-row {
   display: flex;
   align-items: center;
@@ -492,26 +930,274 @@ button:not(:disabled):hover,
   margin: 14px 0;
 }
 
+/* [UI-REDESIGN / Stage 1C]
+   WHAT: The Automation Cookbook empty state. Reuses .panel and .hint rather
+   than introducing a new visual language.
+   WHY: Dashed rather than solid border, and no accent colour, so it reads
+   as "nothing here yet" instead of as a card containing something. The
+   whole point of this workspace right now is to be honest about being
+   empty; styling it like a real feature would undo that.
+   FUTURE: #cookbook-recipe-list is the mount point for real Recipe rows.
+   When they arrive, this becomes the zero-state branch, not the container. */
+.cookbook-empty-state {
+  max-width: 620px;
+  margin-top: 16px;
+  padding: 20px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: rgba(9, 16, 29, 0.4);
+}
+
+.cookbook-empty-title {
+  margin: 0 0 6px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.cookbook-empty-state .hint {
+  margin: 0;
+}
+
+#cookbook-intro {
+  max-width: 620px;
+}
+
+/* [PROFILE-SYNC] Deliberately reuses .control-stack/.hint/.danger/.secondary
+   rather than introducing a new visual language — this stays a compact
+   status line + a couple of buttons, per the POC's "do not build a large
+   new settings system" constraint. */
+.profile-sync-heading {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.profile-sync-connected-row {
+  display: flex;
+  gap: 10px;
+}
+
+.profile-sync-connected-row button {
+  flex: 1 1 0;
+}
+
+.profile-sync-manage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.profile-sync-conflict-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 190, 60, 0.5);
+  border-radius: 10px;
+  background: rgba(120, 80, 0, 0.18);
+}
+
+.profile-sync-conflict-panel .hint {
+  margin: 0 0 10px;
+  color: var(--text);
+}
+
+/* [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+   [WHY: reuses the existing panel geometry (.profile-sync-manage-panel's
+    spacing, .profile-sync-conflict-panel's inset card) so these read as part
+    of the same Status Update Center block rather than a new visual language.
+    The colour is the only difference and it is deliberate: activation and
+    linking are ordinary forward actions, so they take the neutral surface
+    treatment, NOT the amber the recovery panel uses to mark an exceptional
+    choice.] */
+.profile-sync-activate-panel,
+.profile-sync-link-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.profile-sync-activate-panel .hint,
+.profile-sync-link-panel .hint {
+  margin: 0 0 10px;
+}
+
+.profile-sync-link-panel .hint:last-child {
+  margin: 10px 0 0;
+}
+
+.profile-sync-link-panel select {
+  width: 100%;
+}
+
+/* Import / Export demoted to an advanced/manual disclosure — styled like
+   .tags-admin-section/.profile-section's summary, but a size down (same
+   reasoning .legacy-picker-details already uses for a nested disclosure). */
+.profile-import-export-section summary {
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.profile-import-export-section[open] summary {
+  margin-bottom: 10px;
+  color: var(--text);
+}
+
+/* [PROFILE-SYNC-SETUP] First-time setup modal. A native <dialog>, so the
+   backdrop, centering, focus-trap, and Escape handling come from the
+   platform — this only paints it in the app's dark-navy tokens. Generic
+   .app-dialog* names so a future modal can reuse the same shell rather
+   than growing a bespoke one. */
+.app-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.app-dialog::backdrop {
+  background: rgba(4, 8, 20, 0.66);
+  backdrop-filter: blur(2px);
+}
+
+.app-dialog-inner {
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.app-dialog-title {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.app-dialog-body {
+  margin: 0;
+  color: var(--muted);
+}
+
+.profile-sync-setup-step {
+  margin: 0;
+}
+
+.profile-sync-setup-step strong,
+.profile-sync-setup-once strong {
+  color: var(--text);
+}
+
+.profile-sync-setup-once {
+  margin: 0;
+}
+
+/* user-select:all — one click selects the whole name, so even if the async
+   clipboard write is blocked the user can copy it manually (see the Copy
+   button's calm-failure handling in main.js). */
+.profile-sync-setup-foldername {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0d1530;
+  color: var(--text);
+  font-family: "Courier New", ui-monospace, monospace;
+  font-weight: 700;
+  text-align: center;
+  user-select: all;
+}
+
+.app-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.app-dialog-actions button {
+  flex: 1 1 auto;
+}
+
+.app-dialog-primary {
+  background: var(--accent);
+  color: #081121;
+  border-color: transparent;
+}
+
+/* [UI-REDESIGN / Stage 1B]
+   WHAT: The two width-dependent Tags rules, re-tuned for the Tagging
+   workspace. The grid was a hardcoded `1fr 1fr` and the create row was
+   unbounded — both sized for a 340px rail.
+   WHY: The container went from ~300px of usable width to ~1000px. Left
+   alone, two fixed columns became two very wide chips and the "New tag
+   name" field stretched the full panel. This is a width adaptation forced
+   by the move, not a restyle: no ids, no behavior, no markup involved.
+   FUTURE: Stage 5 owns final fidelity here. auto-fill already collapses to
+   one column on narrow viewports, so the ≤520px override below is belt and
+   braces rather than load-bearing. */
 .tags-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 8px;
   margin-top: 4px;
 }
 
+/* [UI-REDESIGN / Stage 1B]
+   WHAT: The pill's inset moved off .tag-chip-row and onto its two children,
+   so the select button (.tag-chip) — not the row's padding — owns every
+   pixel of the pill that is not an action button.
+   WHY: The row is what reads as "the Tag button", but the only element with
+   a click listener is the .tag-chip button, which is content-sized
+   (`padding: 2px 4px`, transparent, no border). The row's 12px left inset,
+   its gap, and the free space `justify-content: space-between` opens up were
+   unowned background: a click there hit the div and did nothing. In the
+   340px rail this was a few pixels wide and went unnoticed; at the Tagging
+   workspace's ~220px+ columns it became most of the pill. Fixed with
+   geometry — `flex: 1` + `align-self: stretch` on the existing button —
+   rather than a new listener on the row, so there is still exactly one
+   click target, one handler, and one keyboard-focusable element per tag.
+   FUTURE: Any control added to .tag-chip-row must carry its own inset the
+   same way. Restoring padding on the row itself re-creates the dead zone. */
 .tag-chip-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  min-height: 40px;
-  padding: 6px 6px 6px 12px;
+  gap: 0;
+  min-height: 42px;
+  padding: 0;
   border-radius: 10px;
   border: 1px solid rgba(70, 130, 255, 0.4);
   background: rgba(30, 60, 140, 0.18);
 }
 
+/* [UI-REDESIGN / Stage 1C]
+   WHAT: The selected-tag treatment, moved onto .tag-chip-row — the outer
+   card — from the inner .tag-chip button (which keeps only the neon text
+   colour; see button.tag-status-select.is-selected below).
+   WHY: The Stage 1B hit-target fix stretched .tag-chip to fill the pill up
+   to the action cluster, so the button's own background tint drew the
+   selected state across most of the card and then stopped dead at the ✎/✕
+   cells. The state belongs to the tag, not to one control inside it, so it
+   is painted on the element that actually bounds the tag. The ✎/✕ buttons
+   keep their own opaque background and border, so they stay legible as
+   distinct controls on top of the tint rather than dissolving into it.
+   FUTURE: Selected state stays on the row. Do not re-add a background to
+   any child to represent it — that is what caused this. */
+.tag-chip-row.is-selected {
+  border-color: var(--neon-blue-glow);
+  background: rgba(0, 210, 255, 0.12);
+}
+
+/* Listed after .is-selected so renaming a selected tag shows the editing
+   treatment; the two classes are not applied together today. */
 .tag-chip-row.is-editing {
+  padding: 6px 6px 6px 12px;
   border-color: rgba(70, 130, 255, 0.7);
   background: rgba(30, 60, 140, 0.3);
 }
@@ -525,10 +1211,25 @@ button:not(:disabled):hover,
   white-space: nowrap;
 }
 
+/* Fills the pill from its inner left edge to the action cluster, full
+   height. The radius matches the row's inner corners so the focus ring
+   follows the card's rounded left end instead of cutting across it.
+   (Stage 1C moved the selected background off this button onto the row —
+   this element intentionally paints no background of its own.) */
+.tag-chip-row > .tag-chip {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 0;
+  padding: 6px 6px 6px 12px;
+  border-radius: 9px 0 0 9px;
+}
+
 .tag-chip-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  padding: 6px 6px 6px 0;
 }
 
 .tag-action-btn {
@@ -637,6 +1338,15 @@ button:not(:disabled):hover,
   margin: 0;
 }
 
+/* [UI-REDESIGN / STAGE 6] [TAG-DISCOVERY-HANDOFF]
+   Shares the empty state's visibility (see renderTagsFilterGrid() in
+   main.js) — modest, deliberately not a redesign of this panel: `.secondary`
+   already supplies the button's real styling, this just gives it a little
+   breathing room under the hint text above it. */
+#manage-tags-btn {
+  margin-top: 8px;
+}
+
 /* Grow horizontally first, vertically second: a fixed 4 columns on
    comfortably wide viewers, narrowing gracefully rather than wrapping into
    extra rows before it needs to. New rows only ever contain the overflow
@@ -702,12 +1412,449 @@ button:not(:disabled):hover,
   position: relative;
 }
 
+/* [UI-REDESIGN / Stage 5 fix]
+   The visible focus indication for a deliberate hand-off to the Player.
+   Keyed to `.is-focus-handoff`, which focusPlayerStage() sets and the stage's
+   own blur listener clears, rather than to `:focus-visible` or plain `:focus`:
+   - `:focus-visible` alone would not paint after a POINTER activation (the
+     browser reports pointer modality), so "Return to Gallery" clicked with the
+     mouse would move focus with nothing on screen to show it.
+   - plain `:focus` would over-paint: a `tabindex="-1"` element is focusable by
+     click, so clicking the media itself would ring the whole stage.
+   Same ring as the global :focus-visible rule near the top of this file, so
+   the indicator is the one the rest of the app already teaches.
+   FUTURE: Do not widen this to interactive controls. Everything else in this
+   app deliberately uses :focus-visible so a mouse click paints no ring. */
+.viewer-stage.is-focus-handoff:focus {
+  outline: 2px solid var(--neon-blue);
+  outline-offset: 2px;
+}
+
 .viewer-stage img,
 .viewer-stage video {
   width: 100%;
   height: 100%;
   object-fit: contain;
   background: #000;
+}
+
+/* [UI-REDESIGN / Stage 3 · retuned in Stage 6]
+   WHAT: The transport row beneath the Player — the four primary icon
+   controls (♡ ⏮ ▶/⏸ ⏭), flexible space, then the two utility controls
+   (⚙ ⛶).
+   [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] The position
+   counter (#counter-text, formerly the row's third group,
+   .player-transport-meta) is GONE — deleted, not hidden, on every viewport.
+   The Player transport is actions only now; the Gallery target control
+   (Select [ target / total ] Next →, see .gallery-jump-group) is the
+   normal visible position/context surface, on desktop and mobile alike.
+   MediaRuntime remains the actual source of truth either way — nothing
+   about that moved when the counter did.
+   FUTURE: A future, separate Player-position overlay may be considered
+   later for users who want position visible without looking at Gallery —
+   not part of this pass, and not started here.
+   WHY: `position: relative` is load-bearing: it is the containing block for
+   the absolutely-positioned popover below, which is why the popover is a
+   child of this row rather than of the button's own group.
+   `flex-wrap: nowrap` REPLACES the Stage 3 `wrap`. Wrapping was the stopgap
+   that kept the text-labelled row from overflowing before the responsive pass
+   existed; now that the controls are icons the row is narrow enough to hold
+   one line at every supported width, and wrapping would break the single
+   guarantee this row makes.
+
+   ---- The one-row budget -------------------------------------------------
+   Three custom properties drive the whole row, and only these three are
+   changed by the breakpoints further down the file:
+
+     --transport-size  the square button edge (also the pointer target)
+     --transport-gap   the gap between buttons AND between the three groups
+     --transport-icon  the SVG edge inside the button
+
+   A fourth, --transport-size-wide, is derived from the first (1.2×) and is
+   the width of Previous and Next only; it is never set directly, so the
+   proportion holds at every breakpoint on its own.
+
+   Six controls, of which two are 1.2× wide:
+       ♡ 1 + ⏮ 1.2 + ▶/⏸ 1 + ⏭ 1.2 + ⚙ 1 + ⛶ 1  =  6.4 × size
+   and, once the flexible space has closed, 5 gaps (three inside the primary
+   group, one inside the utility group, one between the groups). So the
+   row's cramped width is
+
+       6.4 × size  +  5 × gap
+
+   [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] This is now
+   uniform at every viewport, including desktop — the row was six controls
+   plus a trailing counter before this pass, which needed a 6th gap and a
+   separate desktop-only line in the table below; with the counter deleted
+   outright there is nothing left to distinguish "counter present" from
+   "counter hidden," so the arithmetic collapses to one formula, one table.
+
+   At the defaults that is 6.4×44 + 5×8 = 321.6px. Each breakpoint below
+   re-solves that sum for a narrower box, and it is solved by shrinking the
+   gap FIRST — a 3px gap is invisible, a 3px-smaller icon is not.
+   Above that width the leftover is not distributed into the gaps: it goes
+   entirely into the utility group's `margin-inline-start: auto`, which is
+   what holds the two groups apart. The row therefore has no in-between
+   state where everything is slightly too spread out.
+
+   ---- Why it cannot overflow even off-breakpoint ------------------------
+   Media queries read the VIEWPORT, so they do not fire when this app is
+   itself sized into a narrow panel inside a wide window. Two things cover
+   that case, in this order:
+     0. the flexible space closes — the auto margin on the utility group is
+        free space, and free space is always spent before anything else can
+        be taken;
+     1. then the buttons shrink — they keep `flex-shrink: 1` down to a
+        `min-width` floor 10px under their nominal size, so an impossible box
+        squeezes the row instead of wrapping it or pushing a scrollbar.
+   Neither is the primary mechanism; both exist so the row degrades instead
+   of breaking. A container query would be the direct way to do this and is
+   deliberately NOT used: `container-type` on this row or on the viewer panel
+   makes that element the containing block for `position: fixed` descendants,
+   and the Playback popover is `position: fixed` at ≤980px — it would be
+   re-anchored to the transport row instead of the viewport, silently turning
+   the bottom sheet back into a floating box. Percentage `gap` is out for a
+   related reason: this cluster is sized by its content, so a percentage gap
+   resolves against a width that does not exist yet and overflows.
+   FUTURE: DOM order IS visual order — no `order` values here, deliberately,
+   so the tab sequence matches what is on screen. Do not add `transform:
+   scale()` to this group to make things fit: it would scale the focus ring
+   and the pointer targets with it. */
+.player-transport-row {
+  --transport-size: 44px;
+  --transport-size-wide: calc(var(--transport-size) * 1.2);
+  --transport-gap: 8px;
+  --transport-icon: 20px;
+
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--transport-gap);
+  margin-top: 14px;
+  min-width: 0;
+}
+
+.player-transport-cluster {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: var(--transport-gap);
+}
+
+/* [UI-REDESIGN / Stage 6]
+   WHAT: One square, padding-free box per transport control.
+   WHY: The base `button` rule is built for text — `min-height: 44px` plus
+   `padding: 12px 14px` — and `min-height` is a floor that `height` cannot
+   lower, so both are restated here in terms of --transport-size and the
+   padding is dropped. Every button in the row therefore has exactly one
+   width, which is what makes the budget above arithmetic rather than a
+   guess.
+   `flex: 0 1 auto` with a `min-width` floor is the safety net described
+   above: normal widths never invoke it, because the breakpoints size the row
+   to fit before shrinking can start.
+   Colour, border, radius, hover, :focus-visible, :disabled and the
+   .secondary / accent split are all still inherited — nothing about the
+   look of an individual button is redefined here, only its box. */
+.player-transport-cluster > button,
+.player-transport-utility > button {
+  flex: 0 1 auto;
+  width: var(--transport-size);
+  min-width: calc(var(--transport-size) - 10px);
+  height: var(--transport-size);
+  min-height: var(--transport-size);
+  padding: 0;
+  line-height: 1;
+}
+
+/* The icon is the button's only content, so it is sized from the same
+   variable rather than from a font-size — `currentColor` means it inherits
+   the accent-on-Start / text-on-secondary split for free, including the
+   0.45 opacity of :disabled. */
+.transport-icon {
+  display: block;
+  width: var(--transport-icon);
+  height: var(--transport-icon);
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+/* [UI-REDESIGN / Stage 5 · Stage 6]
+   WHAT: Play/Pause is the only filled button in the transport; its
+   neighbours are secondary.
+   WHY: The approved composition gives the row one primary action. #play-btn
+   already inherits the accent fill from the base `button` rule, so it needs
+   nothing — what was missing is that its neighbours were competing with it at
+   the same weight. This demotes them to the same .secondary treatment used
+   everywhere else in the app; no element, id or handler is involved.
+   Favorite keeps its own .favorite-toggle styling and is excluded, and the
+   utility group's two buttons carry `.secondary` in the markup already.
+   [Stage 6] `#stop-btn` dropped from this selector with the element itself —
+   Start and Stop merged into the one Play/Pause button, which is the accent
+   one, so nothing here needed to change beyond the deletion. */
+.player-transport-cluster > #prev-btn,
+.player-transport-cluster > #next-btn {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* [UI-REDESIGN / Stage 6]
+   WHAT: Previous and Next are 1.2× the standard icon-button width. Height is
+   untouched, so they read as slightly wider keys in an otherwise square row.
+   WHY: They are the two controls a user aims at repeatedly and often without
+   looking — scrubbing through a library is a rhythm, and the widest targets
+   should be the ones that rhythm lands on. Play/Pause is pressed decisively
+   and already carries the accent fill to find it by, so it does not need the
+   extra width as well.
+   The multiplier lives in --transport-size-wide so the width budget further
+   down has one number to reason about, and so the ratio holds automatically
+   at every breakpoint instead of being restated five times. */
+.player-transport-cluster > #prev-btn,
+.player-transport-cluster > #next-btn {
+  width: var(--transport-size-wide);
+  min-width: calc(var(--transport-size-wide) - 10px);
+}
+
+/* [UI-REDESIGN / Stage 6]
+   WHAT: The utility group — ⚙ and ⛶ — and the flexible space that separates
+   it from the primary controls.
+   WHY: `margin-inline-start: auto` is the whole separation mechanism. An auto
+   margin on a flex item absorbs ALL the free space on that side, so at
+   comfortable widths the row reads as two groups pushed apart, and as the box
+   narrows the margin shrinks continuously to zero and the groups close up
+   into `♡ ⏮ ▶/⏸ ⏭ ⚙ ⛶`. That ordering is free and automatic: auto margins
+   only ever consume POSITIVE free space, so the space is gone before
+   flex-shrink can touch a control — which is exactly the required order of
+   concessions, with no breakpoint and no reflow at the boundary.
+   A fixed gap would have had to pick one width to look right at, and would
+   have kept taking its pixels after there were none to give.
+   FUTURE: Do not put a min-width or a fixed margin on this group to "hold"
+   the separation — that turns the graceful close-up into an overflow. */
+.player-transport-utility {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-inline-start: auto;
+  gap: var(--transport-gap);
+}
+
+/* [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE]
+   .player-transport-meta and its #counter-text rule stood here — the
+   trailing readout group and its flex-shrink-200 "yield first" treatment.
+   Both are deleted along with the element itself; the Gallery target
+   control (.gallery-jump-group) is the position/context surface now. */
+
+/* [UI-REDESIGN / Stage 6]
+   WHAT: Favorite is the one control in the row that is still a TEXT glyph —
+   syncFavoriteButtons() writes ♡ / ♥ into it — so it needs the shared box
+   restated in glyph terms. Its pill radius and its loved/unloved colours are
+   untouched, including `.favorite-toggle.is-favorite`.
+   WHY: `.favorite-toggle` sets `min-width: 44px` (and the ≤520px block near
+   the end of this file sets 40px plus a font-size). `min-width` beats
+   `width`, so without this the heart would refuse to follow --transport-size
+   down and would be the one button that broke the row. This selector is two
+   classes deep, so it outranks both of those rules at every viewport width
+   without needing to be repeated inside each breakpoint.
+   [UI-REDESIGN / Stage 3] The rule this replaces pinned Fill ⛶ and
+   Playback ⚙ to a predictable line box, because `⛶` (U+26F6) resolved to a
+   symbol/emoji fallback face taller than `⚙` and grew its button past 44px.
+   Both are inline SVG now, so the glyph problem is gone with the glyphs; the
+   `line-height: 1` that fixed it lives on `.player-transport-cluster >
+   button` above and still applies to them.
+   FUTURE: If another text-glyph control ever joins the row it needs this
+   same treatment, or it will size itself off its own font face. */
+.player-transport-cluster > .favorite-toggle {
+  width: var(--transport-size);
+  min-width: calc(var(--transport-size) - 10px);
+  height: var(--transport-size);
+  min-height: var(--transport-size);
+  padding: 0;
+  font-size: calc(var(--transport-icon) * 0.95);
+}
+
+.playback-settings-btn[aria-expanded="true"] {
+  border-color: var(--neon-blue-glow);
+  color: var(--neon-blue);
+}
+
+/* ==========================================================================
+   [UI-REDESIGN / Stage 6] Transport one-row budget
+   ==========================================================================
+   WHAT: The only breakpoints in this file that touch the transport. Each one
+   re-solves `6.4 × --transport-size + 5 × --transport-gap` for a narrower
+   viewer panel by changing those three variables and nothing else — no
+   layout switch, no control hidden, no `transform: scale()`.
+   WHY: Kept together, in one block, because the guarantee is arithmetic and
+   arithmetic is only checkable when you can see all of it at once. Splitting
+   these steps across the components they affect is how a row like this
+   quietly starts wrapping again.
+
+   The order of concessions is fixed and deliberate:
+     0. the FLEXIBLE SPACE closes  (automatic — see the auto margin above)
+     1. the GAP tightens           (invisible to the user)
+     2. the BUTTON shrinks         (pointer target, so as late as possible)
+     3. the ICON shrinks           (legibility, so last)
+   No step ever removes one of the six controls.
+   [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] "the counter
+   goes" was step 1 here and had its own dedicated ≤980px row in the table
+   below; both are gone along with #counter-text itself, which is why this
+   list is four steps instead of five and the table is one uniform formula
+   instead of a desktop line plus a compact line.
+
+   The widths below are VIEWPORT widths; what the sum has to fit inside is
+   the viewer panel's inner width, which is
+       viewport − 432px   above 980px  (18px body padding ×2, the 340px rail,
+                                        the 20px grid gap, 18px panel
+                                        padding ×2)
+       viewport − 48px    at or below 980px  (10px body padding ×2, 14px
+                                        panel padding ×2 — the shell block at
+                                        the end of this file sets both)
+   Each step is checked at ITS TIGHTEST viewport, i.e. one pixel above the
+   next breakpoint, and the check includes the row's own 12px gap.
+
+   The row is six controls and five gaps (three inside the primary group,
+   one inside the utility group, one between the two) at EVERY width now,
+   including desktop — there is no longer a wider "counter present" case to
+   distinguish it from.
+
+     default   44 / 8      cramped 322. Tightest at 981px → 549px of panel,
+               (>980px)    leaving ~227px of flexible space holding the
+                           groups apart — the row is nowhere near tight here.
+     ≤ 900px   gap 8→6     cramped 312. Tightest at 701px → 653px of panel,
+                           so the groups are still far apart. Gap only — the
+                           first sized concession is the invisible one.
+     ≤ 700px   size 44→42, cramped 294. Tightest at 521px → 473px of panel,
+               gap 6→5     so ~179px of flexible space remains. The button
+                           leaves its 44px comfort size but is still a legal
+                           touch target; the icon has not moved yet.
+     ≤ 520px   size 42→40, cramped 276. Tightest at 401px → 353px of panel:
+               gap 5→4,    ~77px of space still separates the groups even at
+               icon 20→18  the bottom of this band.
+     ≤ 400px   size 40→36, cramped 245. Tightest at 341px → 293px of panel,
+               gap 4→3,    ~48px of space left. The groups only actually meet
+               icon 18→17  below ~300px of panel, which is narrower than any
+                           phone this opens on — so the fully-closed form is
+                           the degradation case, not the normal phone case.
+     ≤ 340px   size 36→33, cramped 221 against 272px of panel at 320px. Below
+               gap 3→2,    the narrowest phone this app is expected to open
+               icon 17→16  on; it exists so the row degrades, not breaks.
+
+   FUTURE: A seventh control invalidates every line above. If one is ever
+   added, redo the sum — do not just nudge a gap. */
+/* [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] The
+   `@media (max-width: 980px) { .player-transport-meta { display: none } }`
+   rule that hid the counter at the compact breakpoint stood here. It is
+   gone along with the element — there is nothing left to hide, on any
+   viewport, so this breakpoint no longer needs a transport-counter step at
+   all. */
+
+@media (max-width: 900px) {
+  .player-transport-row {
+    --transport-gap: 6px;
+  }
+}
+
+@media (max-width: 700px) {
+  .player-transport-row {
+    --transport-size: 42px;
+    --transport-gap: 5px;
+  }
+}
+
+@media (max-width: 520px) {
+  .player-transport-row {
+    --transport-size: 40px;
+    --transport-gap: 4px;
+    --transport-icon: 18px;
+  }
+}
+
+@media (max-width: 400px) {
+  .player-transport-row {
+    --transport-size: 36px;
+    --transport-gap: 3px;
+    --transport-icon: 17px;
+  }
+}
+
+@media (max-width: 340px) {
+  .player-transport-row {
+    --transport-size: 33px;
+    --transport-gap: 2px;
+    --transport-icon: 16px;
+  }
+}
+
+/* [UI-REDESIGN / Stage 3]
+   WHAT: The Playback popover, anchored to the right edge of the transport
+   row and opening UPWARD from its trigger — the familiar YouTube settings
+   position.
+   WHY: `bottom: calc(100% + 8px)` is measured from the row's top edge, so
+   the panel grows up over the Player rather than down over the Gallery
+   grid. The transport cluster and Playback ⚙ itself stay fully visible and
+   clickable underneath it either way; what changes is that the media area
+   absorbs the overlap instead of the thumbnails, which keeps the popover
+   next to the control that opened it as it grows taller.
+   `z-index: 5` clears the two `z-index: 2` in-page overlays and stays far
+   below Presentation Mode's ghost UI. `max-width` plus `right: 0` keeps it
+   inside the panel at narrow widths rather than pushing a horizontal
+   scrollbar onto the page; anchoring to the row (not the viewport) is what
+   keeps it clear of the window edge at normal desktop widths.
+   FUTURE: Visibility is owned entirely by the `hidden` class that
+   openPlaybackPopover()/closePlaybackPopover() toggle. Do not add a second
+   visibility mechanism (an `[open]` attribute, an `.is-open` class) — one
+   of the two will drift out of sync with aria-expanded. */
+/* [UI-REDESIGN / Stage 6]
+   The sheet header, its auto-save note and the backdrop are all DESKTOP-OFF by
+   default and switched on inside the compact block at the end of this file.
+   Declaring them off here rather than on there is deliberate: it means the
+   desktop popover cannot be altered by anything added to the sheet later —
+   a new sheet part is invisible until someone opts it in at the breakpoint,
+   which is the opposite of the usual accident. */
+.playback-sheet-header,
+.playback-sheet-note,
+.playback-sheet-scrim {
+  display: none;
+}
+
+/* [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+   Same DESKTOP-OFF-by-default pattern as the sheet parts above, for the same
+   reason: the takeover composition is invisible everywhere until the compact
+   block at the end of this file explicitly turns it on for
+   [data-mobile-load-state="loading"] specifically — never for "failed" (see
+   that state's own comment) and never on desktop. */
+.mobile-load-takeover {
+  display: none;
+}
+
+.playback-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 5;
+  width: 260px;
+  max-width: 100%;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(13, 20, 40, 0.98);
+  box-shadow: var(--shadow);
+}
+
+/* Both carried bottom margins that spaced them against the rail's dividers.
+   The checkbox stack is the popover's last child, so its trailing margin
+   would just read as lopsided padding; the interval row keeps a gap because
+   it still has the checkboxes below it. */
+.playback-popover .checkbox-stack {
+  margin-bottom: 0;
+}
+
+.playback-popover .form-row {
+  margin-bottom: 12px;
 }
 
 .viewer-empty,
@@ -724,15 +1871,25 @@ button:not(:disabled):hover,
   padding: 20px;
 }
 
-/* Gallery Media Navigation. A compact single-row utility control that
-   reuses the existing toolbar label and button visual language. */
+/* [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+   Gallery Media Navigation. A compact single-row utility control that
+   reuses the existing toolbar label and button visual language.
+   `overflow-x: auto` stays as a defensive fallback only — the grid geometry
+   on .gallery-jump-step below (auto minmax(0,1fr) auto /
+   minmax(0,1fr) auto minmax(0,1fr)) is what actually guarantees a single
+   non-overflowing row at every width this app targets; this scrollbar
+   should never be the thing a user actually meets. */
 .gallery-jump-group {
+  /* [UI-REDESIGN / STAGE 6]
+     [GALLERY-JUMP-CONTROL-HEIGHT]
+     [WHY: every actionable control in the two-step Gallery navigation flow
+     should share one vertical rhythm while retaining semantic widths] */
+  --gallery-jump-control-height: 44px;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: nowrap;
   overflow-x: auto;
-  white-space: nowrap;
 }
 
 button.tag-status-select {
@@ -746,32 +1903,279 @@ button.tag-status-select {
   text-align: left;
 }
 
+/* [UI-REDESIGN / Stage 1C] Text colour only — the background half of this
+   rule moved to .tag-chip-row.is-selected, which spans the whole card. */
 button.tag-status-select.is-selected {
   color: var(--neon-blue);
-  background: rgba(0, 210, 255, 0.1);
 }
 
-.gallery-jump-group .filter-btn {
-  flex: 0 0 auto;
+/* [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+   WHAT: The two-step Gallery navigation workflow's shared box. Real, unified
+   layout on EVERY viewport now — desktop and mobile use the exact same
+   step-swap mechanic, only the two steps' internal grid columns differ.
+   `.gallery-jump-step-inactive` has a base rule (no media query) for the
+   first time: the old design only needed to hide a step at compact widths
+   because desktop showed both halves of one sentence at once; now there is
+   no width at which two steps are ever meant to be visible together, so the
+   hide rule applies everywhere, unconditionally, exactly like
+   `.automation-step`'s equivalent in Presentation Mode.
+   WHY grid rather than flex: `minmax(0, 1fr)` is what actually prevents
+   overflow — a flex item's default min-width is `auto` (its content's
+   natural size), which is exactly what caused the old sentence to force a
+   scrollbar at narrow widths; a grid track explicitly floored at 0 has no
+   such content-size minimum and can be compressed as far as the layout
+   needs. `min-width: 0` on the STEP itself, not just its children, is what
+   lets `.gallery-jump-group`'s flex row give it less than its content would
+   otherwise demand.
+   FUTURE: Do not reintroduce the old one-line sentence for desktop — see
+   this row's own HTML comment for why that idea is retired everywhere, not
+   just here. */
+.gallery-jump-step {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
 }
 
+.gallery-jump-step.gallery-jump-step-inactive {
+  display: none;
+}
+
+/* Select [ target / total ] [ Next → ] — the two `auto` columns size to
+   their own content (the label and the button never need to shrink), so the
+   ENTIRE burden of fitting a narrow viewport falls on the flexible middle
+   column, exactly as the brief's own `auto minmax(0, 1fr) auto` asks for. */
+#gallery-jump-step-select {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+/* [UI-REDESIGN / STAGE 6] [GALLERY-JUMP-BACK]
+   [ ↩ Back ] [ Find Below ] [ Load in Player ] — ONE Step 2 shape at every
+   width now, not a desktop-only 2-item "or" pair with Back added back in
+   only on compact. `auto` sizes the Back column to exactly its own square
+   box (see .gallery-jump-back-btn below); the two `minmax(0, 1fr)` tracks
+   share the rest equally, unchanged in spirit from the original desktop
+   pair.
+   WHY: the two-step Gallery jump flow should provide the same reversible
+   navigation on desktop and mobile — Step 2 is a choice surface, not a
+   dead end, and a workflow inconsistency between "mobile can back out,
+   desktop can't" was never an intentional design decision, just an
+   earlier pass's narrower scope. This was previously compact-only; that
+   override (and .gallery-jump-back-btn's own compact-only visibility, and
+   the "or" separator hide) are now the unconditional base rules a few
+   lines below instead — see [GALLERY-STEP2-ACTION-REFINEMENT]'s original
+   comments there for the full icon/geometry reasoning, unchanged. */
+#gallery-jump-step-action {
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+}
+
+/* [UI-REDESIGN / STAGE 6] [GALLERY-JUMP-BACK] [GALLERY-JUMP-CONTROL-HEIGHT]
+   WHAT: ↩ Back's box — a square of `--gallery-jump-control-height`, the
+   same shared height Step 1's target input/Next → and Step 2's Find
+   Below/Load in Player all use (see .gallery-jump-group), so Back sits on
+   the identical vertical rhythm as every other actionable control in this
+   flow at every width, desktop included. It still reads as visually
+   smaller/quieter than its two primary siblings purely because its WIDTH
+   stays compact (a square, vs. their `minmax(0,1fr)` share of the row) —
+   the "secondary, quiet control" look is a width decision, not a height
+   one.
+   Formerly compact-only (desktop-off by default); now unconditional — see
+   #gallery-jump-step-action's own comment above for why.
+   `color: #fff` is the explicit, durable white the icon below draws from
+   via `currentColor` — same reasoning as #mobile-controls-btn's own
+   hardening a few rules up: a stroke/foreground colour is far less likely
+   to be repainted by a dark-mode/theme browser extension than a filled
+   `background`, so the icon is built as borders on transparent pseudo-
+   elements, never a background fill. `.secondary`'s own muted panel-2
+   background/border still shows through underneath — only the FOREGROUND
+   colour is pinned white here, which is what the icon needs and nothing
+   else about the button's look changes. */
+.gallery-jump-back-btn {
+  display: inline-flex;
+  position: relative;
+  width: var(--gallery-jump-control-height);
+  min-width: var(--gallery-jump-control-height);
+  height: var(--gallery-jump-control-height);
+  min-height: var(--gallery-jump-control-height);
+  padding: 0;
+  color: #fff;
+  font-size: 0;
+  line-height: 1;
+}
+
+/* [UI-REDESIGN / STAGE 6] [GALLERY-JUMP-BACK]
+   WHAT: The back-arrow icon — a chevron (‹) plus a short trailing line,
+   reading as "‹—", the same shape family as ↩ without the character glyph
+   itself. Two pseudo-elements, both `border` strokes on a transparent
+   background, matching the Folder icon's own hardened construction.
+   HOW: the chevron is a plain 8×8 square with only its top and left
+   borders drawn, rotated -45deg. A square rotated around its own centre
+   (the default transform-origin) keeps that centre fixed regardless of
+   rotation, so the square is positioned centred at (18, 22) BEFORE
+   rotating — left/top = centre − half the box (18−4, 22−4) — and rotation
+   alone turns the top-left corner where those two borders meet into the
+   shape's LEFT-pointing vertex, with its two arms opening toward the
+   upper-right and lower-right. The shaft is a zero-height line (`border-
+   top` on a `height: 0` box — the standard CSS-only-divider technique)
+   starting at that same x=18 centre and running right to x=31, at the
+   button's vertical centre (y=22), so it visually continues from where
+   the chevron's arms diverge.
+   Both offsets are +2/+2 from this icon's original 40px-box coordinates —
+   the box grew to `--gallery-jump-control-height` (44px) to match the
+   flow's shared height, and +2 on each axis re-centres the identical glyph
+   shape in the larger square (half of the 4px width/height increase)
+   rather than redrawing it.
+   Centred in the 44px box: icon spans roughly x:14–31, y:18–26, close to
+   the button's own centre (22,22). Formerly compact-only; now
+   unconditional, same as the box above. */
+.gallery-jump-back-btn::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 18px;
+  width: 8px;
+  height: 8px;
+  border-top: 2px solid currentColor;
+  border-left: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.gallery-jump-back-btn::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: 22px;
+  width: 13px;
+  height: 0;
+  border-top: 2px solid currentColor;
+}
+
+/* Explicit rather than relying on grid's default item stretch: `min-width:
+   0` is what actually lets each button compress below its text's natural
+   width when the track is tight, which is the one property grid stretch
+   alone does not provide for free. */
+#gallery-jump-step-action .filter-btn {
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  height: var(--gallery-jump-control-height);
+  min-height: var(--gallery-jump-control-height);
+}
+
+/* [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT]
+   WHAT: Cancels the global `button:not(:disabled):hover { transform:
+   translateY(-1px) }` for these two buttons specifically, and replaces it
+   with a non-geometric hover treatment.
+   WHY: Find Below and Load in Player sit side by side as a matched pair the
+   user is actively comparing; the global 1px lift is fine for a standalone
+   button but here it makes whichever one is hovered visibly rise off its
+   sibling's baseline, reading as the pair wobbling rather than as ordinary
+   hover feedback. `.gallery-filter-row .filter-btn:hover` already solves the
+   identical problem for the segmented View/Type/Tag controls the same way —
+   this mirrors that exact fix rather than inventing a second one.
+   `background` is the substitute signal: brightens toward `var(--panel)`
+   (the same shift the filter row's own hover uses) with zero effect on
+   height, width, padding, border width, or position — both buttons stay
+   pixel-identical to their resting geometry regardless of which one, if
+   either, is hovered. `:focus-visible` is untouched by this rule entirely
+   (see the global `button:focus-visible` rule) — the accessible focus ring
+   is unaffected.
+   FUTURE: Scoped to these two ids on purpose. Do not remove the global lift
+   from `button:hover` itself — plenty of standalone buttons elsewhere rely
+   on it, and this fix is intentionally as narrow as the filter row's own. */
+#gallery-jump-step-action .filter-btn:hover {
+  transform: none;
+  background: var(--panel);
+}
+
+/* [UI-REDESIGN / STAGE 6] [GALLERY-JUMP-BACK]
+   WHAT: The "or" between Find Below and Load in Player is retired at every
+   width now — formerly hidden only on the compact tier, kept on desktop.
+   WHY: with ↩ Back now occupying the row's leading column everywhere (not
+   just compact), "or" between the two remaining actions reads as clutter
+   the row does not need: three clearly distinct controls (a quiet Back
+   icon, two equal-weight action buttons) already read as one system
+   without prose between the last two, the same reasoning the label
+   removal elsewhere in this flow already applies to View/Type/Tag.
+   The element and its class stay in the DOM/CSS (display: none, not
+   deleted) rather than being removed outright — the lowest-risk way to
+   retire it without touching index.html or main.js for a purely visual
+   change. */
 .gallery-jump-separator {
+  display: none;
   color: var(--muted);
+  white-space: nowrap;
 }
 
+/* [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+   WHAT: Houses the editable target input and the read-only total inside
+   Step 1's flexible middle grid column.
+   WHY its own flex row rather than putting both directly in the grid: the
+   grid only knows about three columns (label / middle / button); the
+   target and total need to divide THAT middle column's width between
+   themselves, which is a separate, nested layout decision. `min-width: 0`
+   is what lets this whole group — and so the input inside it — shrink
+   below the input's unconstrained content width when the grid track
+   itself is tight. */
+/* [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT] `gap: 6px` (was
+   4px) — the input's border/focus ring sat almost against "/ total" at 4px.
+   6px is a deliberate, small increase, not a new spacing scale: still well
+   under the 8px the app uses for its normal control gaps elsewhere, so the
+   pair still reads as one tightly-related unit, just no longer cramped. */
+.gallery-jump-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+   `flex: 0 1 92px` — never GROWS past a comfortable width even when the
+   grid's middle column has room to spare on a wide desktop panel (an input
+   box hundreds of pixels wide for a 5-digit number would look broken), but
+   SHRINKS as far as `min-width` on a narrow one. The extra space a wide
+   desktop leaves unused simply becomes gap before Next →, matching the
+   brief's "desktop may have more breathing room. That is fine."
+   Sized from a real, live VALUE now, never a placeholder — see this
+   element's own comment in index.html for why that is load-bearing for
+   "do not grey out the target". */
 .gallery-jump-input {
-  width: 84px;
-  min-height: 36px;
+  flex: 0 1 92px;
+  min-width: 40px;
+  height: var(--gallery-jump-control-height);
+  min-height: var(--gallery-jump-control-height);
   padding: 7px 10px;
   border-radius: 10px;
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
   font-size: 0.9rem;
+  cursor: text;
 }
 
 .gallery-jump-input::placeholder {
   color: var(--muted);
+}
+
+.gallery-jump-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* The valid-range total — plain system information, never editable, never
+   competing with the input for the flexible column's width. */
+.gallery-jump-total {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.gallery-jump-next-btn {
+  white-space: nowrap;
+  height: var(--gallery-jump-control-height);
+  min-height: var(--gallery-jump-control-height);
 }
 
 /* Momentary feedback for invalid/out-of-range/empty input — cleared
@@ -780,11 +2184,156 @@ button.tag-status-select.is-selected {
   border-color: var(--danger);
 }
 
-/* Persistent target border for Find in Gallery. It is distinct from the
-   active-card border, which continues to track the Viewer's current item. */
+/* [UI-REDESIGN / Stage 4]
+   WHAT: The Find Below target state, now YELLOW.
+   WHY: It claimed to be "distinct from the active-card border" while using
+   var(--accent-2) — the exact colour .gallery-card.active uses below. The
+   two states were indistinguishable, which defeated the point of a find
+   marker: you could not tell "the item I searched for" from "the item that
+   is loaded". Yellow sits outside the blue/purple selection language
+   entirely, so the two can never be confused again.
+   The glow is what carries it at a glance while scrolling; the outline
+   alone reads as just another border at thumbnail size.
+   FUTURE: Yellow means "found", blue/purple means "selected". Do not give
+   the find state an accent colour, and do not give selection a warm one. */
 .gallery-card.gallery-jump-highlight {
-  outline: 4px solid var(--accent-2);
+  outline: 4px solid var(--find-yellow);
   outline-offset: 3px;
+  box-shadow: 0 0 0 2px var(--find-yellow-glow), 0 0 18px var(--find-yellow-glow);
+}
+
+/* [UI-REDESIGN / Stage 4]
+   WHAT: The filter row, now the first thing in the Gallery panel.
+   WHY: It carries the same .toolbar-filter-group children it had in the
+   viewer header, so the groups themselves need no new styling — this only
+   provides the row that used to come from .viewer-header-main. Wraps rather
+   than overflows, since three groups plus their buttons do not fit a narrow
+   panel on one line.
+   FUTURE: Stage 6 owns the responsive pass. */
+.gallery-filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin-bottom: 14px;
+}
+
+/* [UI-REDESIGN / Stage 4 polish]
+   WHAT: Turns the Gallery filter groups into true segmented controls —
+   joined, sharing one hairline, with only the outer corners rounded.
+   WHY: Scoped to .gallery-filter-row on purpose. `.filter-btn` and
+   `.filter-toggle` are also used by the Gallery jump row and the Tag
+   filter chips, which are NOT segmented and must keep their existing
+   separated look, so none of this may leak out of this row.
+   Purely visual: no element, id, handler, selected state or keyboard
+   behavior is touched. `.active` remains the single source of selected
+   state — this only changes how it is painted.
+   FUTURE: The Tag group holds one button, so it picks up both the
+   first-child and last-child radii and renders as an ordinary standalone
+   dropdown. That is intended — do not add a special case for it. */
+.gallery-filter-row .filter-toggle {
+  gap: 0;
+}
+
+.gallery-filter-row .filter-btn {
+  /* position/z-index exist for the seam: the active segment lifts its own
+     border above its neighbours' so the blue edge is never half-covered. */
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font-size: 0.9rem;
+  /* Same lesson as the transport's icon buttons: `♥` and `▼` resolve to
+     symbol faces whose intrinsic line box is taller than the label text's,
+     and min-height is a floor rather than a cap — without this the glyph
+     segments would sit taller than their plain-text neighbours. */
+  line-height: 1;
+}
+
+/* Pulls each segment onto its neighbour's border so the pair shares one
+   1px line instead of stacking two. */
+.gallery-filter-row .filter-btn:not(:first-child) {
+  margin-left: -1px;
+}
+
+.gallery-filter-row .filter-btn:first-child {
+  border-top-left-radius: 10px;
+  border-bottom-left-radius: 10px;
+}
+
+.gallery-filter-row .filter-btn:last-child {
+  border-top-right-radius: 10px;
+  border-bottom-right-radius: 10px;
+}
+
+/* Only the active segment takes the fill. The border becomes accent rather
+   than the base rule's `transparent`, which in a joined group would punch a
+   visible gap in the shared hairline. */
+.gallery-filter-row .filter-btn.active {
+  border-color: var(--accent);
+  z-index: 1;
+}
+
+/* The global button hover lifts by 1px. That is right for a standalone
+   button and wrong here — one segment rising out of a joined group breaks
+   the seam — so hover is expressed as a background shift instead. */
+.gallery-filter-row .filter-btn:hover {
+  transform: none;
+}
+
+.gallery-filter-row .filter-btn:not(.active):hover {
+  background: var(--panel);
+}
+
+/* [UI-REDESIGN / Stage 4]
+   The now-playing strip. Reuses .panel's surface language rather than
+   introducing a new one — it is a quiet status bar, not a second transport.
+   `min-width: 0` on the name is what permits the ellipsis; a flex item
+   otherwise refuses to shrink below its content, and the two controls must
+   stay hittable however long a filename is.
+   Visibility is the `hidden` ATTRIBUTE set by syncNowPlayingStrip(), matching
+   how the workspace panels do it — not the app's `.hidden` class. */
+.now-playing-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(18, 25, 51, 0.92);
+  box-shadow: var(--shadow);
+}
+
+/* [UI-REDESIGN / Stage 5 fix]
+   The rule the comment above assumed was already in force. `[hidden]`'s
+   `display: none` lives in the UA stylesheet, and ANY author declaration
+   outranks the UA origin regardless of specificity — so `.now-playing-strip`'s
+   own `display: flex` was silently defeating the `hidden` attribute
+   syncNowPlayingStrip() sets, and the strip never actually hid. That is what
+   left #now-playing-return-btn focused and on screen after "Return to
+   Gallery", which in turn latched :focus-visible and killed the Player
+   shortcuts. Identical one-liner, identical reason, as `.workspace-panel[hidden]`.
+   FUTURE: Any element whose visibility is the `hidden` ATTRIBUTE needs this
+   companion rule the moment it is given a `display` of its own. */
+.now-playing-strip[hidden] {
+  display: none;
+}
+
+.now-playing-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.now-playing-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
 }
 
 .gallery-grid {
@@ -915,8 +2464,14 @@ button.tag-status-select.is-selected {
   margin: 0;
 }
 
+/* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-COMPACT-HIERARCHY]
+   `min-height: 40px` (was 56px, the old PRIMARY-toolbar scale this control
+   inherited from when Loop lived directly in the toolbar). Loop is now
+   exclusively a secondary control inside the ⚡ Automations tray at every
+   width — it should read as compact, not compete with the primary row's
+   own PRIMARY-tier (◀ ⏯ ▶) height. */
 .loop-toggle-control {
-  min-height: 56px;
+  min-height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -950,11 +2505,14 @@ button.tag-status-select.is-selected {
    conveyed by color/glow + the title tooltip, set in main.js), so its
    fixed width can shrink from the old text-sized 94px down to a compact
    utility-tier square — freeing width for ◀ ⏯ ▶ below — while the icon
-   itself scales up via font-size so it's still easy to read at a glance. */
+   itself scales up via font-size so it's still easy to read at a glance.
+   [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-COMPACT-HIERARCHY] 44px/1.2rem
+   (was 60px/1.6rem, the old primary-toolbar scale) — see
+   .loop-toggle-control's own comment for why this control is compact now. */
 .overlay-loop-toggle {
-  flex: 0 0 60px;
-  min-width: 60px;
-  font-size: 1.6rem;
+  flex: 0 0 44px;
+  min-width: 44px;
+  font-size: 1.2rem;
 }
 
 .wide-check {
@@ -996,12 +2554,16 @@ hr {
 }
 
 /* Fill Panel / Presentation Mode replaces the ordinary Gallery chrome
-   entirely rather than layering on top of it — the page heading/subtitle
-   live outside .layout entirely, so they need their own rule here rather
-   than being covered by .simulated-fullscreen-layout below. */
-.simulated-fullscreen .topbar {
-  display: none;
-}
+   entirely rather than layering on top of it.
+   [UI-REDESIGN / Stage 2] `.simulated-fullscreen .topbar { display: none }`
+   retired here: it existed solely to hide header.topbar, which no longer
+   exists. The identity that replaced it lives inside .controls-panel, and
+   `.simulated-fullscreen-layout .controls-panel { display: none }` below
+   already hides that whole rail during Fill Panel — so the identity is
+   still correctly suppressed, by the rule that hides its container.
+   FUTURE: Anything added ABOVE .layout would once again sit outside those
+   rules and need its own Fill Panel handling. Prefer not to add anything
+   there. */
 
 .simulated-fullscreen-layout {
   grid-template-columns: 1fr;
@@ -1020,6 +2582,42 @@ hr {
   display: none;
 }
 
+/* [UI-REDESIGN / Stage 1A]
+   WHAT: Extends the two rules above to the new workspace shell — the tab
+   bar and every non-Gallery workspace are ordinary Gallery chrome during
+   Fill Panel, and the Gallery workspace is forced visible even when it is
+   the hidden one.
+   WHY: Presentation Mode is NOT isolated from main.layout. #presentation-
+   controls is a body-level sibling, but the PM *stage* is produced by the
+   three classes enterFillMode() adds to .app-shell / main.layout /
+   #viewer-panel, so every new wrapper inside main.layout must be taught to
+   disappear here or it renders on top of the presentation. Forcing
+   #workspace-gallery visible covers the real case where playback starts
+   with Fill Panel enabled while the user is on Tagging/Settings — without
+   it, PM would show a black screen and no media.
+   FUTURE: Any wrapper added inside main.layout in a later stage needs a
+   line here too. Overriding `hidden` is deliberate and confined to PM:
+   nothing outside this block may override the workspace `hidden` contract,
+   and exiting PM restores the user's actual workspace untouched because no
+   JavaScript state was changed to get here. */
+.simulated-fullscreen-layout .workspace-nav {
+  display: none;
+}
+
+.simulated-fullscreen-layout .workspace-panel {
+  display: none;
+}
+
+.simulated-fullscreen-layout #workspace-gallery,
+.simulated-fullscreen-layout #workspace-gallery[hidden] {
+  display: flex;
+}
+
+.simulated-fullscreen-layout .media-content,
+.simulated-fullscreen-layout #workspace-gallery {
+  gap: 0;
+}
+
 .simulated-fullscreen-viewer {
   min-height: 100vh;
   padding: 0;
@@ -1035,8 +2633,20 @@ hr {
    it stayed visibly on screen during Fill Panel. Presentation Mode has
    its own complete PM-UI toolbar (#presentation-controls) for
    navigation/favoriting; the ordinary header has no role here at all. */
-.simulated-fullscreen-viewer .viewer-header,
-.simulated-fullscreen-viewer #tags-filter-panel {
+/* [UI-REDESIGN / Stage 3] .player-transport-row joins this rule for exactly
+   the reason stated above: it is ordinary Gallery chrome, and Presentation
+   Mode already provides its own transport in #presentation-controls.
+   Without this the new row would sit visibly below a 100vh stage during
+   Fill Panel, offering a second, redundant set of controls. The popover is
+   a child of the row so it is covered too, and enterFillMode() also closes
+   it so aria-expanded cannot be left stale behind the hide.
+   [UI-REDESIGN / Stage 4] `.viewer-header` and `#tags-filter-panel` dropped
+   from this selector: Stage 4 removed the viewer panel's header outright and
+   moved the tag panel into .gallery-panel, which
+   `.simulated-fullscreen-layout .gallery-panel { display: none }` below
+   already hides wholesale during Fill Panel. The transport row is the only
+   thing left inside the viewer panel that needs hiding. */
+.simulated-fullscreen-viewer .player-transport-row {
   display: none;
 }
 
@@ -1076,14 +2686,25 @@ hr {
    CSS :focus-within doesn't clear on mouseleave, which was leaving the
    bar visibly "stuck" after any button click. */
 
+/* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
+   `flex-wrap: wrap` and the softened `border-radius` (999px pill → 20px
+   rounded card) are now unconditional, not ≤448px-only: the Automations
+   row (.pm-automations-group, a `flex-basis: 100%` item — see its own
+   comment) needs a wrapping container to become a genuine second line at
+   ANY width now that ⚡ is the canonical entry point everywhere, not just
+   deep-compact. The softened radius is unconditional for the same reason
+   the deep-compact tier originally needed it: a full 999px pill looks
+   broken the instant a second line appears, so the shape must not change
+   between the tray's closed and open states. */
 .presentation-controls-bar {
   width: 100%;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 8px;
   padding: 10px;
-  border-radius: 999px;
+  border-radius: 20px;
   background: rgba(0, 0, 0, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.14);
   backdrop-filter: blur(10px);
@@ -1113,14 +2734,29 @@ hr {
               scales the icon itself, not just the surrounding box.
    HIGH-FREQUENCY — ❤️ Favorite: comfortable fixed size, close to PRIMARY's
               height, but not competing for the row's flexible space.
-   UTILITY  — 🔁 (above), 🤖, 🙈 Hide, ↩ Undo, Exit, ⚙: same row height for
-              a balanced toolbar, but compact fixed widths. */
+   UTILITY  — ⚡, 🙈 Hide, ↩ Undo, Exit, ⚙: same row height for
+              a balanced toolbar, but compact fixed widths.
+   [UI-REDESIGN / STAGE 6] [PM-DESKTOP-TRANSPORT-WEIGHT]
+   `padding: 6px 9px` (was `6px 4px`) adds +5px each side — +10px total,
+   inside the brief's own "+8 to +12px wider" target — giving Previous/
+   Play-Pause/Next modest extra horizontal breathing room and transport
+   hierarchy at wide PM widths, without changing their height, glyph
+   centering, or border-radius family. Deliberately a padding change, not a
+   flex-grow change: flex-grow (`1.7`) determines how EXTRA row space gets
+   shared, which is a different question from "how wide is this control's
+   own minimum content box" — padding is the direct, predictable way to add
+   a fixed amount of width regardless of how much spare row space exists.
+   The ≤700px/≤520px tiers apply the equivalent widening via their own
+   --pm-transport-size variable (layered on top of --pm-control-size) —
+   see those tiers further down this file; ≤448px returns Previous/Play-
+   Pause/Next to the same standardized --pm-control-size as every other
+   icon, per that tier's own comment. */
 #overlay-prev-btn,
 #overlay-play-btn,
 #overlay-next-btn {
   flex: 1.7 1 0;
   font-size: 1.75rem;
-  padding: 6px 4px;
+  padding: 6px 9px;
 }
 
 .overlay-btn-favorite {
@@ -1135,6 +2771,26 @@ hr {
   border-color: rgba(255, 160, 190, 0.65);
 }
 
+/* [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT]
+   WHAT: Hide and Undo are two separate, always-present controls at every
+   width ABOVE the deep-compact tier (unchanged — see
+   #pm-hide-undo-slot's `display: contents` base rule further down this
+   file). Only the deep-compact tier turns them into one true
+   mutually-exclusive slot; see that tier's own comment (its ceiling is
+   ≤576px as of [STAGE7-463-571-WRAP-FIX], raised from ≤448px) for the
+   exact mechanism and its fixed-geometry guarantee.
+   PRIOR AUDIT (superseded): an earlier pass considered a literal one-slot
+   swap unsafe, because main.js's `lastHiddenRelativePath !== null` (the
+   truthful "Undo available" condition — see syncUndoHideButton()) stays
+   true across ordinary Next/Previous navigation, not just immediately
+   after a Hide — so Undo could keep occupying the slot for a while during
+   a session of hiding several items in a row while browsing forward. That
+   is still the existing, unchanged truth about this state; it is not a
+   bug and was not touched. This pass implements the one-slot swap on top
+   of it anyway, per explicit direction to use the existing truthful state
+   as-is rather than inventing new hide/undo semantics to smooth over that
+   quirk — Undo remaining visible/available across that window is accepted
+   as correct, not a defect. */
 .overlay-btn-hide {
   flex: 0 0 78px;
   background: rgba(40, 40, 48, 0.6);
@@ -1157,9 +2813,27 @@ hr {
   cursor: default;
 }
 
+/* [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT]
+   Unlike .pm-automations-group (now a tray at every width — see
+   [PM-AUTOMATIONS-CANONICAL]), Hide/Undo is untouched by that pass: this
+   wrapper still uses `display: contents` unconditionally, making it
+   invisible to layout everywhere above the deep-compact tier, so
+   #overlay-hide-btn/#overlay-undo-hide-btn render as direct flex items of
+   .presentation-controls-bar exactly where they always have — wide PM is
+   completely unaffected by this wrapper's existence. The deep-compact
+   tier's override (≤576px as of [STAGE7-463-571-WRAP-FIX], raised from
+   ≤448px) turns it into a real, fixed-size single
+   slot; see that tier's own comment. */
+.pm-hide-undo-slot {
+  display: contents;
+}
+
+/* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-COMPACT-HIERARCHY] 44px/1.1rem
+   (was 56px/1.3rem) — matches .overlay-loop-toggle's own compacting; 🤖 is
+   a secondary control inside the ⚡ tray now, not a primary-toolbar entry. */
 .overlay-btn-automation {
-  flex: 0 0 56px;
-  font-size: 1.3rem;
+  flex: 0 0 44px;
+  font-size: 1.1rem;
   background: rgba(9, 16, 29, 0.65);
   transition: color 0.16s ease, filter 0.16s ease, text-shadow 0.16s ease;
 }
@@ -1184,6 +2858,184 @@ hr {
   background: #3a151a;
   border-color: #6b202b;
   font-size: 0.85rem;
+}
+
+/* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-ENTRY]
+   WHAT: The wrapper around the EXISTING #video-loop-control and
+   #overlay-automation-btn (see index.html's own comment on this element for
+   why they are moved/wrapped rather than cloned).
+   WHY `display: contents` here, unconditionally, as the base/desktop rule:
+   this makes the wrapper generate no box of its own, so its two children
+   become direct flex items of .presentation-controls-bar — exactly the
+   position they have always occupied in the DOM. Every width ABOVE the
+   ≤448px deep-compact tier (including the ~620–660px normalized result and
+   the ≤520px tier) is therefore completely unaffected by this wrapper's
+   existence.
+   FUTURE: This is also the intended expansion point for future
+   Presentation/Playback Automations and recipes — new automation controls
+   belong inside this row, not as new permanent primary-toolbar buttons.
+   [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
+   SUPERSEDED: `display: contents` (Loop/🤖 inline in the primary row) is
+   gone — this used to be the base/desktop rule with a ≤448px-only
+   override turning it into a tray; now the tray IS the base rule, at
+   every width, with no exception anywhere. The canonical PM Automations
+   architecture is ONE mental model everywhere: ⚡ is always the entry
+   point, Loop + 🤖 always live in the tray it opens. There is no longer a
+   "desktop shows them directly, only mobile hides them behind ⚡" split. */
+.pm-automations-group {
+  display: none;
+  flex-basis: 100%;
+  order: 99;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.pm-automations-group.is-open {
+  display: flex;
+}
+
+/* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-MEDIA-SUPPORT]
+   The photo empty state — plain, concise, no button/action (Automations
+   for photos does not exist yet; nothing to route to). Shares the tray's
+   own centered row rather than a separate card. `.hidden` (toggled by
+   syncAutomationsMediaAvailability() in main.js) hides it while a video is
+   current, exactly like Loop/🤖 are hidden while a photo is current — only
+   one of the two states is ever visible. */
+.pm-automations-photo-empty {
+  margin: 0;
+  padding: 8px 4px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* [UI-REDESIGN / STAGE 6] [AUTOMATIONS-DASHED-BOLT-ICON] [PM-AUTOMATIONS-CANONICAL]
+   WHAT: The canonical PM Automations entry point at EVERY width now — was
+   "deep-compact-only, desktop-off by default"; that split is gone, since
+   ⚡ replaces the old permanent Loop + 🤖 toolbar buttons everywhere, not
+   just below 448px. Sized like the OTHER fixed-width utility icons in the
+   desktop toolbar (`flex: 0 0 56px`, matching the old #overlay-automation-
+   btn/.overlay-btn-gear desktop scale) — the ≤700px/≤520px/≤448px tiers
+   still fold it into their own shared --pm-control-size system exactly as
+   they already did (see those tiers further down this file).
+   WHY a new icon rather than reusing 🤖: 🤖 remains the specific control for
+   the existing Loop Automations flow (now living inside the tray this
+   button opens); this outer button represents the broader "Automations"
+   destination, which needs its own distinct identity — a lightning bolt
+   (the "make the app do something automatically" concept) inside a dashed
+   ring (the "this opens a surface" affordance, and the ring the tray-open
+   state rotates — see .is-open below). Kept visually and conceptually
+   separate from the plain ⚙ gear (.overlay-btn-gear), which stays
+   exclusively Settings.
+   Explicit `color: #fff` + currentColor-derived strokes/fill: the same
+   theme-resilience approach as .gallery-jump-back-btn and
+   .mobile-controls-btn's own hardening — a browser dark-mode/theme
+   extension is far less likely to repaint a border or a small
+   currentColor-derived shape than a filled background image or icon font
+   glyph. */
+.overlay-btn-automations-menu {
+  display: inline-flex;
+  position: relative;
+  flex: 0 0 56px;
+  color: #fff;
+  font-size: 0;
+  line-height: 1;
+}
+
+/* [UI-REDESIGN / STAGE 6] [AUTOMATIONS-ICON-CENTERING]
+   WHAT: The dashed ring — a plain circle whose `border-style: dashed`
+   draws the dashes natively, no hand-placed segments needed. Centered via
+   `top: 50%; left: 50%; transform: translate(-50%, -50%)` — a self-proving
+   centering technique (it centers a WxH box on its containing block's true
+   center by construction, with no manual half-width/half-height math to
+   get wrong or to re-derive if the size ever changes) rather than the
+   equivalent negative-margin technique this replaced. `transform-origin`
+   is left at its default (50% 50%, the box's own center), which is exactly
+   what the rotation below needs to spin the ring around its own middle
+   rather than around the button's corner.
+   Static by default; only .is-open (applied together with
+   aria-expanded="true", see main.js) spins it — see the animation rule and
+   its prefers-reduced-motion override further down this file. */
+.overlay-btn-automations-menu::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  border: 2px dashed currentColor;
+  border-radius: 50%;
+}
+
+/* [UI-REDESIGN / STAGE 6] [AUTOMATIONS-ICON-CENTERING]
+   The bolt — a small currentColor-derived polygon rather than a filled
+   background image or icon-font glyph, narrowly scoped to this one shape
+   per the "prefer border/stroke geometry; if the bolt needs a filled
+   polygon, derive it from currentColor and keep it scoped" guidance.
+   Centered with the exact same `top/left: 50% + translate(-50%, -50%)`
+   technique as the ring above — both pseudo-elements share one explicit
+   coordinate system (this button's own padding box), so ring and bolt are
+   mathematically guaranteed to share the same center point regardless of
+   the button's own size at any responsive tier.
+   The polygon itself was verified by computing its area centroid (not just
+   its bounding box) against the 11×15 box: centroid ≈ (5.49, 7.52) against
+   a true box-center of (5.5, 7.5) — under 0.03px off on either axis, i.e.
+   already both mathematically AND optically centered, so no additional
+   manual optical nudge was added on top of it.
+   It is the stationary element: only the ring (::before) above ever
+   animates, so the bolt itself never moves regardless of tray state. */
+.overlay-btn-automations-menu::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 11px;
+  height: 15px;
+  transform: translate(-50%, -50%);
+  background: currentColor;
+  clip-path: polygon(65% 0%, 15% 55%, 45% 55%, 35% 100%, 85% 40%, 50% 40%);
+}
+
+/* [UI-REDESIGN / STAGE 6] [AUTOMATIONS-DASHED-BOLT-ICON] [AUTOMATIONS-ACTIVE-IDENTITY] [PM-AUTOMATIONS-ACTIVE-INDICATOR]
+   Ring rotation while EITHER the tray is open OR a Presentation automation
+   is genuinely active (`.is-automation-active`, toggled by
+   syncAutomationsActiveIndicator() in main.js from
+   videoLoopInput.checked — the one existing truthful "is anything
+   active" signal) — communicates "this area is open" or "something is
+   running," not a loading state, hence the slow, elegant cadence rather
+   than anything spinner-like. `.is-open` and `.is-automation-active`
+   rarely coexist in practice (a successful Loop/Apply auto-closes the
+   tray the moment automation becomes active — see
+   [PM-AUTOMATIONS-COMMIT-AND-CLOSE]), but either alone is sufficient to
+   spin, and both together is harmless (CSS selector lists don't
+   double-apply an animation). Reduced motion keeps the ring static; see
+   the shared prefers-reduced-motion block near the end of this file.
+   [AUTOMATIONS-ICON-CENTERING] Both keyframe states repeat the SAME
+   `translate(-50%, -50%)` the ring's own base rule uses, alongside the
+   rotation — `transform` is a single property, so an animation that only
+   wrote `rotate(...)` here would silently DROP the centering translate for
+   the animation's whole duration, un-centering the ring the instant it
+   started spinning. Keeping both transforms together in every keyframe is
+   what keeps the ring rotating in place around its own true center rather
+   than orbiting away from it. */
+@keyframes pm-automations-ring-spin {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.overlay-btn-automations-menu.is-open::before,
+.overlay-btn-automations-menu.is-automation-active::before {
+  animation: pm-automations-ring-spin 7s linear infinite;
 }
 
 /* Sits between the toolbar above and the "⚙ row" below — a sibling of
@@ -1359,9 +3211,24 @@ hr {
    — it's sized and styled to read as one more Presentation Mode control
    row, not a settings form. Exactly one .automation-step is visible at a
    time; switching steps swaps content in place rather than growing the
-   row's height. */
+   row's height.
+   [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-COMPACT-HIERARCHY]
+   WHAT: max-width 480px (was 720px) — a 3-chip config row does not need
+   the same width budget as the media-scale primary toolbar; a narrower cap
+   keeps the chips visually grouped rather than floating in a wide, mostly
+   empty pill.
+   WHY the visual hierarchy fix belongs here more than in .automation-chip
+   itself: the chips were already a reasonable 36px — what actually made
+   this row read as "another giant toolbar" was sharing the PRIMARY
+   toolbar's own exact pill/glass treatment (999px stadium radius, the same
+   backdrop-filter blur, the same heavy box-shadow). Visual hierarchy —
+   PRIMARY TOOLBAR → AUTOMATIONS TRAY → this nested configuration row —
+   needs each level to look progressively lighter, not identical. This
+   level drops the backdrop-filter and softens the shadow/radius/padding
+   accordingly, while staying the same dark/bordered family so it still
+   reads as part of the same PM surface. */
 .automation-panel {
-  width: min(96vw, 720px);
+  width: min(96vw, 480px);
 }
 
 .automation-step {
@@ -1369,24 +3236,21 @@ hr {
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 10px;
-  padding: 8px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(10px);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  gap: 6px;
+  padding: 6px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
-/* Very narrow viewports: allow the pill to relax into a short, still-
-   compact two-line wrap (via flex-wrap above) rather than clipping or
-   overflowing — this is the "last resort" wrap the spec allows, never the
-   old tall vertical card. */
-@media (max-width: 520px) {
-  .automation-step {
-    border-radius: 18px;
-  }
-}
+/* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-COMPACT-HIERARCHY] The ≤520px-only
+   border-radius override that used to live here is gone — the base rule's
+   own 16px (down from the old 999px stadium pill) already reads correctly
+   at every width, so there is nothing left to relax at this breakpoint.
+   Very narrow viewports still get the same two-line wrap via the base
+   rule's own `flex-wrap` — this is the "last resort" wrap the spec allows,
+   never the old tall vertical card. */
 
 /* Phase 5.2 refinement — Reduce Scroll Drift: on the configuration steps
    (Back → grouped controls → Apply), .automation-apply-btn's margin-left:
@@ -1527,54 +3391,109 @@ hr {
 }
 
 @media (max-width: 700px) {
-  /* Intermediate easing step (Toolbar resizing/polish pass): brings the
-     enlarged desktop PRIMARY/HIGH-FREQUENCY sizing down gradually before
-     the ≤520px query below does the final, tightest squeeze — avoids a
-     single abrupt jump from "large desktop icons" to "small phone icons". */
+  /* [UI-REDESIGN / STAGE 6] [PM-TOOLBAR-NARROW-GEOMETRY]
+     WHAT: Intermediate easing step (~521–700px, covering the ~620–660px
+     target this pass was written for) — brings the desktop toolbar down to
+     one coherent, YouTube-style sizing system before the ≤520px query below
+     does the final, tightest squeeze.
+     WHY this replaces the old per-button flex-basis list: the old rule left
+     ◀ ⏯ ▶ on the UNMODIFIED desktop `flex: 1.7 1 0` — no width of their
+     own, just a bigger share of whatever space the other seven FIXED-width
+     buttons didn't claim. At this exact breakpoint that worked out to
+     roughly 39px wide against a 50px height (374px of fixed siblings + 54px
+     of gaps + 16px of bar padding, against a 560px-capped bar — the
+     PRIMARY trio split whatever ~116px was left three ways) — a sliver
+     narrower than it was tall, next to buttons using three or four
+     different fixed widths and, because only ◀/⏯/▶ had their OWN
+     min-height override here, a 6px height mismatch against everything
+     else. That is the "several different sizing languages" this pass
+     removes: every icon-only control (◀ ⏯ ▶, 🔁, ♡, 🤖, ⚙) now shares
+     ONE fixed square via --pm-control-size/--pm-icon-size below, and every
+     text/mixed control (Hide, Undo, Exit) shares that SAME height with a
+     content-driven width — same vertical rhythm, distinct only where the
+     content genuinely differs, matching .overlay-btn-favorite/-automation/
+     -hide/-danger's own colour and state rules, which this never touches.
+     WIDTH BUDGET at this breakpoint (verified against the numbers below,
+     not assumed): bar width 600px (97vw already exceeds 600 for any
+     viewport in the ~620–660px target range, so the min() resolves to a
+     STABLE 600px there) minus 20px bar padding minus 54px of nine 6px gaps
+     leaves 506px; seven 46px icon buttons take 322px, leaving 184px for
+     Hide/Undo/Exit combined — comfortably more than three short English
+     words need even with their own padding, so this fits with real margin,
+     not against the wire. */
   .presentation-controls {
-    width: min(97vw, 560px);
+    width: min(97vw, 600px);
   }
 
   .presentation-controls-bar {
+    --pm-control-size: 46px;
+    --pm-icon-size: 21px;
     gap: 6px;
-    padding: 8px;
+    padding: 9px 10px;
+    /* Defensive fallback only — matches the same pattern .gallery-jump-group
+       and .workspace-nav already use elsewhere in this file. The width
+       budget above is what actually guarantees one row; this exists purely
+       so a genuinely wrong estimate degrades to a scroll instead of a clip. */
+    overflow-x: auto;
   }
 
+  /* One shared box for every icon-only control. `flex: 0 0 var(...)` is
+     load-bearing on TWO fronts: `0 0` stops ◀/⏯/▶ from ever claiming extra
+     flex-grow share again, and stops any of the seven from shrinking below
+     their square — the fixed-width budget above already accounts for them
+     at their full declared size, so shrinking one would just misalign the
+     row's centring, not free real space. `padding: 0` plus `line-height: 1`
+     is the same "let font-size alone size the glyph" approach the ordinary
+     Player transport's own icon buttons already use. */
   #overlay-prev-btn,
   #overlay-play-btn,
-  #overlay-next-btn {
-    min-height: 50px;
-    font-size: 1.4rem;
-    padding: 6px 4px;
-  }
-
-  .overlay-loop-toggle {
-    flex-basis: 50px;
-    min-width: 50px;
-    font-size: 1.35rem;
-  }
-
-  .overlay-btn-favorite {
-    flex-basis: 54px;
-    font-size: 1.3rem;
-  }
-
-  .overlay-btn-automation {
-    flex-basis: 48px;
-    font-size: 1.15rem;
-  }
-
-  .overlay-btn-hide {
-    flex-basis: 66px;
-  }
-
-  .overlay-btn-undo-hide {
-    flex-basis: 60px;
-  }
-
-  .overlay-btn-danger,
+  #overlay-next-btn,
+  .overlay-loop-toggle,
+  .overlay-btn-favorite,
+  .overlay-btn-automation,
   .overlay-btn-gear {
-    flex-basis: 48px;
+    flex: 0 0 var(--pm-control-size);
+    width: var(--pm-control-size);
+    min-width: var(--pm-control-size);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0;
+    font-size: var(--pm-icon-size);
+    line-height: 1;
+  }
+
+  /* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL] Same box as the
+     shared icon list above, kept separate because this icon is
+     pseudo-element-drawn (font-size: 0 from its base rule) rather than a
+     text glyph — folding it into that rule would set a font-size nothing
+     reads. Newly needed at this tier: ⚡ is now visible at every width, not
+     just ≤448px. */
+  .overlay-btn-automations-menu {
+    flex: 0 0 var(--pm-control-size);
+    width: var(--pm-control-size);
+    min-width: var(--pm-control-size);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0;
+  }
+
+  /* Text/mixed controls: the SAME height as the icon buttons above, but
+     content-driven width with restrained padding rather than a fixed box —
+     "Hide"/"Undo"/"Exit" stay legible words, not squeezed abbreviations.
+     `flex: 0 1 auto` (shrink allowed, unlike the icon buttons above) is a
+     second, narrower safety net on top of the width budget already proving
+     this fits: if it is ever slightly wrong, these three — the least
+     tap-target-critical of the ten, being the widest already — absorb it
+     before anything genuinely clips. */
+  .overlay-btn-hide,
+  .overlay-btn-undo-hide,
+  .overlay-btn-danger {
+    flex: 0 1 auto;
+    min-width: 0;
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0 11px;
+    font-size: 0.8rem;
   }
 }
 
@@ -1618,62 +3537,1293 @@ hr {
   }
 
   .presentation-controls-bar {
-    gap: 6px;
+    --pm-control-size: 40px;
+    --pm-icon-size: 18px;
+    gap: 5px;
     padding: 8px;
+    /* Same defensive fallback as the ≤700px tier — see its own comment.
+       More load-bearing here than there: this is the LAST tier (no further
+       breakpoint below it, all the way to ~320px), so unlike ≤700px this
+       block deliberately keeps every control shrinkable (below) rather than
+       fully rigid — the width budget at the extreme low end of this range
+       could not be verified with the same margin the 620–660px target
+       carries, so this stays a genuine safety net here, not decoration. */
+    overflow-x: auto;
   }
 
-  .overlay-btn {
-    min-height: 40px;
-    padding: 8px 6px;
-    font-size: 0.82rem;
-  }
-
+  /* [UI-REDESIGN / STAGE 6] [PM-TOOLBAR-NARROW-GEOMETRY]
+     WHAT: The same one-shared-box normalization as the ≤700px tier, at this
+     tier's smaller scale (40px, was a mix of 40/42/44px depending on which
+     button) — ◀/⏯/▶ get an explicit basis here too, instead of the
+     unmodified desktop `flex: 1.7 1 0` that let them render narrower than
+     tall next to their normalized siblings.
+     WHY shrinkable here (`flex: 0 1 ...`) and NOT rigid like the ≤700px
+     tier: this tier's floor is ~320px, where ten controls genuinely have
+     very little room to share — `min-width` a modest 8px under the target
+     is the same floor pattern the ordinary Player transport already uses at
+     its own narrowest step, so a control can still compress under real
+     pressure rather than forcing an overflow the `overflow-x: auto` above
+     would otherwise have to catch. */
   #overlay-prev-btn,
   #overlay-play-btn,
-  #overlay-next-btn {
-    min-height: 40px;
-    font-size: 1.15rem;
-    padding: 6px 4px;
-  }
-
-  .overlay-loop-toggle {
-    flex-basis: 44px;
-    min-width: 44px;
-    font-size: 1.15rem;
-  }
-
+  #overlay-next-btn,
+  .overlay-loop-toggle,
   .overlay-btn-favorite,
+  .overlay-btn-automation,
   .overlay-btn-gear {
-    flex-basis: 42px;
+    flex: 0 1 var(--pm-control-size);
+    min-width: calc(var(--pm-control-size) - 8px);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0;
+    font-size: var(--pm-icon-size);
+    line-height: 1;
   }
 
-  .overlay-btn-favorite {
-    font-size: 1.1rem;
+  /* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL] Same reasoning as
+     the ≤700px tier's own copy of this rule — kept separate from the
+     shared icon list above because this icon has no text glyph. */
+  .overlay-btn-automations-menu {
+    flex: 0 1 var(--pm-control-size);
+    min-width: calc(var(--pm-control-size) - 8px);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0;
   }
 
+  .overlay-btn-hide,
+  .overlay-btn-undo-hide,
   .overlay-btn-danger {
-    flex-basis: 44px;
+    flex: 0 1 auto;
+    min-width: 0;
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0 8px;
     font-size: 0.72rem;
-  }
-
-  .overlay-btn-hide {
-    flex-basis: 52px;
-    font-size: 1.1rem;
-  }
-
-  .overlay-btn-undo-hide {
-    flex-basis: 48px;
-    font-size: 0.72rem;
-  }
-
-  .overlay-btn-automation {
-    flex-basis: 42px;
-    font-size: 1rem;
   }
 
   .favorite-toggle {
     min-width: 40px;
     min-height: 40px;
     font-size: 1rem;
+  }
+}
+
+/* [UI-REDESIGN / STAGE 6] [GALLERY-DEEP-COMPACT-HEADER]
+   WHAT: Below 449px, .viewer-header stops trying to fit the Gallery
+   heading/count AND the entire two-step jump workflow into one shared
+   horizontal row — it becomes a column instead, so each gets a full-width
+   row of its own:
+     ROW 1: "Gallery" + item count (.viewer-header-main)
+     ROW 2: the jump workflow (.gallery-jump-group) — Step 1's
+            Select/target/Next or Step 2's Back/Find Below/Load in Player
+   WHY: the ≤520px tier above only ever adjusted alignment
+   (`align-items: flex-start`) and let .gallery-jump-group claim
+   `width: 100%` — but .viewer-header itself was still `flex-direction: row`
+   with no wrap, so that 100%-width claim had nowhere to go: the row
+   flex-shrank both children to fit side by side, which is exactly what
+   crushed the target input into an unreadably narrow box at ~326px. Giving
+   .viewer-header its own full row instead of splitting one row between two
+   competing flex items fixes this at the actual cause, not by shrinking
+   the target/control typography further (which the brief explicitly asked
+   not to do) — .gallery-jump-group's own internal grid math
+   (auto minmax(0,1fr) auto / auto minmax(0,1fr) minmax(0,1fr)) was already
+   verified to fit a full-width row down to ~320px in an earlier pass; it
+   only broke here because it was never GIVEN the full row to begin with.
+   `align-items: stretch` (the flex-column default, stated explicitly
+   rather than left implicit) is what makes both rows span the full
+   available width instead of hugging their own content width. */
+@media (max-width: 448px) {
+  .viewer-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+}
+
+/* [UI-REDESIGN / STAGE 6] [PM-DEEP-COMPACT-TOOLBAR]
+   WHAT: Below 449px, the ten-control ≤520px toolbar (♡ 🔁 🤖 ◀ ⏯ ▶ Hide Undo
+   Exit ⚙) reduces through progressive disclosure rather than continuing to
+   shrink every control: 🔁 Loop and 🤖 Loop Automations move out of the
+   primary row into #pm-automations-group, a real secondary row opened by
+   the new ⚡ #overlay-automations-menu-btn (see that button's own comment
+   in this file, and #pm-automations-group's comment near .overlay-btn-danger
+   above, for the display:contents / real-secondary-row mechanics). Hide and
+   Undo collapse into ONE mutually-exclusive slot — see
+   [PM-HIDE-UNDO-DYNAMIC-SLOT]/#pm-hide-undo-slot's own comment near
+   .overlay-btn-danger above for that mechanism, and
+   [PM-HIDE-UNDO-WAYPOINT] near recentHideUndo's declaration in main.js for
+   which of the two is truthfully showing at any moment.
+   RESULT: eight primary controls at this tier (♡ ⚡ ◀ ⏯ ▶ Hide-or-Undo Exit
+   ⚙), down from ten, plus the two-control Automations tray revealed on
+   demand.
+   THREE NESTED TIERS, ALL COMPUTED (not guessed) against this eight-control
+   budget — see each tier's own comment for its exact numbers:
+     ≤576px (this block) — 38px controls (ceiling raised from 448px by
+                            [STAGE7-463-571-WRAP-FIX] below — see that note
+                            for why)
+     ≤400px              — 34px controls (was mistakenly coded as ≤380px
+                            until [STAGE7-378-402-WRAP-FIX] below corrected
+                            it to match this tier's own always-400px budget)
+     ≤340px              — 32px controls, the true shrinkable floor
+   400px and 340px (not the brief's suggested "360"/"326") are this pass's
+   own breakpoint choices: 340px matches the file's EXISTING ≤340px
+   convention used for the ordinary transport a few hundred lines up, so a
+   phone at ~326px inherits a tier already verified against a comparable
+   width elsewhere in this file rather than a brand-new one-off number. */
+@media (max-width: 576px) {
+  /* [UI-REDESIGN / STAGE 7] [PM-DEEP-COMPACT-TOOLBAR] [STAGE7-463-571-WRAP-FIX]
+     WHAT: Ceiling raised from 448px to 576px — this tier's merged
+     Hide-or-Undo slot + 38px controls now also cover the width band that
+     used to fall to the ≤700px/≤520px tiers above (three separate flexible
+     text buttons — Hide, Undo, Exit — sharing whatever room was left after
+     six fixed icon buttons).
+     WHY: real-browser testing found the PM toolbar wrapping (⚙ Settings
+     onto a second row) across roughly 463–571px. Diagnosis: those two
+     wider tiers budget Hide+Undo+Exit as THREE independently-sized text
+     buttons against a bar capped at min(98vw, 440px)/min(97vw, 600px);
+     that combined budget (~144–161px there) is only marginally larger
+     than what three real rendered buttons need, and in practice wasn't
+     enough — with no further tier below 520px to hand off to before this
+     fix, that whole 449–520px span (and part of the 521–700px span) had
+     no safety margin. Rather than hand-tune three text buttons' padding
+     against an estimate I can't verify pixel-for-pixel without a browser,
+     this reuses the SAME merged-slot mechanism already verified safe by
+     real-browser testing at 360px and 448px: collapsing Hide/Undo into
+     one fixed-width slot removes a whole extra flexible text button (and
+     its gap) from the budget, which is what actually creates real margin
+     rather than a bare fit. The two widths this fix must not disturb —
+     448px (already this tier, unaffected) and 360px (the narrower ≤400px
+     tier below, unaffected) — both stay exactly as they were; only the
+     previously-broken 449–576px band changes rendering, and nothing
+     above 576px is touched (the ≤700px tier's own already-passing
+     521–700px range keeps its original 46px styling above this new
+     ceiling).
+     Verified across the full newly-covered range using this block's own
+     WIDTH BUDGET math below, plus the ≤520px/≤700px tiers' own
+     `.presentation-controls` width rules (unchanged, still what caps the
+     bar's outer width — this block only ever set `.presentation-controls-
+     bar`'s own internal sizing, never the outer wrapper's width):
+       449px  → outer bar capped at ~440px (≤520px rule) → 87px leftover
+                for Exit — same margin the real-browser-verified 448px
+                case already has.
+       520px  → same ~440px cap → 87px leftover, unchanged.
+       521px  → outer bar now governed by the ≤700px rule's min(97vw,600px)
+                instead (uncapped at this width, ≈505px) → 152px leftover.
+       576px  → ≈559px bar → 206px leftover.
+     Every point in the newly-covered range has at least as much margin as
+     the already-proven 448px case, so this is a strict improvement, not a
+     new unverified budget.
+     FUTURE: if a tier's ceiling and its own width-budget comment ever
+     drift apart again (as happened here and at
+     [STAGE7-378-402-WRAP-FIX]), treat that mismatch itself as the bug to
+     fix, not just the symptom. */
+  /* WIDTH BUDGET (verified, not assumed), for the eight-position toolbar
+     (♡ ⚡ ◀ ⏯ ▶ [Hide-or-Undo slot] Exit ⚙): bar width min(98vw, 440px) —
+     at 448px viewport, 98vw = 439px, so the bar is 439px. Minus 16px
+     padding (8px × 2) leaves 423px. Six 38px icon controls take 228px; the
+     Hide/Undo slot is a deliberate fixed 74px (see .pm-hide-undo-slot
+     below); 7 gaps × 5px = 35px. That leaves 423 − 228 − 74 − 35 = 86px for
+     Exit alone — comfortable margin over a four-letter word even with its
+     own padding. (This budget describes the 449–520px portion of this
+     tier's now-wider range, where the outer bar is still capped at 440px
+     by the ≤520px tier's own `.presentation-controls` rule; see
+     [STAGE7-463-571-WRAP-FIX] above for the rest of the range, which has
+     even more room.) */
+  /* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-POPOUT]
+     WHAT: `flex-wrap: wrap` plus a softened `border-radius` — the
+     Automations row (below) becomes a genuine second flex LINE inside this
+     same bar, not a separately positioned/floating element.
+     WHY this replaces an earlier `position: absolute` attempt: that
+     version anchored the tray to this element via `position: relative` +
+     `top: 100%`, which depended on getting this element's own overflow,
+     stacking, and containing-block behavior exactly right — real-browser
+     testing showed it did not reliably work (the click registered and the
+     state toggled correctly, but the tray did not reliably become visible
+     — see PM-HIDE-UNDO-DYNAMIC-SLOT-adjacent history for the earlier,
+     insufficient overflow-only fix). #presentation-settings, the PROVEN
+     working sibling disclosure, uses no absolute positioning at all — it
+     is simply a normal flex-column child that appears and pushes later
+     content down. This rule adopts that exact same "just grow normally"
+     mechanism instead of re-debugging the fragile one: the Automations row
+     stays a real child of this bar (required for `display: contents` to
+     keep it inline at wide widths — see .pm-automations-group's own
+     comment), but flex-wrap plus its own `flex-basis: 100%` (below) is
+     what pushes it onto a genuine second line, using nothing but ordinary
+     flex flow — no coordinates, no z-index, no containing-block
+     assumptions to get wrong.
+     `border-radius` softened from the desktop pill's 999px to 20px
+     UNCONDITIONALLY at this tier (not only while the tray is open) so the
+     bar's shape does not visibly change/"pop" the moment a second line
+     appears — a two-line pill would look broken; a two-line rounded card
+     does not. */
+  .presentation-controls-bar {
+    --pm-control-size: 38px;
+    --pm-icon-size: 16px;
+    gap: 5px;
+    padding: 8px;
+    flex-wrap: wrap;
+    border-radius: 20px;
+    /* Belt-and-suspenders alongside the flex-wrap fix above: explicitly
+       visible on both axes, overriding the ≤700px/≤520px tiers' own
+       `overflow-x: auto` (which — per spec, setting one axis non-visible
+       forces the OTHER to compute as `auto` too — was the confirmed root
+       cause of an earlier version of this same bug). Nothing here should
+       need to overflow this box now that the Automations row is normal
+       flow content the box grows to fit, exactly like #presentation-settings
+       already does, but there is no reason to still carry the inherited
+       auto/auto coupling that caused a problem once already. */
+    overflow: visible;
+  }
+
+  #overlay-prev-btn,
+  #overlay-play-btn,
+  #overlay-next-btn,
+  .overlay-btn-favorite,
+  .overlay-btn-gear {
+    flex: 0 0 var(--pm-control-size);
+    width: var(--pm-control-size);
+    min-width: var(--pm-control-size);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0;
+    font-size: var(--pm-icon-size);
+    line-height: 1;
+  }
+
+  /* [AUTOMATIONS-DASHED-BOLT-ICON] Same fixed square as the icon group
+     above, kept as its own rule rather than joined to that selector list
+     because its icon is pseudo-element-drawn (font-size: 0 from its base
+     rule) rather than a text glyph — folding it into the shared
+     `font-size: var(--pm-icon-size)` rule would set a font-size nothing
+     reads, which is harmless but needlessly muddies that rule's one job.
+     `display` is no longer set here — the base rule is now
+     `display: inline-flex` unconditionally (see [PM-AUTOMATIONS-CANONICAL]
+     on that rule), only the SIZE differs at this tier. */
+  .overlay-btn-automations-menu {
+    flex: 0 0 var(--pm-control-size);
+    width: var(--pm-control-size);
+    min-width: var(--pm-control-size);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0;
+  }
+
+  .overlay-btn-danger {
+    flex: 0 1 auto;
+    min-width: 0;
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0 8px;
+    font-size: 0.72rem;
+  }
+
+  /* [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT]
+     WHAT: One fixed-size slot in the primary row (not two independent flex
+     items) — width is a deliberate, explicit value sized for the wider of
+     "🙈 Hide" / "↩ Undo" at this tier's own font-size/padding, NOT derived
+     from either button's own natural content width. That is what actually
+     guarantees zero toolbar shift when the visible one swaps: the slot's
+     own box never changes size regardless of which child is showing.
+     #overlay-hide-btn/#overlay-undo-hide-btn fill the slot at 100%/100%;
+     exactly one is visible at a time via .pm-hide-undo-inactive (toggled
+     by syncUndoHideButton() in main.js from the same truthful
+     lastHiddenRelativePath state that already drove Undo's disabled look —
+     see that function's own comment). */
+  .pm-hide-undo-slot {
+    display: flex;
+    position: relative;
+    flex: 0 0 74px;
+    width: 74px;
+    height: var(--pm-control-size);
+  }
+
+  .overlay-btn-hide,
+  .overlay-btn-undo-hide {
+    width: 100%;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    padding: 0 8px;
+    font-size: 0.72rem;
+  }
+
+  .pm-hide-undo-inactive {
+    display: none;
+  }
+
+  /* [PM-AUTOMATIONS-ENTRY] [PM-AUTOMATIONS-CANONICAL] .pm-automations-group
+     and .pm-automations-group.is-open no longer need a tier override here
+     — the tray's open/closed mechanism and its flex-basis/order/divider
+     styling are now the unconditional base rule (see that class's own
+     comment), the same at every width. Only the ICON SIZE inside it still
+     varies per tier, via the shared --pm-control-size custom property
+     below — #video-loop-control and #overlay-automation-btn (still the
+     SAME two elements, never cloned) pick that up automatically. */
+  .overlay-loop-toggle,
+  .overlay-btn-automation {
+    flex: 0 0 var(--pm-control-size);
+    width: var(--pm-control-size);
+    min-width: var(--pm-control-size);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0;
+    font-size: var(--pm-icon-size);
+    line-height: 1;
+  }
+}
+
+/* [UI-REDESIGN / STAGE 7] [PM-DEEP-COMPACT-TOOLBAR] [STAGE7-378-402-WRAP-FIX]
+   WHAT: Ceiling corrected from 380px to 400px, matching the budget this
+   comment already computed below.
+   WHY: this comment's own math was always computed for a 400px ceiling
+   ("the widest viewport this tier covers") but the @media rule underneath
+   it was written as max-width: 380px — a stage 6 transcription mismatch
+   between the documented budget and the shipped breakpoint. That left
+   381–400px (confirmed in real-browser testing as a ~378–402px failing
+   band, browser/emulator width rounding included) falling through to the
+   deep-compact tier above instead (its ceiling was ≤448px at the time;
+   see [STAGE7-463-571-WRAP-FIX] on that tier for why it is now ≤576px),
+   whose fixed 38px controls were only budget-
+   verified at that tier's own 448px ceiling, not across its full range —
+   at 381–402px there isn't enough leftover width for Exit, so it (and
+   #overlay-btn-gear/⚙ Settings immediately after it in flex order) wraps
+   to a second row. Restoring the ceiling to 400px puts this whole band
+   back on the already-verified 34px-control budget below, with real
+   margin at both ends (84px leftover for Exit at 400px, 64px at 380px —
+   see the two computations immediately below, unchanged).
+   FUTURE: if this tier's ceiling is ever intentionally changed again, keep
+   the @media value and this comment's own width-budget arithmetic in sync
+   — this bug was exactly the two drifting apart.
+   WIDTH BUDGET at 400px (the widest viewport this tier covers, since it
+   sits below the deep-compact tier above), for the eight-position toolbar:
+   bar width min(98vw, 440px) = 392px. Minus 12px padding (6px × 2) leaves
+   380px. Six 34px icon controls take 204px; the Hide/Undo slot is a
+   deliberate fixed 64px (see .pm-hide-undo-slot below); 7 gaps × 4px =
+   28px. That leaves 380 − 204 − 64 − 28 = 84px for Exit alone.
+   At the tier's own 380px point (no longer the ceiling, still comfortably
+   inside this tier): bar = 372.4px ≈ 372px. Content = 372 − 12 = 360px.
+   Remaining for Exit = 360 − 204 − 64 − 28 = 64px. Both points carry real
+   margin, not a bare fit. */
+@media (max-width: 400px) {
+  .presentation-controls-bar {
+    --pm-control-size: 34px;
+    --pm-icon-size: 15px;
+    gap: 4px;
+    padding: 6px;
+  }
+
+  #overlay-prev-btn,
+  #overlay-play-btn,
+  #overlay-next-btn,
+  .overlay-btn-favorite,
+  .overlay-btn-gear,
+  .overlay-btn-automations-menu,
+  .overlay-loop-toggle,
+  .overlay-btn-automation {
+    flex: 0 0 var(--pm-control-size);
+    width: var(--pm-control-size);
+    min-width: var(--pm-control-size);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+  }
+
+  .overlay-btn-danger {
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0 6px;
+    font-size: 0.68rem;
+  }
+
+  /* [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT] Same fixed-slot
+     mechanism as the deep-compact tier (≤576px), this tier's own narrower
+     width. */
+  .pm-hide-undo-slot {
+    flex: 0 0 64px;
+    width: 64px;
+    height: var(--pm-control-size);
+  }
+
+  .overlay-btn-hide,
+  .overlay-btn-undo-hide {
+    height: 100%;
+    min-height: 0;
+    padding: 0 6px;
+    font-size: 0.68rem;
+  }
+}
+
+/* [UI-REDESIGN / STAGE 6] [PM-DEEP-COMPACT-TOOLBAR]
+   The true shrinkable floor — no further tier below this one, same role
+   the ≤520px tier plays for the wider PM system above. 340px reuses the
+   file's EXISTING ≤340px convention (see the ordinary transport's own tier
+   near the top of this file) rather than inventing a new breakpoint number,
+   so this tier is verified against the same width class already proven
+   elsewhere.
+   WIDTH BUDGET at 326px (this pass's own acceptance-test width), for the
+   current eight-position toolbar (♡ ⚡ ◀ ⏯ ▶ [Hide-or-Undo slot] Exit ⚙):
+   bar = min(98vw, 440px) = 319.5px ≈ 320px. Minus 10px padding (5px × 2)
+   leaves 310px. Six 32px icon controls take 192px; the Hide/Undo slot is a
+   deliberate fixed 58px (see .pm-hide-undo-slot below — sized for the
+   wider of "🙈 Hide" / "↩ Undo", never derived from either button's own
+   content, which is what actually guarantees zero toolbar shift when the
+   visible one swaps); 7 gaps × 3px = 21px. That leaves 310 − 192 − 58 − 21
+   = 39px for Exit alone — comfortable for a four-letter word at ~0.64rem,
+   not a three-way split anymore now that Hide/Undo is one slot rather than
+   two independent flex items.
+   32px icon controls stay above the "do not ship 24px tap targets" floor
+   this pass was explicitly warned against, and close to the brief's own
+   "~34px only if genuinely required" suggestion for this extreme width.
+   At the tier's own 340px ceiling there is more slack than 326px shows:
+   bar = 333.2 ≈ 333px, content = 333 − 10 − 192 − 58 − 21 = 52px for Exit. */
+@media (max-width: 340px) {
+  .presentation-controls-bar {
+    --pm-control-size: 32px;
+    --pm-icon-size: 14px;
+    gap: 3px;
+    padding: 5px;
+  }
+
+  /* Shrinkable here, unlike the two tiers above — the same "genuine floor,
+     not a fully rigid budget" reasoning the ≤520px tier documents for the
+     wider PM system. `min-width` a modest 6px under the target square
+     mirrors that tier's own 8px-under floor, scaled to this tier's smaller
+     base size. */
+  #overlay-prev-btn,
+  #overlay-play-btn,
+  #overlay-next-btn,
+  .overlay-btn-favorite,
+  .overlay-btn-gear,
+  .overlay-btn-automations-menu,
+  .overlay-loop-toggle,
+  .overlay-btn-automation {
+    flex: 0 1 var(--pm-control-size);
+    min-width: calc(var(--pm-control-size) - 6px);
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+  }
+
+  .overlay-btn-danger {
+    flex: 0 1 auto;
+    min-width: 0;
+    height: var(--pm-control-size);
+    min-height: var(--pm-control-size);
+    padding: 0 5px;
+    font-size: 0.64rem;
+  }
+
+  /* [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT]
+     Same fixed-slot mechanism as the wider tiers above, shrinkable here
+     (`flex: 0 1 ...`) to match this tier's own "genuine floor, not a fully
+     rigid budget" treatment of every other control. */
+  .pm-hide-undo-slot {
+    flex: 0 1 58px;
+    min-width: calc(58px - 6px);
+    width: 58px;
+    height: var(--pm-control-size);
+  }
+
+  .overlay-btn-hide,
+  .overlay-btn-undo-hide {
+    width: 100%;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    padding: 0 5px;
+    font-size: 0.64rem;
+  }
+}
+
+/* ==========================================================================
+   [UI-REDESIGN / Stage 6] Responsive / mobile transformation
+   ==========================================================================
+   WHAT: Everything below turns the desktop shell into the narrow-screen
+   shell — compact header, the left rail as a Controls bottom sheet, a
+   Player-first stack, and single-column workspaces.
+   WHY: It is one block at the end of the file, and one breakpoint (980px),
+   on purpose. 980px is where .layout already dropped to a single column, so
+   it is the width at which the rail stops being a side column and has to
+   become something else; introducing a second, nearby breakpoint would mean
+   a band where the rail is neither. Being last in the file means these rules
+   win ties against the desktop rules they replace without needing inflated
+   selectors to do it.
+   Nothing here duplicates a control. Every element styled below is the SAME
+   element the desktop uses, restyled — which is why there is no mobile-only
+   id anywhere in this block except the four genuinely new ones (the header,
+   its context readout, the drawer handle, its close button and the scrim).
+   FUTURE: Keep this the only shell breakpoint. If a future change needs a
+   third layout, add it here rather than scattering @media blocks next to
+   each component — the interactions between the drawer, Fill Panel and the
+   workspace stack are only reviewable when they sit together. */
+
+/* Desktop default: the mobile chrome does not exist. Declared OUTSIDE the
+   media query so these elements are hidden even in browsers that never
+   evaluate it, rather than flashing on first paint. */
+.mobile-app-header,
+.controls-scrim,
+.controls-drawer-close-btn {
+  display: none;
+}
+
+/* [UI-REDESIGN / Stage 6]
+   The Fill Panel rule the mobile header's HTML comment refers to, and the
+   exception the Stage 2 note at the top of this file anticipated: this
+   header is the one element above main.layout, so the
+   `.simulated-fullscreen-layout ...` rules that strip the rest of the Gallery
+   chrome cannot reach it. Keyed to `.simulated-fullscreen` (which
+   enterFillMode() puts on .app-shell) rather than the layout class, because
+   the header is a SIBLING of main.layout, not a descendant.
+   FUTURE: Any further app-level chrome added above main.layout needs its own
+   line here, or it will render on top of Presentation Mode. */
+.simulated-fullscreen .mobile-app-header,
+.simulated-fullscreen .controls-scrim {
+  display: none;
+}
+
+@media (max-width: 980px) {
+  /* Reclaims the horizontal margin the desktop body padding spends; at 360px
+     36px of padding is a tenth of the viewport. */
+  body {
+    padding: 10px;
+  }
+
+  /* --- Compact app header ------------------------------------------------
+     Sticky rather than fixed: it scrolls with the document's flow but pins at
+     the top, so the Controls handle and the current context are always one
+     thumb away without permanently reserving viewport height the way a fixed
+     header does. z-index 30 clears the in-page overlays (2) and the Playback
+     popover (5) and stays far below the drawer (41) and Presentation Mode. */
+  .mobile-app-header {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(13, 20, 40, 0.98);
+    box-shadow: var(--shadow);
+  }
+
+  .mobile-app-mark {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    border: 1px solid var(--neon-blue-glow);
+    border-radius: 8px;
+    color: var(--neon-blue);
+    font-weight: 700;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+  }
+
+  /* The context line yields all remaining space and truncates — a long
+     profile name must never push the Controls handle off the strip. */
+  .mobile-context-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  /* [UI-REDESIGN / STAGE 6] [FOLDER-CSS-ICON]
+     WHAT: The Folders handle — a square 44px button with a white folder
+     OUTLINE drawn by its own two pseudo-elements. No <img>, no inline SVG,
+     no icon font, no child elements at all.
+     WHY: The button had to lose its text to stop crowding the context line
+     next to it, and a folder is the one glyph that says "the place your
+     libraries come from" without a word.
+     HOW it is drawn (redrawn this pass — see the REDRAW note below for what
+     changed and why):
+       ::before is the TAB — 10×6, top-left, rounded on its top corners only.
+       ::after  is the BODY — 24×16, starting EXACTLY where the tab's own
+                bottom edge ends (top: 17px = the tab's top (11px) + height
+                (6px)) — zero overlap, zero gap. The body's top-LEFT corner
+                is left SQUARE (border-radius: 0 ...) so it sits flush under
+                the tab's own square bottom-left corner, forming one
+                continuous left edge and one continuous top-of-tab-into-
+                top-of-body corner rather than two independently rounded
+                shapes racing to different curves at the same point — that
+                mismatched rounding, combined with the OLD version's
+                deliberate 1px overlap, is what the "doubled seam" this pass
+                reports was actually showing.
+     Both are `position: absolute` against the button's `position: relative`
+     with hard pixel offsets, because ::before/::after would otherwise become
+     flex ITEMS of this inline-flex button and lay out side by side instead
+     of stacking.
+     Combined footprint: x 10–34 (24px wide), y 11–33 (22px tall) — centred
+     in the 44px button on both axes ((10+34)/2 = 22 = (11+33)/2), and
+     within the brief's own "~22–24px" target for a folder that reads
+     instantly at Chromebook/mobile density without changing the 44px tap
+     target around it.
+     [UI-REDESIGN / STAGE 6] [FOLDER-CSS-ICON] REDRAW: three changes from
+     the earlier version — (1) the 1px tab/body overlap is gone, replaced
+     by an exact shared boundary, removing the doubled-seam artifact; (2)
+     the body's top-left corner radius now matches the tab's square bottom
+     rather than rounding independently; (3) the whole icon grew from a
+     20×16 footprint to 24×22, and its stroke from 2px to 2.5px, for more
+     visual weight inside the same 44px button — "larger visual footprint,
+     slightly stronger stroke weight," per this pass's brief, without
+     touching the button/tap-target size itself.
+     [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT] WHY OUTLINE,
+     NOT FILL (unchanged from the original hardening — still load-bearing):
+     a real Chromebook test showed a browser dark-mode/theme extension
+     repainting the old `background: #fff` fill BLACK, while ordinary white
+     TEXT on the same page stayed white. Dark-mode heuristics generally
+     rewrite `background-color`/`background-image` aggressively (they
+     assume backgrounds are page chrome to invert) while leaving `color` —
+     text/foreground ink — alone, which is exactly the asymmetry that broke
+     this icon and not the surrounding text. The fix is to stop asking this
+     icon to be a background at all: `color: #fff` here is the ONE explicit
+     white, and both shapes are drawn with `border-color: currentColor` —
+     outline strokes, zero `background` on either pseudo-element — so
+     nothing about this icon presents as a "background" for a theme
+     extension to find and invert in the first place.
+     FUTURE: If this ever needs a second state (a badge, an open folder), add
+     a class and a third layer via box-shadow — do not add a child element,
+     or the empty-button/aria-label contract in index.html stops holding. Do
+     not reintroduce a `background` fill on either pseudo-element — that is
+     the exact regression this hardening pass exists to prevent. */
+  .mobile-controls-btn {
+    display: inline-flex;
+    position: relative;
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    color: #fff;
+    /* Belt and braces: this button has no text node, but a stray one must
+       never push the box wider than the icon it is meant to be. */
+    font-size: 0;
+    line-height: 1;
+  }
+
+  .mobile-controls-btn::before,
+  .mobile-controls-btn::after {
+    content: "";
+    position: absolute;
+    background: none;
+    border: 2.5px solid currentColor;
+  }
+
+  /* Tab: 10×6 at the top-left of the icon box. No bottom border — it opens
+     directly into the body below, which now starts at EXACTLY this box's
+     own bottom edge (top: 11px + height: 6px = 17px, matching ::after's own
+     `top: 17px` below) — a shared boundary, not an overlap. */
+  .mobile-controls-btn::before {
+    left: 10px;
+    top: 11px;
+    width: 10px;
+    height: 6px;
+    border-bottom: none;
+    border-radius: 3px 3px 0 0;
+  }
+
+  /* Body: 24×16, starting exactly at the tab's own bottom edge (see above).
+     Top-left corner is square (matching the tab's own square bottom-left
+     corner directly above it — the two form one continuous edge rather
+     than two independently rounded shapes); the other three corners round
+     normally. */
+  .mobile-controls-btn::after {
+    left: 10px;
+    top: 17px;
+    width: 24px;
+    height: 16px;
+    border-radius: 0 3px 3px 3px;
+  }
+
+  /* --- The rail as a Controls bottom sheet -------------------------------
+     One element, two layouts. `position: fixed` takes the rail out of
+     .layout's flow entirely, which is what leaves .media-content — and so the
+     Player — at the top of the page in the loaded state.
+     `visibility: hidden` is load-bearing and not decoration: a drawer that is
+     merely translated off screen keeps every control inside it in the tab
+     order, so a keyboard user would tab into an invisible rail. visibility
+     removes them, and is restored a frame's worth of transition ahead of the
+     slide so the sheet is never announced as hidden while visibly open.
+     FUTURE: Do not swap this for `display: none` — the transform transition
+     needs a rendered box. Do not swap it for opacity alone, which leaves the
+     controls focusable. */
+  .controls-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 41;
+    max-height: 85vh;
+    overflow-y: auto;
+    border-radius: 18px 18px 0 0;
+    border-bottom: none;
+    padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    transform: translateY(100%);
+    visibility: hidden;
+    transition: transform 0.22s ease, visibility 0.22s;
+  }
+
+  .controls-panel.is-drawer-open {
+    transform: none;
+    visibility: visible;
+  }
+
+  .controls-drawer-close-btn {
+    display: inline-flex;
+    align-self: flex-end;
+    order: -1;
+    min-height: 44px;
+    margin-bottom: 8px;
+  }
+
+  .controls-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(2, 5, 14, 0.62);
+  }
+
+  /* `hidden` is the attribute the drawer functions toggle; .controls-scrim's
+     own `display: block` is an author rule and would otherwise defeat the UA
+     `[hidden]` rule outright. Same one-liner, same reason, as
+     `.workspace-panel[hidden]` and `.now-playing-strip[hidden]`. */
+  .controls-scrim[hidden] {
+    display: none;
+  }
+
+  /* --- Empty state: loading is the priority, not an empty Player ---------
+     With nothing loaded there is no Player worth putting first, so the rail
+     reverts to an ordinary block at the top of the page — Load, Recent
+     Libraries and the legacy pickers are then the first thing on screen, and
+     the Controls handle that would open an already-visible panel is hidden.
+     `.app-has-media` is set by buildViewer() in main.js from the same
+     decision that shows or hides the Player, so the two can never disagree.
+     FUTURE: This is the empty state's whole treatment. Do not add a
+     mobile-only "Load media" button — the real controls are already here. */
+  /* `:not(.simulated-fullscreen)` is not decoration. `:not()` contributes its
+     argument's specificity, so this selector is (0,3,0) and would otherwise
+     outrank `.simulated-fullscreen-layout .controls-panel` (0,2,0) — putting
+     the whole rail back on screen during Fill Panel whenever nothing was
+     loaded. Excluding PM here is cheaper and clearer than inflating that
+     rule to match. */
+  .app-shell:not(.app-has-media):not(.simulated-fullscreen) .controls-panel {
+    position: static;
+    z-index: auto;
+    max-height: none;
+    overflow-y: visible;
+    border-radius: var(--radius);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 18px;
+    transform: none;
+    visibility: visible;
+  }
+
+  .app-shell:not(.app-has-media) .mobile-controls-btn,
+  .app-shell:not(.app-has-media) .controls-drawer-close-btn {
+    display: none;
+  }
+
+  .app-shell:not(.app-has-media) .viewer-empty {
+    min-height: 96px;
+  }
+
+  /* --- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] -------------
+     WHAT: two compact-shell presentations beyond the ordinary loaded/empty
+     ones above, keyed off [data-mobile-load-state] — set in main.js from
+     isLoadingFiles and one failure flag, never from a progress callback:
+
+       "loading" — genuine activity. A TRUE focused takeover: .media-content
+                   AND the rail's Libraries / Associate / Clear Media are all
+                   hidden, leaving only Live Status (heading + the takeover
+                   composition below) on screen. Nothing hidden here is
+                   actionable anyway — every picker control is already
+                   disabled for the duration by the existing
+                   setLoadingState(true).
+       "failed"  — the last attempt's error is the most current truth.
+                   .media-content stays hidden (no jumping to an empty
+                   Player), but Libraries stays VISIBLE — #fsa-status-text,
+                   where the real "Could not load that folder: …" message
+                   already lives, is inside that block, and it is also where
+                   the user retries. The takeover's animation/bar/atmosphere
+                   are hidden here (see .mobile-load-takeover below) — a
+                   "still scanning" animation once scanning has genuinely
+                   stopped would be dishonest.
+
+     Both states share the rail's "ordinary in-flow block" treatment — the
+     SAME properties the pre-existing empty-state rule above uses, so Live
+     Status ends up in identical position/appearance regardless of which of
+     the three reasons (empty, loading, failed) put it there.
+     WHY no `:not(.simulated-fullscreen)` guard here unlike the empty-state
+     rule above: entering Fill Panel requires an already-loaded current item,
+     and both loaders call exitFillMode() before setting isLoadingFiles — so
+     "loading" and .simulated-fullscreen can never both be true, and "failed"
+     only follows "loading", so neither ever overlaps Fill Panel either.
+     There is no specificity war to win.
+     Both states can overlap with EITHER .app-has-media or its absence (a
+     reload while media is already showing vs. the very first load), which is
+     why .media-content is hidden unconditionally rather than only with
+     `:not(.app-has-media)`.
+     FUTURE: DESKTOP NOTE — a desktop equivalent of this focused loading
+     takeover may be worth considering later; no desktop CSS or behavior
+     exists for it, and none should be added without a separate, deliberate
+     pass.
+     FUTURE: these are shell PRESENTATION rules only. The state itself is
+     computed exactly once, in syncMobileLoadState() in main.js — do not add
+     a second place that reads isLoadingFiles to decide what to show. */
+  .app-shell[data-mobile-load-state="loading"] .media-content,
+  .app-shell[data-mobile-load-state="failed"] .media-content {
+    display: none;
+  }
+
+  .app-shell[data-mobile-load-state="loading"] .controls-panel,
+  .app-shell[data-mobile-load-state="failed"] .controls-panel {
+    position: static;
+    z-index: auto;
+    max-height: none;
+    overflow-y: visible;
+    border-radius: var(--radius);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 18px;
+    transform: none;
+    visibility: visible;
+  }
+
+  .app-shell[data-mobile-load-state="loading"] .mobile-controls-btn,
+  .app-shell[data-mobile-load-state="failed"] .mobile-controls-btn,
+  .app-shell[data-mobile-load-state="loading"] .controls-drawer-close-btn,
+  .app-shell[data-mobile-load-state="failed"] .controls-drawer-close-btn {
+    display: none;
+  }
+
+  .app-shell[data-mobile-load-state="loading"] .status-box,
+  .app-shell[data-mobile-load-state="failed"] .status-box {
+    order: -1;
+  }
+
+  /* "loading" only: the true takeover — hides every OTHER rail section, so
+     Live Status is genuinely the sole thing on screen, exactly as required.
+     "failed" deliberately does NOT hide these — #fsa-status-text and the
+     retry controls live inside them. */
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-identity,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-section-label,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .legacy-picker-details,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .fsa-picker-row,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > #fsa-recent-libraries,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > #fsa-status-text,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > hr,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-profile-summary,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .clear-media-btn {
+    display: none;
+  }
+
+  /* --- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] composition -
+     WHAT: the focused-loading card itself — heading (the pre-existing
+     .status-box-title, reused, not duplicated) plus the primary state line,
+     activity bar, real count, textmode animation and atmosphere line. Off
+     everywhere by default (base rule further up the file); only switched on
+     for "loading" specifically — "failed" hides it, per the WHY above.
+     Generous gaps and top/bottom padding are the "intentional, not four rows
+     stranded in a big viewport" ask — the numbers below were chosen against
+     a 390×844 phone with the compact header/status-box padding already
+     subtracted, not against this stylesheet's other spacing scale. */
+  .app-shell[data-mobile-load-state="loading"] .mobile-load-takeover {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 28px 12px 24px;
+    text-align: center;
+  }
+
+  .app-shell[data-mobile-load-state="loading"] .status-box-title {
+    text-align: center;
+    font-size: 1.05rem;
+    letter-spacing: 0.04em;
+  }
+
+  .mobile-load-primary-text {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  /* Textmode, not a styled progress element — border-radius/box-shadow would
+     fight the "terminal" language the ASCII frame below already sets. */
+  .mobile-load-activity-bar {
+    margin: 0;
+    font-family: "Courier New", ui-monospace, monospace;
+    font-size: 1rem;
+    letter-spacing: 0.12em;
+  }
+
+  .mobile-load-count-text {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.9rem;
+  }
+
+  /* `white-space: pre` is load-bearing — the frames in main.js are built as
+     fixed-width multi-line strings and rely on the browser not collapsing
+     their spaces or reflowing their line breaks. `line-height: 1.15` keeps
+     the five text rows close enough to read as one glyph, not five. */
+  .mobile-load-ascii {
+    margin: 8px 0;
+    padding: 0;
+    background: none;
+    border: none;
+    white-space: pre;
+    line-height: 1.15;
+    font-size: 0.95rem;
+  }
+
+  .mobile-load-atmosphere-text {
+    margin: 0;
+    font-size: 0.85rem;
+    font-style: italic;
+  }
+
+  /* --- Player-first stack ------------------------------------------------
+     The approved narrow stack is header -> context -> Player -> transport ->
+     workspace tabs -> active workspace. The Player (#viewer-panel) and the
+     thumbnail half (.gallery-panel) are children of #workspace-gallery, one
+     level below the tab bar, so `order` alone cannot interleave them with it.
+     `display: contents` promotes those two to flex items of .media-content
+     for the duration of the narrow layout, and the orders below then place
+     the tab bar between them. Nothing moves in the DOM and no workspace is
+     rebuilt.
+     `:not([hidden])` matters: the promoted element must go back to being an
+     ordinary box the moment it is hidden, or `.workspace-panel[hidden]`'s
+     `display: none` would be outranked by this ID selector and a hidden
+     Gallery would leak its children onto the page.
+     `.layout:not(.simulated-fullscreen-layout)` keeps this out of Fill Panel,
+     where `.simulated-fullscreen-layout #workspace-gallery { display: flex }`
+     must keep winning.
+     KNOWN LIMIT: a `display: contents` element generates no box, so the
+     `.workspace-panel:focus-visible` ring cannot paint on #workspace-gallery
+     while it is promoted. The panel is still focusable and still in the
+     accessibility tree; only its own ring is missing, and every control
+     inside it keeps its own. This is narrow-screen only.
+     FUTURE: If a third element is ever added inside #workspace-gallery it
+     needs an `order` here too, or it will land at order 0 — above the
+     Player. */
+  .layout:not(.simulated-fullscreen-layout) #workspace-gallery:not([hidden]) {
+    display: contents;
+  }
+
+  /* Deliberately NO child combinator on any of these. `display: contents`
+     changes box generation only — it does not change the DOM — so
+     #viewer-panel's parent is still #workspace-gallery and
+     `.media-content > #viewer-panel` would match nothing. The elements are
+     flex ITEMS of .media-content while promoted, which is all `order` needs;
+     matching them is a separate question and has to be done by identity.
+     `order` on an element that is not a flex item is inert, so these are
+     harmless in every other layout state. */
+  #viewer-panel {
+    order: 1;
+  }
+
+  .workspace-nav {
+    order: 2;
+  }
+
+  .gallery-panel,
+  .workspace-panel {
+    order: 3;
+  }
+
+  .now-playing-strip {
+    order: 4;
+  }
+
+  /* The tab bar is the anchor of the narrow layout — it stays put while the
+     workspace beneath it scrolls. `top` matches the sticky header's height so
+     the two stack rather than overlap. */
+  .workspace-nav {
+    position: sticky;
+    top: 60px;
+    z-index: 20;
+  }
+
+  /* [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] No override needed here:
+     Gallery/Automations/Profile's positions come from the base rule's grid
+     column structure (1fr / auto / 1fr), not a flex auto-margin, so there
+     is no "scrolling tablist has no free space to spend" failure mode left
+     to guard against at this breakpoint. See .workspace-nav's own comment
+     for the full mechanism. */
+
+  .workspace-tab {
+    padding: 8px 14px;
+    min-height: 44px;
+  }
+
+  /* --- Player and transport ---------------------------------------------- */
+  .panel {
+    padding: 14px;
+  }
+
+  /* [UI-REDESIGN / Stage 6 — substage: icon-only transport]
+     Nothing here changes the transport's layout any more. The rules this
+     replaces did the opposite of what the row now guarantees: they gave the
+     cluster and the meta group `flex: 1 1 100%` so the two stacked into two
+     lines, which was the only way a row of TEXT-labelled buttons could fit a
+     phone. With icon buttons it fits on one line at every width, and the
+     sizing that makes that true lives entirely in the transport budget block
+     earlier in this file. Adding a second, competing layout for the same row
+     down here is exactly how it would start wrapping again.
+     `justify-content` and `align-items` stay inherited from the base rule:
+     controls left, counter right, centred — the same composition as desktop,
+     which is the point. */
+
+  /* The popover becomes a bottom sheet: at these widths a 260px panel
+     anchored to the right edge of the transport row either overhangs the
+     viewport or covers the media it belongs to. Same element, same `hidden`
+     class, same open/close functions — only the box changes.
+     z-index 42 puts it above the Controls drawer, which is the correct
+     stacking whenever both could be open. */
+  .playback-popover {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    z-index: 42;
+    width: auto;
+    max-width: none;
+    border-radius: 18px 18px 0 0;
+    padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+
+  /* [UI-REDESIGN / Stage 6]
+     WHAT: The backdrop behind the sheet. z-index 41 puts it directly under the
+     sheet's 42 and over everything else on the page.
+     WHY: 41 is also the Controls drawer's layer, which is safe because the two
+     can never be open together — openControlsDrawer() closes this popover on
+     the way in, and while the drawer is open its own scrim covers the ⚙ that
+     would reopen this. The `[hidden]` rule is the same guard .controls-scrim
+     carries: `display: flex/block` in a rule like this would otherwise beat
+     the `hidden` ATTRIBUTE that main.js toggles, and the dimmer would be
+     stuck on screen with no sheet behind it. */
+  .playback-sheet-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 41;
+    background: rgba(4, 8, 20, 0.62);
+  }
+
+  .playback-sheet-scrim[hidden] {
+    display: none;
+  }
+
+  /* [UI-REDESIGN / Stage 6]
+     WHAT: The sticky sheet header. Stays put while the settings scroll under
+     it, because the sheet is capped at 80vh and can genuinely scroll on a
+     short screen — a close button that scrolls away is the problem this is
+     fixing, not a smaller version of it.
+     HOW: the popover is the scroll container, so `position: sticky; top: 0`
+     pins to its scrollport. The negative margins pull the header out into the
+     sheet's own 16px padding so it spans edge to edge and the padding scrolls
+     away behind it rather than leaving a transparent strip above it; the
+     opaque background is what makes that legal to look at. `border-radius`
+     matches the sheet's own top corners so the two do not disagree. */
+  .playback-sheet-header {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: -16px -16px 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    border-radius: 18px 18px 0 0;
+    background: rgba(13, 20, 40, 0.98);
+  }
+
+  .playback-sheet-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  /* A 44px square target for a single glyph. `line-height: 1` and the explicit
+     font-size keep `×` from sizing the box off its own line box, the same
+     problem the transport icons had before they became SVG. */
+  .playback-sheet-close-btn {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    font-size: 1.4rem;
+    line-height: 1;
+  }
+
+  /* [UI-REDESIGN / Stage 6] The honest replacement for an Apply button. Every
+     control in this sheet already persists on its own `change` through
+     savePlaybackPreferences(), so this states that fact rather than offering a
+     commit that would imply the opposite. Muted and small on purpose: it is a
+     reassurance, not an instruction. */
+  .playback-sheet-note {
+    display: block;
+    margin: 0 0 14px;
+    padding-top: 14px;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  /* --- Gallery filters and navigation ------------------------------------ */
+
+  /* [UI-REDESIGN / STAGE 6] [MOBILE-GALLERY-COMPACT-FLOW]
+     WHAT: The three filter groups (View, Type, Tag) stack one per line
+     instead of wrapping wherever they happen to fit, and each spans the
+     row's full width — same left edge, same right edge, same row width and
+     height family, regardless of which one holds a two-way toggle, a
+     three-way toggle, or a single dropdown-style button.
+     WHY column rather than a wider wrap: at ≤980px three groups plus their
+     buttons no longer read as one system if left to wrap by content width —
+     View might end a line early, Type might not, and the visual starting
+     x-position of each group would differ. Forcing each to `width: 100%`
+     gives all three an identical outer box; the IDENTITY comes from that
+     shared geometry, not from making Tag's single button pretend to be a
+     segmented control it isn't (it keeps its own first-child/last-child
+     rounding from .gallery-filter-row .filter-btn, which already renders a
+     lone button as one full pill). */
+  .gallery-filter-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .toolbar-filter-group {
+    width: 100%;
+  }
+
+  /* [UI-REDESIGN / STAGE 6] [MOBILE-GALLERY-COMPACT-FLOW]
+     WHAT: Removes the visible "Type"/"Tag" text labels only — scoped to
+     .gallery-filter-row specifically so .gallery-jump-group's "Select" label
+     (same .toolbar-filter-label class, different row, kept per the Step 1
+     mockup) is never touched by this rule.
+     WHY this does not lose the accessible name: neither label was ever the
+     SOURCE of one. Both `.filter-toggle` groups already carry their own
+     independent `aria-label` ("Media type filter" / "Tag filter"), set in
+     index.html and never derived from this span — hiding it removes
+     redundant visible text and nothing else. The View group already has no
+     such span at all (see Stage 4 polish), which is why this selector only
+     needs to name two groups' children, not three. */
+  .gallery-filter-row .toolbar-filter-label {
+    display: none;
+  }
+
+  /* Stretches whichever control is inside — the 2-way toggle, the 3-way
+     toggle, or Tag's lone button — to the row's full width, which is what
+     actually produces the shared left/right edges above. `.filter-toggle`
+     is flex (see its base rule), so this alone gets it there; the buttons
+     inside then divide that width evenly via flex: 1 below. */
+  .gallery-filter-row .filter-toggle {
+    width: 100%;
+  }
+
+  .gallery-filter-row .filter-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: center;
+  }
+
+  /* [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+     The step-swap grid itself (.gallery-jump-step, #gallery-jump-step-select,
+     #gallery-jump-step-action) is now a BASE rule near .gallery-jump-group's
+     own definition, unconditional on every viewport — see that block's own
+     comment for why.
+     [UI-REDESIGN / STAGE 6] [GALLERY-JUMP-BACK] ↩ Back's Step 2 grid
+     columns, box, icon geometry, and the "or" separator hide were ALSO
+     compact-only here — all four are now unconditional base rules near
+     #gallery-jump-step-action's own definition instead, so Back exists on
+     desktop too. See GALLERY-JUMP-BACK's own comment there for why. */
+
+  .viewer-header {
+    align-items: flex-start;
+  }
+
+  /* --- Single-column workspaces ------------------------------------------ */
+  .tags-grid,
+  .media-picker-row {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-current-row,
+  .tag-create-row {
+    flex-wrap: wrap;
+  }
+
+  /* Touch-target floor for the controls a phone user actually drives. Applied
+     by location rather than blanket-applied to `button`, so the deliberately
+     small in-panel chips (tag status selects, the automation mini steppers)
+     keep their own sizing. */
+  .controls-panel button,
+  .controls-panel .button-like,
+  .workspace-panel .control-stack button,
+  .now-playing-strip button {
+    min-height: 44px;
+  }
+
+  /* Long readouts and inputs must not push a horizontal scrollbar onto the
+     document; anything that can overflow scrolls inside its own box. */
+  .gallery-jump-group,
+  .cookbook-panel,
+  .settings-panel {
+    max-width: 100%;
+  }
+
+  .now-playing-strip {
+    flex-wrap: wrap;
+  }
+}
+
+/* Phone: the tab bar loses its sticky offset because the header's own height
+   drops.
+   [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] Earlier stages
+   had transport-counter rules at this breakpoint (a flex-wrap, then a
+   truncate-then-hide pair); #counter-text and .player-transport-meta are
+   deleted now, so there is nothing counter-related left to say here. */
+@media (max-width: 480px) {
+  .workspace-nav {
+    top: 56px;
+  }
+
+  .mobile-context-text {
+    font-size: 0.8rem;
+  }
+}
+
+/* [UI-REDESIGN / Stage 6] The drawer and the popover are the only animated
+   surfaces this redesign introduces; both are dismissible motion across the
+   whole viewport, which is exactly what this preference exists to suppress.
+   They still open and close — only the slide is removed.
+   [UI-REDESIGN / STAGE 6] [AUTOMATIONS-DASHED-BOLT-ICON] [AUTOMATIONS-ACTIVE-IDENTITY]
+   The Automations dashed-ring rotation joins this same rule for the same
+   reason — it is sustained, non-dismissible motion for as long as the PM
+   tray stays open or the nav tab stays selected, exactly the class of
+   animation this preference exists to suppress. Both surfaces still
+   open/close and select/deselect normally; only the spin is removed. */
+@media (prefers-reduced-motion: reduce) {
+  .controls-panel {
+    transition: none;
+  }
+
+  .overlay-btn-automations-menu.is-open::before,
+  .overlay-btn-automations-menu.is-automation-active::before,
+  .workspace-tab-automations[aria-selected="true"]::before {
+    animation: none;
   }
 }
