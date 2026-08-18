@@ -302,7 +302,7 @@
                main.js from the exact same loaded/total values the existing
                onProgress callbacks already compute for #status-text — there
                is no second progress computation anywhere in this block.
-               The animation (#mobile-load-ascii) and the activity bar's
+               The animation (#mobile-load-canvas) and the activity bar's
                indeterminate sweep are pure decoration with zero influence on
                any loader state, which is why both carry aria-hidden — a
                screen-reader user gets the same two truthful text lines
@@ -318,7 +318,36 @@
             <p id="mobile-load-primary-text" class="mobile-load-primary-text"></p>
             <p id="mobile-load-activity-bar" class="mobile-load-activity-bar" aria-hidden="true"></p>
             <p id="mobile-load-count-text" class="mobile-load-count-text hidden"></p>
-            <pre id="mobile-load-ascii" class="mobile-load-ascii" aria-hidden="true"></pre>
+            <!-- [V2-POLISH / MICRO-ARCADE-CANVAS] [V2-POLISH / STARFIGHTER-PROTOTYPE]
+                 WHAT: was a text worker (a pre element, #mobile-load-ascii)
+                 built from fixed-width ASCII frames. Now a 160x64 pixel
+                 canvas running one of a pool of arcade scenes — see main.js.
+                 [V2-POLISH / MICRO-ARCADE-160X64] The buffer widened from
+                 128 to 160 at the SAME height: the extra columns are for
+                 travel (Bigfoot's walk, the UFO's arrival, a cannonball's
+                 arc), and holding the height fixed is what keeps this card
+                 from growing and pushing the truthful readouts toward the
+                 fold on a small phone.
+                 NOTE: the retired id is referenced above in #hash form, not
+                 as a literal attribute. check-dom-contract.js scans this
+                 file as text, so an attribute-shaped mention inside a
+                 comment is counted as a real element and inflates the id
+                 census — keep retired-id references in this file in #hash
+                 form for that reason.
+                 WHY the width/height ATTRIBUTES are 128x64 while the
+                 displayed size lives in CSS: those attributes are the
+                 drawing buffer, not the layout box. Keeping the buffer tiny
+                 and scaling it up with image-rendering: pixelated is what
+                 makes the pixels chunky on purpose rather than a blurry
+                 upscale.
+                 Still aria-hidden and still purely decorative: the truthful
+                 state lines above it (#mobile-load-primary-text,
+                 #mobile-load-count-text) remain the only things a screen
+                 reader gets, exactly as before.
+                 FUTURE: one scene today; if it earns its place this becomes a
+                 curated pool, and the same canvas can be reused by the
+                 planned desktop rail takeover. -->
+            <canvas id="mobile-load-canvas" class="mobile-load-canvas" width="160" height="64" aria-hidden="true"></canvas>
             <p id="mobile-load-atmosphere-text" class="mobile-load-atmosphere-text" aria-hidden="true"></p>
           </div>
         </div>

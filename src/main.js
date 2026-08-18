@@ -208,7 +208,12 @@ const associatedText = document.getElementById("associated-text");
 const mobileLoadPrimaryText = document.getElementById("mobile-load-primary-text");
 const mobileLoadActivityBar = document.getElementById("mobile-load-activity-bar");
 const mobileLoadCountText = document.getElementById("mobile-load-count-text");
-const mobileLoadAscii = document.getElementById("mobile-load-ascii");
+// [V2-POLISH / MICRO-ARCADE-CANVAS] Was #mobile-load-ascii (a <pre> of
+// fixed-width text frames). Renamed with the element when the ASCII worker
+// was replaced by the pixel canvas — the old id described a medium that no
+// longer exists. Nothing outside this file's animation code ever referenced
+// it (verified: one capture, one CSS rule, one markup line).
+const mobileLoadCanvas = document.getElementById("mobile-load-canvas");
 const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
 // [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] #counter-text and
 // its capture (formerly `counterText`) are gone — the Player transport is
@@ -1064,11 +1069,18 @@ function isCompactViewport() {
 // partial total, and the activity bar's indeterminate sweep (driven by the
 // animation tick below) takes over instead of a fake percentage.
 let mobileLoadHasKnownTotal = false;
+// [V2-POLISH / MICRO-ARCADE-CANVAS] The arcade canvas draws this as its
+// score-style readout. Mirrored HERE, at the one place the truthful text
+// readouts are already written from the loaders' own onProgress values —
+// deliberately not a second count, not a derived estimate, and read-only
+// everywhere else.
+let mobileLoadLoadedCount = 0;
 const MOBILE_ACTIVITY_BAR_WIDTH = 10;
 
 function renderMobileLoadProgress(primaryText, loaded, total) {
   mobileLoadPrimaryText.textContent = primaryText;
   mobileLoadHasKnownTotal = typeof total === "number" && total > 0;
+  mobileLoadLoadedCount = typeof loaded === "number" && loaded > 0 ? loaded : 0;
 
   if (mobileLoadHasKnownTotal) {
     mobileLoadCountText.textContent = `${loaded.toLocaleString()} / ${total.toLocaleString()} media files`;
@@ -1096,38 +1108,1429 @@ function renderMobileActivityBarSweep(tick) {
   mobileLoadActivityBar.textContent = `[${cells.join("")}]`;
 }
 
-// [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
-// WHAT: a 6-frame, ping-pong "scan brackets" loop — abstract corner marks
-// breathing in and out around a centre dot — plus a short, restrained set of
-// atmospheric phrases. Both are pure decoration: neither is read by, nor
-// feeds back into, any loader state. Every line is fixed-width (verified
-// equal length) so the box never jitters between frames.
-const MOBILE_TAKEOVER_FRAMES = [
-  "┌───────────────┐\n│ ◢           ◣ │\n│       ·       │\n│ ◥           ◤ │\n└───────────────┘",
-  "┌───────────────┐\n│    ◢     ◣    │\n│       ◦       │\n│    ◥     ◤    │\n└───────────────┘",
-  "┌───────────────┐\n│      ◢ ◣      │\n│       ◉       │\n│      ◥ ◤      │\n└───────────────┘",
-  "┌───────────────┐\n│      ◢ ◣      │\n│       ●       │\n│      ◥ ◤      │\n└───────────────┘",
-  "┌───────────────┐\n│      ◢ ◣      │\n│       ◉       │\n│      ◥ ◤      │\n└───────────────┘",
-  "┌───────────────┐\n│    ◢     ◣    │\n│       ◦       │\n│    ◥     ◤    │\n└───────────────┘",
+// ---- [V2-POLISH / MICRO-ARCADE-CANVAS] [V2-POLISH / STARFIGHTER-PROTOTYPE] -
+//      [V2-POLISH / MICRO-ARCADE-SCENE-POOL] [V2-POLISH / MICRO-ARCADE-160X64]
+//
+// WHAT: The approved Micro-Arcade canvas expands from 128x64 to 160x64 logical
+// pixels and becomes a reusable load-session scene pool, adding Bigfoot, UFO
+// File Abduction, Projector Booth, and Pirate Ship sequences while retaining
+// one shared renderer/lifecycle.
+// WHY: The additional horizontal space gives character, machinery, travel,
+// dodging, cannon arcs, entrances and exits enough breathing room to read as
+// tiny vintage game/cartoon scenes without increasing the Live Status
+// takeover's vertical footprint.
+// FUTURE: The pool is intentionally extensible with additional curated scenes
+// such as Chomper, Asteroid Run, Frame Carrier, Scanner Build, Kaiju, Tape
+// Deck, submarine/sonar and other media/arcade sequences. The same selected
+// scene can later power the planned desktop left-rail Live Status takeover.
+//
+// ARCHITECTURE — the split that keeps this from becoming a game engine:
+//   SHARED (below, then the controller at the bottom) owns the canvas, the
+//   palette, the pixel-drawing toolkit, timing, scene selection, looping,
+//   reduced motion, and the start/stop lifecycle.
+//   EACH SCENE owns only: a duration, a still-frame moment, an optional
+//   mutable state factory, an optional update, and a draw. Scenes never touch
+//   the canvas element, the rAF loop, selection, or the loader.
+// A scene is a plain object — no classes, no registry indirection, no scene
+// graph. Adding one is appending a literal to ARCADE_SCENES.
+//
+// SCOPE: presentation only. Nothing here reads, writes, delays, or blocks any
+// loader state. The single product value any scene displays
+// (mobileLoadLoadedCount, in Starfighter's HUD) is mirrored from the same
+// renderMobileLoadProgress() call the truthful text readouts already use — it
+// is never computed here and never fed back.
+//
+// RESOLUTION: 160x64 logical, a 25% horizontal expansion at exactly the same
+// height. The height is load-bearing: the takeover slot is a wide, short card
+// on a 390x844 phone, and growing vertically would push the truthful text
+// readouts toward the fold. Widening costs nothing vertically and is what
+// gives Bigfoot somewhere to walk and the cannonball somewhere to arc.
+const ARCADE_WIDTH = 160;
+const ARCADE_HEIGHT = 64;
+const ARCADE_FRAME_MS = 33;
+
+// Three phosphor intensities. Level 3 is exactly the #00ff00 the Live Status
+// box already uses, so the brightest pixels on the screen and the green text
+// around it are literally the same colour.
+const ARCADE_BG = "#03140a";
+const ARCADE_INK = { 1: "#0a5c22", 2: "#00b52a", 3: "#00ff00" };
+
+// ---- shared pixel toolkit -------------------------------------------------
+//
+// Sprites are authored as pixel masks: "." is transparent, "1".."3" pick a
+// phosphor intensity. Shading is what gives a small shape a readable
+// silhouette at 1x and still holds up blown to 5x during Starfighter's
+// fly-by. `inkOverride` flattens a mask to one intensity, which is how the
+// same tree/ship mask doubles as its own dim background copy.
+
+function drawArcadeSprite(ctx, sprite, left, top, scale, inkOverride) {
+  for (let r = 0; r < sprite.length; r++) {
+    const row = sprite[r];
+    for (let c = 0; c < row.length; c++) {
+      if (row[c] === ".") continue;
+      const ink = inkOverride || ARCADE_INK[row[c]];
+      if (!ink) continue;
+      ctx.fillStyle = ink;
+      ctx.fillRect(left + c * scale, top + r * scale, scale, scale);
+    }
+  }
+}
+
+function drawArcadeSpriteCentered(ctx, sprite, cx, cy, scale, inkOverride) {
+  const left = Math.round(cx - (sprite[0].length * scale) / 2);
+  const top = Math.round(cy - (sprite.length * scale) / 2);
+  drawArcadeSprite(ctx, sprite, left, top, scale, inkOverride);
+  return { left, top };
+}
+
+// Integer Bresenham — spokes, cone edges, masts, rigging and tentacles all
+// need a real line, and a shared one keeps every scene's geometry snapped to
+// the same pixel grid.
+function drawArcadeLine(ctx, x0, y0, x1, y1, ink) {
+  ctx.fillStyle = ink;
+  let x = Math.round(x0);
+  let y = Math.round(y0);
+  const ex = Math.round(x1);
+  const ey = Math.round(y1);
+  const dx = Math.abs(ex - x);
+  const dy = -Math.abs(ey - y);
+  const sx = x < ex ? 1 : -1;
+  const sy = y < ey ? 1 : -1;
+  let err = dx + dy;
+  for (let guard = 0; guard < 400; guard++) {
+    ctx.fillRect(x, y, 1, 1);
+    if (x === ex && y === ey) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+// Midpoint circle outline — projector reels and sonar-style ripples.
+function drawArcadeCircle(ctx, cx, cy, radius, ink) {
+  ctx.fillStyle = ink;
+  let x = radius;
+  let y = 0;
+  let err = 1 - radius;
+  while (x >= y) {
+    const pts = [
+      [cx + x, cy + y],
+      [cx + y, cy + x],
+      [cx - y, cy + x],
+      [cx - x, cy + y],
+      [cx - x, cy - y],
+      [cx - y, cy - x],
+      [cx + y, cy - x],
+      [cx + x, cy - y],
+    ];
+    for (const [px, py] of pts) ctx.fillRect(Math.round(px), Math.round(py), 1, 1);
+    y += 1;
+    if (err < 0) {
+      err += 2 * y + 1;
+    } else {
+      x -= 1;
+      err += 2 * (y - x) + 1;
+    }
+  }
+}
+
+// [t, value] waypoints, linearly interpolated and clamped at both ends. Every
+// scene's scripted motion goes through this rather than each inventing its
+// own easing — Starfighter's cruise, the pirate ship's sail-in, the UFO's
+// approach.
+function arcadePath(waypoints, t) {
+  if (t <= waypoints[0][0]) return waypoints[0][1];
+  for (let i = 1; i < waypoints.length; i++) {
+    if (t <= waypoints[i][0]) {
+      const [t0, v0] = waypoints[i - 1];
+      const [t1, v1] = waypoints[i];
+      return v0 + (v1 - v0) * ((t - t0) / (t1 - t0));
+    }
+  }
+  return waypoints[waypoints.length - 1][1];
+}
+
+function easeInOutCubic(p) {
+  return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+}
+
+function arcadeClamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+// 3x5 arcade digits for Starfighter's score-style readout.
+const ARCADE_DIGITS = {
+  0: ["111", "1.1", "1.1", "1.1", "111"],
+  1: [".1.", "11.", ".1.", ".1.", "111"],
+  2: ["111", "..1", "111", "1..", "111"],
+  3: ["111", "..1", "111", "..1", "111"],
+  4: ["1.1", "1.1", "111", "..1", "..1"],
+  5: ["111", "1..", "111", "..1", "111"],
+  6: ["111", "1..", "111", "1.1", "111"],
+  7: ["111", "..1", "..1", "..1", "..1"],
+  8: ["111", "1.1", "111", "1.1", "111"],
+  9: ["111", "1.1", "111", "..1", "111"],
+};
+
+function drawArcadeNumber(ctx, value, left, top, ink) {
+  const text = String(value);
+  ctx.fillStyle = ink;
+  for (let i = 0; i < text.length; i++) {
+    const glyph = ARCADE_DIGITS[text[i]];
+    if (!glyph) continue;
+    for (let r = 0; r < glyph.length; r++) {
+      for (let c = 0; c < 3; c++) {
+        if (glyph[r][c] === "1") ctx.fillRect(left + i * 4 + c, top + r, 1, 1);
+      }
+    }
+  }
+}
+
+// Expanding chunky ring plus a bright core for the first third — pixel
+// clusters rather than a circle, so it stays legible at this resolution.
+// Shared by Starfighter's kills and the pirate cannon's impact.
+const ARCADE_BURST_MS = 420;
+
+function drawArcadeBurst(ctx, burst, now, lifeMs) {
+  const age = (now - burst.born) / (lifeMs || ARCADE_BURST_MS);
+  if (age < 0 || age >= 1) return;
+  const radius = 1 + age * (burst.reach || 9);
+  if (age < 0.35) {
+    ctx.fillStyle = ARCADE_INK[3];
+    ctx.fillRect(Math.round(burst.x) - 2, Math.round(burst.y) - 2, 4, 4);
+  }
+  ctx.fillStyle = age < 0.6 ? ARCADE_INK[3] : ARCADE_INK[2];
+  const size = age < 0.5 ? 2 : 1;
+  for (let i = 0; i < 10; i++) {
+    const angle = (i / 10) * Math.PI * 2 + burst.seed;
+    ctx.fillRect(
+      Math.round(burst.x + Math.cos(angle) * radius),
+      Math.round(burst.y + Math.sin(angle) * radius * 0.8),
+      size,
+      size
+    );
+  }
+  if (age > 0.45) {
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 - burst.seed;
+      ctx.fillRect(
+        Math.round(burst.x + Math.cos(angle) * radius * 0.55),
+        Math.round(burst.y + Math.sin(angle) * radius * 0.45),
+        1,
+        1
+      );
+    }
+  }
+}
+
+// ---- SCENE 1: starfighter -------------------------------------------------
+//
+// The approved prototype, re-staged for 160px. What the extra 32 columns buy:
+// the cruise lanes move from 40/88 out to 30/130, so lateral moves are long
+// enough to read as flying rather than sidestepping; enemies now use five
+// lanes instead of three; and the dodge clears by ~40px instead of ~23px,
+// which is the difference between "it moved" and "that was close".
+// Structure is unchanged: under-belly intro, pull-away, lower-third arcade
+// mode, firing, dodging, enemy attack, explosions, fly-back-over-camera loop.
+const ARCADE_SHIP = [
+  ".......3.......",
+  "......323......",
+  "......323......",
+  ".....32223.....",
+  ".....32223.....",
+  "..2..32223..2..",
+  ".2222222222222.",
+  "..222.323.222..",
+  "..2...323...2..",
+  "......3.3......",
+  "......1.1......",
 ];
+
+const ARCADE_DRONE = ["..333..", ".32223.", "3222223", ".22222.", "..2.2.."];
+
+const ARCADE_ROCK = [".22..", "22322", "23222", ".222."];
+
+const SF_INTRO_MS = 2200;
+const SF_PLAY_MS = 11100;
+const SF_OUTRO_MS = 1700;
+const SF_DURATION_MS = SF_INTRO_MS + SF_PLAY_MS + SF_OUTRO_MS;
+
+const SF_SHIP_CY = 50;
+const SF_SHIP_NOSE_Y = 44;
+const SF_ENEMY_VY = 0.025;
+const SF_BULLET_VY = -0.08;
+const SF_HAZARD_VY = 0.045;
+
+// The 5500 -> 6500 leg is the dodge: the gunner fires down column 96 at
+// t=5600 and its shot reaches the fighter's row around 6100, by which time
+// this path has carried the fighter out past x=56.
+const SF_SHIP_PATH = [
+  [0, 80],
+  [1000, 80],
+  [1700, 34],
+  [2900, 34],
+  [3400, 126],
+  [4700, 126],
+  [5100, 96],
+  [5500, 96],
+  [6500, 30],
+  [7900, 30],
+  [8700, 130],
+  [9400, 130],
+  [10100, 80],
+  [11100, 80],
+];
+
+const SF_ENEMIES = [
+  { t: 800, x: 34, kind: "drone" },
+  { t: 800, x: 126, kind: "drone" },
+  { t: 2500, x: 126, kind: "drone" },
+  { t: 4500, x: 96, kind: "drone", fireAt: 5600 },
+  { t: 7000, x: 30, kind: "drone" },
+  { t: 7000, x: 130, kind: "rock" },
+];
+
+// Each entry fires from wherever SF_SHIP_PATH has the fighter at that instant,
+// which is why the path parks it under a target just beforehand.
+const SF_SHOTS = [1800, 3700, 7800, 8800];
+
+const SF_STARS = Array.from({ length: 30 }, (_, i) => ({
+  x: (i * 37) % ARCADE_WIDTH,
+  y: (i * 53) % ARCADE_HEIGHT,
+  depth: 0.35 + ((i * 17) % 10) / 12,
+}));
+
+function createStarfighterState() {
+  return { enemies: [], bullets: [], hazards: [], bursts: [], spawned: 0, fired: 0 };
+}
+
+function updateStarfighter(state, t, dt, now) {
+  const flying = t < SF_INTRO_MS || t > SF_INTRO_MS + SF_PLAY_MS;
+  const starSpeed = flying ? 0.075 : 0.016;
+  for (const star of SF_STARS) {
+    star.y += starSpeed * star.depth * dt;
+    if (star.y > ARCADE_HEIGHT) {
+      star.y -= ARCADE_HEIGHT;
+      star.x = (star.x + 41) % ARCADE_WIDTH;
+    }
+  }
+
+  const a = t - SF_INTRO_MS;
+  if (a < 0 || a > SF_PLAY_MS) return;
+
+  while (state.spawned < SF_ENEMIES.length && SF_ENEMIES[state.spawned].t <= a) {
+    const def = SF_ENEMIES[state.spawned];
+    state.enemies.push({ x: def.x, y: -6, kind: def.kind, fireAt: def.fireAt || 0, fired: false, dead: false });
+    state.spawned += 1;
+  }
+  while (state.fired < SF_SHOTS.length && SF_SHOTS[state.fired] <= a) {
+    state.bullets.push({ x: arcadePath(SF_SHIP_PATH, SF_SHOTS[state.fired]), y: SF_SHIP_NOSE_Y, dead: false });
+    state.fired += 1;
+  }
+
+  for (const enemy of state.enemies) {
+    enemy.y += SF_ENEMY_VY * dt;
+    if (!enemy.fired && enemy.fireAt && a >= enemy.fireAt) {
+      enemy.fired = true;
+      state.hazards.push({ x: enemy.x, y: enemy.y + 3 });
+    }
+  }
+  for (const bullet of state.bullets) bullet.y += SF_BULLET_VY * dt;
+  for (const hazard of state.hazards) hazard.y += SF_HAZARD_VY * dt;
+
+  for (const bullet of state.bullets) {
+    if (bullet.dead) continue;
+    for (const enemy of state.enemies) {
+      if (enemy.dead) continue;
+      const halfW = enemy.kind === "rock" ? 3 : 4;
+      if (Math.abs(bullet.x - enemy.x) <= halfW && Math.abs(bullet.y - enemy.y) <= 4) {
+        enemy.dead = true;
+        bullet.dead = true;
+        state.bursts.push({ x: enemy.x, y: enemy.y, born: now, seed: (enemy.x % 7) * 0.9 });
+      }
+    }
+  }
+
+  state.enemies = state.enemies.filter((e) => !e.dead && e.y < ARCADE_HEIGHT + 8);
+  state.bullets = state.bullets.filter((b) => !b.dead && b.y > -6);
+  state.hazards = state.hazards.filter((h) => h.y < ARCADE_HEIGHT + 6);
+  state.bursts = state.bursts.filter((b) => now - b.born < ARCADE_BURST_MS);
+}
+
+function drawStarfighterScene(ctx, state, t, now) {
+  const flying = t < SF_INTRO_MS || t > SF_INTRO_MS + SF_PLAY_MS;
+  ctx.fillStyle = ARCADE_INK[1];
+  for (const star of SF_STARS) ctx.fillRect(Math.round(star.x), Math.round(star.y), 1, flying ? 3 : 1);
+
+  let shipCx = ARCADE_WIDTH / 2;
+  let shipCy = SF_SHIP_CY;
+  let scale = 1;
+
+  if (t < SF_INTRO_MS) {
+    const p = easeInOutCubic(t / SF_INTRO_MS);
+    scale = Math.max(1, Math.round(5 - 4 * p));
+    shipCy = 24 + (SF_SHIP_CY - 24) * p;
+  } else if (t < SF_INTRO_MS + SF_PLAY_MS) {
+    const a = t - SF_INTRO_MS;
+    shipCx = arcadePath(SF_SHIP_PATH, a);
+    shipCy = SF_SHIP_CY + Math.sin(a / 520);
+  } else {
+    const p = easeInOutCubic((t - SF_INTRO_MS - SF_PLAY_MS) / SF_OUTRO_MS);
+    scale = Math.max(1, Math.round(1 + 4 * p));
+    shipCy = SF_SHIP_CY + (24 - SF_SHIP_CY) * p;
+  }
+
+  for (const enemy of state.enemies) {
+    drawArcadeSpriteCentered(ctx, enemy.kind === "rock" ? ARCADE_ROCK : ARCADE_DRONE, enemy.x, enemy.y, 1);
+  }
+  ctx.fillStyle = ARCADE_INK[3];
+  for (const bullet of state.bullets) ctx.fillRect(Math.round(bullet.x), Math.round(bullet.y), 1, 3);
+  ctx.fillStyle = ARCADE_INK[2];
+  for (const hazard of state.hazards) ctx.fillRect(Math.round(hazard.x), Math.round(hazard.y), 1, 2);
+
+  const box = drawArcadeSpriteCentered(ctx, ARCADE_SHIP, shipCx, shipCy, scale);
+
+  // Engine wash, only while the hull is close enough for it to read. Sprite
+  // columns 6 and 8 are the two engine bells; the plume starts ON the
+  // sprite's own exhaust row (10) and overwrites it, so the three bands read
+  // as one continuous flame tapering bright -> mid -> dim.
+  if (scale > 1) {
+    const pulse = Math.floor(now / 70) % 3;
+    const bands = [
+      [ARCADE_INK[3], scale * (1 + pulse)],
+      [ARCADE_INK[2], scale * 2],
+      [ARCADE_INK[1], scale * (1 + ((pulse + 1) % 3))],
+    ];
+    for (const col of [6, 8]) {
+      let y = box.top + 10 * scale;
+      for (const [ink, length] of bands) {
+        ctx.fillStyle = ink;
+        ctx.fillRect(box.left + col * scale, y, scale, length);
+        y += length;
+      }
+    }
+  }
+
+  for (const burst of state.bursts) drawArcadeBurst(ctx, burst, now);
+
+  // Score-style readout of the REAL number of files loaded so far. Purely a
+  // mirror; when nothing is counted yet it simply is not drawn.
+  if (mobileLoadLoadedCount > 0) drawArcadeNumber(ctx, mobileLoadLoadedCount, 3, 3, ARCADE_INK[1]);
+}
+
+// ---- SCENE 2: bigfoot encounter -------------------------------------------
+//
+// Character comedy, not action. The whole scene is built around one joke: he
+// stops, turns, and looks straight at you. Everything else — the empty-forest
+// beats at both ends, the long walk-in, the deliberate hold — exists to give
+// that beat somewhere to land. The 160px width is what makes the walk read as
+// travel rather than a shuffle.
+//
+// Side-on he has no face at all; the stare pose is the only one with eyes,
+// so the reveal is a genuine change in silhouette rather than a pose swap.
+const BIGFOOT_DURATION_MS = 15000;
+const BIGFOOT_GROUND_Y = 56;
+
+const BF_WALK_A = [
+  "...22222...",
+  "..2222222..",
+  "..2233222..",
+  "..2222222..",
+  "...22222...",
+  "..2222222..",
+  ".222222222.",
+  "22222222222",
+  "22222222222",
+  ".222222222.",
+  ".222222222.",
+  "..2222222..",
+  "..222.222..",
+  ".222...222.",
+  ".22.....22.",
+  "222.....222",
+];
+
+const BF_WALK_B = [
+  "...22222...",
+  "..2222222..",
+  "..2233222..",
+  "..2222222..",
+  "...22222...",
+  "..2222222..",
+  ".222222222.",
+  "22222222222",
+  "22222222222",
+  ".222222222.",
+  ".222222222.",
+  "..2222222..",
+  "...22222...",
+  "...22.22...",
+  "...22.22...",
+  "..222.222..",
+];
+
+const BF_STARE = [
+  "...22222...",
+  "..2222222..",
+  "..2322232..",
+  "..2222222..",
+  "...22222...",
+  "..2222222..",
+  ".222222222.",
+  "22222222222",
+  "22222222222",
+  "22222222222",
+  ".222222222.",
+  "..2222222..",
+  "..22...22..",
+  "..22...22..",
+  "..22...22..",
+  ".222...222.",
+];
+
+const BF_BLINK = [
+  "...22222...",
+  "..2222222..",
+  "..2222222..",
+  "..2222222..",
+  "...22222...",
+  "..2222222..",
+  ".222222222.",
+  "22222222222",
+  "22222222222",
+  "22222222222",
+  ".222222222.",
+  "..2222222..",
+  "..22...22..",
+  "..22...22..",
+  "..22...22..",
+  ".222...222.",
+];
+
+// Three stacked triangles read as a conifer far more cheaply than a mask, and
+// letting height vary per tree is what stops the treeline looking stamped.
+function drawArcadePine(ctx, cx, baseY, height, ink) {
+  ctx.fillStyle = ink;
+  const tiers = 3;
+  const tierH = Math.max(2, Math.floor(height / tiers));
+  for (let tier = 0; tier < tiers; tier++) {
+    const top = baseY - height + tier * tierH;
+    for (let r = 0; r <= tierH; r++) {
+      const half = Math.floor((r / (tierH + 1)) * (2 + tier * 1.7));
+      ctx.fillRect(cx - half, top + r, half * 2 + 1, 1);
+    }
+  }
+  ctx.fillRect(cx, baseY - 3, 1, 3);
+}
+
+const BF_TREES = [
+  { x: 6, h: 26 },
+  { x: 20, h: 18 },
+  { x: 33, h: 30 },
+  { x: 48, h: 21 },
+  { x: 62, h: 27 },
+  { x: 78, h: 19 },
+  { x: 92, h: 29 },
+  { x: 108, h: 22 },
+  { x: 122, h: 26 },
+  { x: 138, h: 18 },
+  { x: 152, h: 28 },
+];
+
+function drawBigfootScene(ctx, state, t) {
+  for (const tree of BF_TREES) drawArcadePine(ctx, tree.x, BIGFOOT_GROUND_Y, tree.h, ARCADE_INK[1]);
+
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, BIGFOOT_GROUND_Y, ARCADE_WIDTH, 1);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let x = 2; x < ARCADE_WIDTH; x += 7) ctx.fillRect(x, BIGFOOT_GROUND_Y + 3, 2, 1);
+  for (let x = 5; x < ARCADE_WIDTH; x += 9) ctx.fillRect(x, BIGFOOT_GROUND_Y + 6, 3, 1);
+
+  // Timeline. Beats, in order: empty forest, walk in, halt, turn, stare
+  // (with a blink, a step closer, and a second blink), turn back, walk out,
+  // empty forest again — which is the same frame the scene opened on, so the
+  // loop closes without a cut.
+  let sprite = null;
+  let x = 0;
+  let lift = 0;
+
+  if (t < 1500) {
+    sprite = null;
+  } else if (t < 6600) {
+    x = arcadePath(
+      [
+        [1500, -14],
+        [6600, 74],
+      ],
+      t
+    );
+    sprite = Math.floor((t - 1500) / 210) % 2 === 0 ? BF_WALK_A : BF_WALK_B;
+    lift = Math.floor((t - 1500) / 210) % 2 === 0 ? 0 : -1;
+  } else if (t < 7100) {
+    x = 74;
+    sprite = BF_WALK_B;
+  } else if (t < 11300) {
+    x = 74;
+    const s = t - 7100;
+    // The stare, with its own small beats so the hold never goes dead.
+    if (s < 1300) sprite = BF_STARE;
+    else if (s < 1520) sprite = BF_BLINK;
+    else if (s < 2400) sprite = BF_STARE;
+    else if (s < 3100) {
+      sprite = BF_STARE;
+      lift = 2; // one step closer to the camera
+    } else if (s < 3320) {
+      sprite = BF_BLINK;
+      lift = 2;
+    } else {
+      sprite = BF_STARE;
+      lift = 2;
+    }
+  } else if (t < 11700) {
+    x = 74;
+    sprite = BF_WALK_B;
+  } else if (t < 14000) {
+    x = arcadePath(
+      [
+        [11700, 74],
+        [14000, 168],
+      ],
+      t
+    );
+    sprite = Math.floor((t - 11700) / 210) % 2 === 0 ? BF_WALK_A : BF_WALK_B;
+    lift = Math.floor((t - 11700) / 210) % 2 === 0 ? 0 : -1;
+  }
+
+  if (sprite) drawArcadeSprite(ctx, sprite, Math.round(x), BIGFOOT_GROUND_Y - sprite.length + lift, 1);
+}
+
+// ---- SCENE 3: UFO file abduction ------------------------------------------
+//
+// The Browser Gallery joke: something is quietly making off with your files.
+// Deliberately cute rather than sinister — the saucer is round, the beam is
+// soft, and it leaves politely.
+//
+// The loop closes on a product-appropriate gag: after the saucer zips away, a
+// REPLACEMENT file fades in on the ground over the last second, so the scene
+// restarts already holding what it is about to lose. Without that, the loop
+// point popped a file back into existence out of nowhere.
+const UFO_DURATION_MS = 14000;
+const UFO_GROUND_Y = 52;
+
+const UFO_SAUCER = [
+  ".......22222.......",
+  ".....222222222.....",
+  "..222222222222222..",
+  "3322222222222222233",
+  "..222222222222222..",
+  "......2223222......",
+];
+
+const UFO_FILE = [
+  "333333333",
+  "311111113",
+  "311112113",
+  "311122213",
+  "311222223",
+  "312222223",
+  "333333333",
+];
+
+const UFO_STARS = [
+  [8, 6],
+  [23, 13],
+  [39, 4],
+  [52, 17],
+  [67, 9],
+  [88, 5],
+  [101, 15],
+  [118, 8],
+  [133, 18],
+  [147, 6],
+  [155, 21],
+  [14, 24],
+];
+
+function drawUfoScene(ctx, state, t, now) {
+  // Sky: stars twinkle on a slow deterministic cycle so the field is never
+  // dead but never busy either.
+  for (let i = 0; i < UFO_STARS.length; i++) {
+    const [sx, sy] = UFO_STARS[i];
+    const twinkle = Math.sin(now / 700 + i * 1.7) > -0.4;
+    ctx.fillStyle = twinkle ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(sx, sy, 1, 1);
+  }
+
+  // Ground: a horizon line with a low rolling hill behind it.
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let x = 0; x < ARCADE_WIDTH; x++) {
+    const hill = Math.round(Math.sin(x / 26) * 3 + Math.sin(x / 11) * 1.2);
+    ctx.fillRect(x, UFO_GROUND_Y - 3 - hill, 1, 1);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, UFO_GROUND_Y, ARCADE_WIDTH, 1);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let x = 3; x < ARCADE_WIDTH; x += 11) ctx.fillRect(x, UFO_GROUND_Y + 4, 2, 1);
+  for (let x = 8; x < ARCADE_WIDTH; x += 13) ctx.fillRect(x, UFO_GROUND_Y + 8, 3, 1);
+
+  const targetX = 62;
+  const bystanderX = 116;
+  const fileTop = UFO_GROUND_Y - UFO_FILE.length;
+
+  // The bystander file, and the target file whenever it is still on the
+  // ground. During the last second the target fades back in (dim then mid)
+  // as the next delivery.
+  let bystanderShake = 0;
+  if (t >= 4600 && t < 9400) bystanderShake = Math.sin(now / 90) > 0 ? 1 : 0;
+  drawArcadeSprite(ctx, UFO_FILE, bystanderX + bystanderShake, fileTop, 1);
+
+  const saucerX = arcadePath(
+    [
+      [0, -32],
+      [1200, -32],
+      [4000, targetX],
+      [9800, targetX],
+      [11400, 210],
+      [14000, 210],
+    ],
+    t
+  );
+  const saucerY = 16 + Math.sin(now / 620) * 1.5;
+
+  // Beam: a trapezoid of horizontal runs, narrow at the emitter and wide at
+  // the ground, flickering between two intensities.
+  let beamWidth = 0;
+  if (t >= 4600 && t < 5400) beamWidth = 3 + 8 * arcadeClamp01((t - 4600) / 800);
+  else if (t >= 5400 && t < 9200) beamWidth = 11;
+  else if (t >= 9200 && t < 9800) beamWidth = 11 * (1 - arcadeClamp01((t - 9200) / 600));
+
+  if (beamWidth > 0.5) {
+    // Integer scanline stepping is load-bearing: saucerY carries a sine bob,
+    // so a float `y` made the row-parity test below essentially never true
+    // and the beam rendered flat dim instead of alternating intensities.
+    const beamTop = Math.round(saucerY) + 3;
+    const flicker = Math.sin(now / 55) > 0;
+    for (let y = beamTop; y < UFO_GROUND_Y; y++) {
+      const p = (y - beamTop) / (UFO_GROUND_Y - beamTop);
+      const half = Math.max(1, Math.round((beamWidth * (0.35 + 0.65 * p)) / 2));
+      ctx.fillStyle = (y + (flicker ? 0 : 1)) % 2 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
+      ctx.fillRect(Math.round(targetX + 9 - half), Math.round(y), half * 2, 1);
+    }
+  }
+
+  // The abducted file: on the ground, then lifted, then gone.
+  if (t < 5400) {
+    drawArcadeSprite(ctx, UFO_FILE, targetX + 5, fileTop, 1);
+  } else if (t < 8600) {
+    const lift = easeInOutCubic(arcadeClamp01((t - 5400) / 3200));
+    const y = fileTop + (saucerY + 4 - fileTop) * lift;
+    drawArcadeSprite(ctx, UFO_FILE, targetX + 5, Math.round(y), 1);
+  } else if (t >= 13000) {
+    // The replacement arrives, dim first, so the loop point has something
+    // already standing there.
+    const fade = arcadeClamp01((t - 13000) / 1000);
+    drawArcadeSprite(ctx, UFO_FILE, targetX + 5, fileTop, 1, fade > 0.55 ? ARCADE_INK[2] : ARCADE_INK[1]);
+  }
+
+  // Departure streaks — the zip that sells the exit on a wide canvas.
+  if (t >= 9800 && t < 11400) {
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let i = 1; i <= 5; i++) {
+      const trailX = saucerX - i * 11;
+      if (trailX < -20) continue;
+      ctx.fillRect(Math.round(trailX), Math.round(saucerY + 3), 8, 1);
+    }
+  }
+
+  if (saucerX > -22 && saucerX < ARCADE_WIDTH + 22) {
+    drawArcadeSprite(ctx, UFO_SAUCER, Math.round(saucerX), Math.round(saucerY), 1);
+    // Running lights along the rim, chasing.
+    const phase = Math.floor(now / 160) % 3;
+    ctx.fillStyle = ARCADE_INK[3];
+    for (let i = 0; i < 3; i++) {
+      if (i !== phase) continue;
+      ctx.fillRect(Math.round(saucerX) + 3 + i * 6, Math.round(saucerY) + 4, 1, 1);
+      ctx.fillRect(Math.round(saucerX) + 15 - i * 6, Math.round(saucerY) + 4, 1, 1);
+    }
+  }
+
+  // The swallow: one bright flash inside the saucer.
+  if (t >= 8600 && t < 9200) {
+    const flash = 1 - arcadeClamp01((t - 8600) / 600);
+    ctx.fillStyle = flash > 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
+    const w = Math.max(2, Math.round(15 * flash));
+    ctx.fillRect(Math.round(saucerX + 9 - w / 2), Math.round(saucerY + 2), w, 3);
+  }
+}
+
+// ---- SCENE 4: projector booth ---------------------------------------------
+//
+// The most literally on-brand scene: a machine whose entire job is showing you
+// pictures. The wide canvas is what lets the machinery AND the projected image
+// both be legible — at 128px one of the two always lost.
+//
+// Reels and film share ONE speed function, so when the film jams the reels
+// stutter with it rather than each drifting on its own clock. That single
+// shared value is what makes it read as a mechanism instead of two spinning
+// circles.
+const PROJECTOR_DURATION_MS = 15000;
+
+const PROJECTED_FRAMES = [
+  [
+    "...............",
+    "..........333..",
+    "..........333..",
+    ".......2.......",
+    "......222......",
+    ".....22322.....",
+    "....2222222....",
+    "...222222222...",
+    "..22222222222..",
+    ".2222222222222.",
+    "222222222222222",
+  ],
+  [
+    ".....22222.....",
+    "...222222222...",
+    "..22222222222..",
+    "..23322233222..",
+    "..22222222222..",
+    "..22222222222..",
+    "..22222222222..",
+    "..22333333222..",
+    "..22222222222..",
+    "...222222222...",
+    ".....22222.....",
+  ],
+  [
+    ".......2.......",
+    "......222......",
+    ".....22322.....",
+    "....2233222....",
+    "...223333222...",
+    "..22333333222..",
+    "...223333222...",
+    "....2233222....",
+    ".....22322.....",
+    "......222......",
+    ".......2.......",
+  ],
+  [
+    ".......2.......",
+    "......222......",
+    ".....22222.....",
+    "....2222222....",
+    "......222......",
+    ".....22222.....",
+    "....2222222....",
+    "...222222222...",
+    ".......1.......",
+    ".......1.......",
+    ".....22222.....",
+  ],
+];
+
+// One speed curve drives both reels and the film. The 8000-9200 window is the
+// jam: alternating near-stall and over-run, which is what a slipping sprocket
+// actually looks like.
+function projectorSpeed(t) {
+  if (t < 1500) return 0;
+  if (t < 2500) return ((t - 1500) / 1000) * 0.006;
+  if (t < 8000) return 0.006;
+  if (t < 9200) return Math.floor((t - 8000) / 150) % 2 === 0 ? 0.0009 : 0.0105;
+  if (t < 12800) return 0.006;
+  if (t < 14200) return 0.006 * (1 - (t - 12800) / 1400);
+  return 0;
+}
+
+function projectorLamp(t) {
+  if (t < 2500) return 0;
+  if (t < 3500) return (t - 2500) / 1000;
+  if (t < 12800) return 1;
+  if (t < 14200) return 1 - (t - 12800) / 1400;
+  return 0;
+}
+
+function createProjectorState() {
+  return { angle: 0, film: 0 };
+}
+
+function updateProjectorState(state, t, dt) {
+  const speed = projectorSpeed(t);
+  state.angle += speed * dt;
+  state.film += speed * dt * 9;
+}
+
+function drawProjectorScene(ctx, state, t, now) {
+  const lamp = projectorLamp(t);
+  const jamming = t >= 8000 && t < 9200;
+  const jitter = jamming ? (Math.floor(now / 60) % 2 === 0 ? 1 : -1) : 0;
+
+  // --- projector body ---
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(6, 30, 46, 20);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(6, 30, 46, 1);
+  ctx.fillRect(6, 49, 46, 1);
+  ctx.fillRect(6, 30, 1, 20);
+  ctx.fillRect(51, 30, 1, 20);
+  ctx.fillRect(20, 50, 4, 6);
+  ctx.fillRect(38, 50, 4, 6);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(12, 54, 34, 2);
+
+  // --- reels: feed above, take-up below-right, both on the shared angle ---
+  const reels = [
+    [17, 14, 9],
+    [42, 18, 7],
+  ];
+  for (const [cx, cy, r] of reels) {
+    drawArcadeCircle(ctx, cx, cy, r, ARCADE_INK[2]);
+    drawArcadeCircle(ctx, cx, cy, Math.max(1, r - 5), ARCADE_INK[1]);
+    for (let s = 0; s < 4; s++) {
+      const angle = state.angle + (s * Math.PI) / 2;
+      drawArcadeLine(
+        ctx,
+        cx + Math.cos(angle) * 2,
+        cy + Math.sin(angle) * 2,
+        cx + Math.cos(angle) * (r - 1),
+        cy + Math.sin(angle) * (r - 1),
+        ARCADE_INK[2]
+      );
+    }
+  }
+
+  // --- film path: feed reel -> gate -> take-up reel, sprockets travelling ---
+  const filmPath = [
+    [17, 23, 30, 36],
+    [30, 36, 42, 25],
+  ];
+  for (const [x0, y0, x1, y1] of filmPath) {
+    drawArcadeLine(ctx, x0, y0, x1, y1, ARCADE_INK[1]);
+    drawArcadeLine(ctx, x0, y0 + 2, x1, y1 + 2, ARCADE_INK[1]);
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    for (let s = 0; s < 6; s++) {
+      const p = ((s * 4 + (state.film % 4)) % len) / len;
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(Math.round(x0 + (x1 - x0) * p), Math.round(y0 + (y1 - y0) * p + 1), 1, 1);
+    }
+  }
+
+  // --- gate + lamp house + lens ---
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(28, 33, 5, 7);
+  if (lamp > 0.05) {
+    ctx.fillStyle = lamp > 0.6 ? ARCADE_INK[3] : ARCADE_INK[2];
+    ctx.fillRect(29, 34, 3, 5);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(52, 33, 6, 8);
+  ctx.fillRect(58, 35, 2, 4);
+
+  // --- light cone: lens out to the screen, widening ---
+  const screenX = 112;
+  const screenTop = 14;
+  const screenH = 34;
+  if (lamp > 0.05) {
+    // The cone's axis tilts from the lens centre (37) to the SCREEN centre
+    // (screenTop + screenH/2), and its half-height lands exactly on the
+    // screen's own half-height. Aiming it straight out of the lens instead
+    // left the light overshooting the bottom of the screen by 6px, which
+    // reads as a misaligned projector rather than a working one.
+    const screenMidY = screenTop + screenH / 2;
+    const screenHalf = Math.round((screenH / 2) * lamp);
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let x = 60; x < screenX; x += 1) {
+      const p = (x - 60) / (screenX - 60);
+      const half = Math.round((2 + p * (screenH / 2 - 2)) * lamp);
+      if (half < 1) continue;
+      const axis = 37 + (screenMidY - 37) * p;
+      if (x % 2 === 0) ctx.fillRect(x, Math.round(axis - half), 1, half * 2);
+    }
+    drawArcadeLine(ctx, 60, 35, screenX, screenMidY - screenHalf, ARCADE_INK[2]);
+    drawArcadeLine(ctx, 60, 39, screenX, screenMidY + screenHalf, ARCADE_INK[2]);
+  }
+
+  // --- screen ---
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(screenX, screenTop, 1, screenH);
+  ctx.fillRect(ARCADE_WIDTH - 4, screenTop, 1, screenH);
+  ctx.fillRect(screenX, screenTop, ARCADE_WIDTH - 4 - screenX, 1);
+  ctx.fillRect(screenX, screenTop + screenH, ARCADE_WIDTH - 4 - screenX, 1);
+
+  if (lamp > 0.25 && t >= 3500) {
+    const frame = PROJECTED_FRAMES[Math.floor((t - 3500) / 1100) % PROJECTED_FRAMES.length];
+    const cx = (screenX + ARCADE_WIDTH - 4) / 2 + jitter;
+    const cy = screenTop + screenH / 2 + (jamming ? jitter : 0);
+    drawArcadeSpriteCentered(ctx, frame, cx, cy, 2, lamp > 0.7 ? null : ARCADE_INK[1]);
+
+    // The jam leaves a burn blooming in the middle of the frame, which
+    // shrinks away again once the mechanism catches up.
+    if (jamming) {
+      const burn = 2 + Math.round(6 * arcadeClamp01((t - 8000) / 1200));
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(Math.round(cx - burn / 2), Math.round(cy - burn / 2), burn, burn);
+    } else if (t >= 9200 && t < 9800) {
+      const burn = Math.round(8 * (1 - arcadeClamp01((t - 9200) / 600)));
+      if (burn > 0) {
+        ctx.fillStyle = ARCADE_INK[2];
+        ctx.fillRect(Math.round(cx - burn / 2), Math.round(cy - burn / 2), burn, burn);
+      }
+    }
+  }
+}
+
+// ---- SCENE 5: pirate ship -------------------------------------------------
+//
+// One ship, one monster, one cannon payoff — deliberately not a naval sim.
+// The wide canvas is doing real work here: the cannonball's arc needs
+// horizontal distance to read as a lob rather than a poke, and the ship needs
+// somewhere to sail in FROM and out TO.
+const PIRATE_DURATION_MS = 15000;
+const PIRATE_WATER_Y = 46;
+
+const PIRATE_HULL = [
+  ".3.3.3.3.3.3.3.3.3.3.3.3.3.3.",
+  "33333333333333333333333333333",
+  ".222222222222222222222222222.",
+  ".222222222222222222222222222.",
+  "..2222222222222222222222222..",
+  "...22222222222222222222222...",
+  "....222222222222222222222....",
+  ".......222222222222222.......",
+];
+
+const PIRATE_RIG_A = [
+  ".......3.......",
+  ".......3.......",
+  ".3333333333333.",
+  ".2222222222222.",
+  ".2222222222222.",
+  "..222222222222.",
+  "..222222222222.",
+  "...22222222222.",
+  "...22222222222.",
+  "....2222222222.",
+  ".....222222222.",
+  ".......3.......",
+  ".......3.......",
+  ".......3.......",
+  ".......3.......",
+  ".......3.......",
+];
+
+const PIRATE_RIG_B = [
+  ".......3.......",
+  ".......3.......",
+  ".3333333333333.",
+  ".2222222222222.",
+  "..222222222222.",
+  "..222222222222.",
+  "...22222222222.",
+  "...22222222222.",
+  "....2222222222.",
+  "....2222222222.",
+  ".....222222222.",
+  ".......3.......",
+  ".......3.......",
+  ".......3.......",
+  ".......3.......",
+  ".......3.......",
+];
+
+const PIRATE_FLAG_A = ["3333.", ".333.", "..3.."];
+const PIRATE_FLAG_B = ["3333.", "3333.", ".33.."];
+
+const PIRATE_MONSTER = [
+  "..2.2...2.2..",
+  "...222.222...",
+  "..222222222..",
+  ".22233222222.",
+  ".22233222222.",
+  ".22222222222.",
+  "..222222222..",
+  "...2222222...",
+  "....22222....",
+];
+
+const PIRATE_SHIP_PATH = [
+  [0, -44],
+  [1400, -44],
+  [4200, 40],
+  [6000, 52],
+  [11000, 58],
+  [12400, 90],
+  [13400, 104],
+  [15000, 210],
+];
+
+// Head y: submerged below the waterline, surfaces, recoils on the hit,
+// submerges, then pops up again behind the ship for the last gag.
+const PIRATE_MONSTER_PATH = [
+  [0, 66],
+  [4200, 66],
+  [5400, 34],
+  [7900, 34],
+  [8200, 42],
+  [8800, 36],
+  [9000, 36],
+  [9700, 66],
+  [12600, 66],
+  [13300, 40],
+  [14200, 40],
+  [14800, 66],
+];
+
+function drawPirateSea(ctx, t) {
+  ctx.fillStyle = ARCADE_INK[2];
+  for (let x = 0; x < ARCADE_WIDTH; x++) {
+    const y = PIRATE_WATER_Y + Math.round(Math.sin((x + t * 0.018) / 7) * 1.6);
+    ctx.fillRect(x, y, 1, 1);
+  }
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let x = 0; x < ARCADE_WIDTH; x += 3) {
+    ctx.fillRect(x, PIRATE_WATER_Y + 5 + Math.round(Math.sin((x - t * 0.012) / 5) * 1.2), 2, 1);
+    ctx.fillRect(x + 1, PIRATE_WATER_Y + 10 + Math.round(Math.sin((x + t * 0.02) / 9) * 1.4), 2, 1);
+  }
+  ctx.fillRect(0, ARCADE_HEIGHT - 2, ARCADE_WIDTH, 2);
+}
+
+function drawPirateScene(ctx, state, t, now) {
+  // Moon and a couple of clouds, high and dim so they never fight the action.
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let dy = -5; dy <= 5; dy++) {
+    const half = Math.round(Math.sqrt(Math.max(0, 25 - dy * dy)));
+    ctx.fillRect(134 - half, 12 + dy, half * 2, 1);
+  }
+  drawArcadeCircle(ctx, 134, 12, 5, ARCADE_INK[2]);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(20, 8, 14, 1);
+  ctx.fillRect(24, 10, 16, 1);
+  ctx.fillRect(66, 5, 12, 1);
+
+  drawPirateSea(ctx, t);
+
+  const shipX = arcadePath(PIRATE_SHIP_PATH, t);
+  // Ordinary bob, plus a hard rock when the near-miss lands beside the bow.
+  let bob = Math.sin(now / 430) * 1.4;
+  if (t >= 10400 && t < 11200) bob += Math.sin((t - 10400) / 55) * 2.2;
+  const deckY = PIRATE_WATER_Y - 6 + Math.round(bob);
+
+  const monsterY = arcadePath(PIRATE_MONSTER_PATH, t);
+  const monsterX = t >= 12600 ? 34 : 122;
+  if (monsterY < 64) {
+    // Tentacles first, so the head sits in front of them.
+    if (t >= 4600 && t < 9700) {
+      for (const side of [-1, 1]) {
+        for (let seg = 0; seg < 9; seg++) {
+          const sy = PIRATE_WATER_Y - seg * 2;
+          const sx = monsterX + side * (11 + seg) + Math.round(Math.sin(seg / 1.6 + now / 320) * 3);
+          if (sy < monsterY + 6) continue;
+          ctx.fillStyle = seg % 2 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
+          ctx.fillRect(sx, sy, 2, 2);
+        }
+      }
+    }
+    const blink = t > 5600 && t < 5800;
+    drawArcadeSprite(
+      ctx,
+      PIRATE_MONSTER,
+      monsterX - 6,
+      Math.round(monsterY),
+      1,
+      blink ? ARCADE_INK[2] : null
+    );
+  }
+
+  // Splashes: the cannon impact and the near-miss both throw water.
+  if (t >= 7900 && t < 8500) {
+    drawArcadeBurst(ctx, { x: 122, y: 36, born: 7900, seed: 1.1, reach: 11 }, t, 600);
+  }
+  if (t >= 10300 && t < 11000) {
+    const age = (t - 10300) / 700;
+    ctx.fillStyle = age < 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
+    for (let i = 0; i < 7; i++) {
+      const spread = age * 13;
+      ctx.fillRect(
+        Math.round(86 + (i - 3) * spread * 0.5),
+        Math.round(PIRATE_WATER_Y - age * 15 + Math.abs(i - 3) * 2.2),
+        1,
+        2
+      );
+    }
+  }
+
+  // The ship. Culled by the hull's own width (29px) rather than a generous
+  // margin — past these bounds nothing it draws can land on the canvas, and
+  // this is the heaviest scene in the pool.
+  if (shipX > -PIRATE_HULL[0].length - 4 && shipX < ARCADE_WIDTH + 2) {
+    const rig = Math.sin(now / 520) > 0 ? PIRATE_RIG_A : PIRATE_RIG_B;
+    const hullLeft = Math.round(shipX);
+    drawArcadeSprite(ctx, PIRATE_HULL, hullLeft, deckY, 1);
+    drawArcadeSprite(ctx, rig, hullLeft + 7, deckY - rig.length + 1, 1);
+    const flag = Math.floor(now / 260) % 2 === 0 ? PIRATE_FLAG_A : PIRATE_FLAG_B;
+    drawArcadeSprite(ctx, flag, hullLeft + 15, deckY - rig.length - 1, 1);
+    // Bowsprit.
+    drawArcadeLine(ctx, hullLeft + 28, deckY + 1, hullLeft + 34, deckY - 2, ARCADE_INK[2]);
+
+    // Muzzle flash.
+    if (t >= 6100 && t < 6400) {
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(hullLeft + 29, deckY + 2, 4, 3);
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(hullLeft + 33, deckY + 1, 3, 5);
+    }
+  }
+
+  // Cannonball: a real parabola across ~60px of open water. This is the beat
+  // the extra width was bought for.
+  if (t >= 6300 && t < 7900) {
+    const p = (t - 6300) / 1600;
+    const bx = 84 + (122 - 84) * p;
+    const by = 42 + (36 - 42) * p - Math.sin(p * Math.PI) * 22;
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let i = 1; i <= 3; i++) {
+      const tp = Math.max(0, p - i * 0.06);
+      ctx.fillRect(
+        Math.round(84 + (122 - 84) * tp),
+        Math.round(42 + (36 - 42) * tp - Math.sin(tp * Math.PI) * 22),
+        1,
+        1
+      );
+    }
+    ctx.fillStyle = ARCADE_INK[3];
+    ctx.fillRect(Math.round(bx), Math.round(by), 2, 2);
+  }
+
+  // Incoming: the monster hurls something back, and it lands just off the bow.
+  if (t >= 9000 && t < 10400) {
+    const p = (t - 9000) / 1400;
+    const hx = 114 + (86 - 114) * p;
+    const hy = 38 + (46 - 38) * p - Math.sin(p * Math.PI) * 18;
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(Math.round(hx), Math.round(hy), 2, 2);
+  }
+
+  // Bird, for the last beat — something alive after the fight is over.
+  if (t >= 12800 && t < 14600) {
+    const p = (t - 12800) / 1800;
+    const bx = 10 + p * 150;
+    const flap = Math.floor(now / 150) % 2 === 0;
+    ctx.fillStyle = ARCADE_INK[2];
+    if (flap) {
+      ctx.fillRect(Math.round(bx), 9, 2, 1);
+      ctx.fillRect(Math.round(bx) + 2, 8, 2, 1);
+      ctx.fillRect(Math.round(bx) + 4, 9, 2, 1);
+    } else {
+      ctx.fillRect(Math.round(bx), 8, 2, 1);
+      ctx.fillRect(Math.round(bx) + 2, 9, 2, 1);
+      ctx.fillRect(Math.round(bx) + 4, 8, 2, 1);
+    }
+  }
+}
+
+// ---- the pool -------------------------------------------------------------
+//
+// A scene is a plain object. `create`/`update` are optional — scenes whose
+// choreography is a pure function of scene time (Bigfoot, UFO, Pirate) omit
+// them entirely, which is why only Starfighter and Projector carry mutable
+// state at all.
+//   durationMs  full loop length; ~15s so a small load sees a meaningful
+//               chunk, a typical load sees most of one, and a big load
+//               repeats only a couple of times.
+//   stillAtMs   the moment rendered for prefers-reduced-motion. Chosen per
+//               scene as its strongest single frame.
+//   fade        alpha used to repaint the background each frame. Lower keeps
+//               more phosphor trail. Fast-moving scenes want the smear;
+//               character scenes want a crisper silhouette, so Bigfoot and
+//               Projector sit near-opaque.
+const ARCADE_SCENES = [
+  {
+    name: "starfighter",
+    durationMs: SF_DURATION_MS,
+    stillAtMs: SF_INTRO_MS + 2100,
+    fade: 0.62,
+    create: createStarfighterState,
+    update: updateStarfighter,
+    draw: drawStarfighterScene,
+  },
+  {
+    name: "bigfoot",
+    durationMs: BIGFOOT_DURATION_MS,
+    // Mid-stare with the eyes OPEN. 8600 would land inside the blink beat,
+    // which is the one stare frame with no eyes in it at all.
+    stillAtMs: 8000,
+    fade: 0.92,
+    draw: drawBigfootScene,
+  },
+  {
+    name: "ufo-abduction",
+    durationMs: UFO_DURATION_MS,
+    stillAtMs: 7000,
+    fade: 0.8,
+    draw: drawUfoScene,
+  },
+  {
+    name: "projector",
+    durationMs: PROJECTOR_DURATION_MS,
+    stillAtMs: 6200,
+    fade: 0.9,
+    create: createProjectorState,
+    update: updateProjectorState,
+    draw: drawProjectorScene,
+  },
+  {
+    name: "pirate-ship",
+    durationMs: PIRATE_DURATION_MS,
+    stillAtMs: 7100,
+    fade: 0.75,
+    draw: drawPirateScene,
+  },
+];
+
+// ---- animation controller -------------------------------------------------
+
+let arcadeRafId = null;
+let arcadeCtx = null;
+let arcadeState = null;
+let arcadeStartedAt = 0;
+let arcadeLastLoopT = -1;
+let arcadeLastRender = 0;
+
+// [V2-POLISH / MICRO-ARCADE-SCENE-POOL]
+// Session-scoped selection. arcadeCurrentScene is whatever is running now;
+// arcadePreviousScene outlives the session purely so the next selection can
+// exclude it. Selection happens in exactly one place —
+// startArcadeAnimation(), itself only reachable from the not-loading ->
+// loading edge in syncMobileLoadState() — so no render, progress tick or
+// loop wrap can ever re-pick.
+let arcadeCurrentScene = null;
+let arcadePreviousScene = null;
+
+function pickArcadeScene() {
+  const candidates =
+    ARCADE_SCENES.length > 1 ? ARCADE_SCENES.filter((scene) => scene !== arcadePreviousScene) : ARCADE_SCENES;
+  const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+  arcadeCurrentScene = chosen;
+  arcadePreviousScene = chosen;
+  return chosen;
+}
+
+// Shared frame: background persistence, the scene's own drawing, then the CRT
+// overlays. Scanlines and flicker live here rather than in any scene so all
+// five share one screen, and so a scene can never forget them.
+function paintArcadeFrame(scene, state, t, now, solid) {
+  const ctx = arcadeCtx;
+  ctx.globalAlpha = solid ? 1 : scene.fade;
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(0, 0, ARCADE_WIDTH, ARCADE_HEIGHT);
+  ctx.globalAlpha = 1;
+
+  scene.draw(ctx, state, t, now);
+
+  ctx.fillStyle = "rgba(0, 0, 0, 0.16)";
+  for (let y = 0; y < ARCADE_HEIGHT; y += 2) ctx.fillRect(0, y, ARCADE_WIDTH, 1);
+  ctx.fillStyle = `rgba(0, 0, 0, ${0.03 + 0.02 * Math.sin(now / 260)})`;
+  ctx.fillRect(0, 0, ARCADE_WIDTH, ARCADE_HEIGHT);
+}
+
+function renderArcadeFrame(now) {
+  arcadeRafId = requestAnimationFrame(renderArcadeFrame);
+  if (now - arcadeLastRender < ARCADE_FRAME_MS) return;
+
+  // Clamped so a backgrounded or janked tab resumes with a sane step instead
+  // of teleporting every sprite (which would also let Starfighter's bullets
+  // tunnel through enemies and silently lose the explosion beat).
+  const dt = Math.min(50, arcadeLastRender ? now - arcadeLastRender : ARCADE_FRAME_MS);
+  arcadeLastRender = now;
+
+  const scene = arcadeCurrentScene;
+  const t = (now - arcadeStartedAt) % scene.durationMs;
+
+  // A long load outlasting the scene replays THE SAME scene: only the
+  // scene-local state is rebuilt at the wrap, never the selection.
+  if (t < arcadeLastLoopT) arcadeState = scene.create ? scene.create() : null;
+  arcadeLastLoopT = t;
+
+  if (scene.update) scene.update(arcadeState, t, dt, now);
+  paintArcadeFrame(scene, arcadeState, t, now, false);
+}
+
+// Reduced motion: fast-forward the selected scene's own timeline headlessly to
+// its authored strongest moment, paint one frame, and never start the loop.
+// Reusing the real simulation means the still is a genuine frame of that
+// scene rather than a separate asset that could drift from it.
+function renderArcadeStill(scene) {
+  arcadeState = scene.create ? scene.create() : null;
+  if (scene.update) {
+    for (let t = 0; t <= scene.stillAtMs; t += ARCADE_FRAME_MS) {
+      scene.update(arcadeState, t, ARCADE_FRAME_MS, t);
+    }
+  }
+  paintArcadeFrame(scene, arcadeState, scene.stillAtMs, scene.stillAtMs, true);
+}
+
+function startArcadeAnimation() {
+  if (arcadeRafId !== null) return;
+  if (!arcadeCtx) {
+    arcadeCtx = mobileLoadCanvas.getContext ? mobileLoadCanvas.getContext("2d") : null;
+    if (!arcadeCtx) return;
+    arcadeCtx.imageSmoothingEnabled = false;
+  }
+
+  const scene = pickArcadeScene();
+  arcadeState = scene.create ? scene.create() : null;
+  arcadeLastLoopT = -1;
+  arcadeLastRender = 0;
+
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    renderArcadeStill(scene);
+    return;
+  }
+
+  arcadeStartedAt = performance.now();
+  arcadeRafId = requestAnimationFrame(renderArcadeFrame);
+}
+
+// arcadePreviousScene is deliberately NOT cleared here: it must survive to
+// the next startArcadeAnimation() so that call can exclude it.
+function stopArcadeAnimation() {
+  arcadeCurrentScene = null;
+  if (arcadeRafId === null) return;
+  cancelAnimationFrame(arcadeRafId);
+  arcadeRafId = null;
+}
 
 const MOBILE_ATMOSPHERE_PHRASES = ["Building your gallery…", "Still working…", "Preparing your media…"];
 
-let mobileTakeoverAnimationTimer = null;
+let mobileTakeoverTextTimer = null;
 
 // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+// The takeover's two TEXT decorations — the indeterminate activity-bar sweep
+// and the rotating atmosphere phrase. Unchanged Stage 6 behavior on its
+// original 550ms beat.
+// [V2-POLISH / MICRO-ARCADE-CANVAS] This is deliberately a separate timer
+// from the canvas scene's own requestAnimationFrame loop, rather than one
+// clock driving both: the scene runs at ~30fps and the text at ~2fps, and an
+// earlier attempt to derive one from the other only produced divide-down
+// arithmetic whose sole purpose was to reconstruct this exact 550ms cadence.
+// Two timers, each with one job, is the smaller thing.
 // Idempotent — a second call while already running is a no-op, so this can
 // never be started twice into two concurrent intervals. `tick` lives in this
-// call's own closure, so every fresh load starts the loop at frame 0 with no
-// state carried over from a previous one.
-// Respects prefers-reduced-motion by painting exactly one frame and
-// returning before the interval is ever created — see the WHY below.
-function startMobileTakeoverAnimation() {
-  if (mobileTakeoverAnimationTimer !== null) return;
+// call's own closure, so every fresh load starts at tick 0 with no state
+// carried over from a previous one.
+function startMobileTakeoverTextTicker() {
+  if (mobileTakeoverTextTimer !== null) return;
 
   let tick = 0;
   const renderTick = () => {
-    mobileLoadAscii.textContent = MOBILE_TAKEOVER_FRAMES[tick % MOBILE_TAKEOVER_FRAMES.length];
     if (!mobileLoadHasKnownTotal) renderMobileActivityBarSweep(tick);
     if (tick % 8 === 0) {
       mobileLoadAtmosphereText.textContent = MOBILE_ATMOSPHERE_PHRASES[(tick / 8) % MOBILE_ATMOSPHERE_PHRASES.length];
@@ -1144,16 +2547,32 @@ function startMobileTakeoverAnimation() {
   // above.
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
-  mobileTakeoverAnimationTimer = setInterval(renderTick, 550);
+  mobileTakeoverTextTimer = setInterval(renderTick, 550);
 }
 
-// Idempotent — safe to call even when nothing is running (every
-// syncMobileLoadState() exit path from "loading" calls this unconditionally
-// rather than trying to remember whether reduced-motion left it unset).
+function stopMobileTakeoverTextTicker() {
+  if (mobileTakeoverTextTimer === null) return;
+  clearInterval(mobileTakeoverTextTimer);
+  mobileTakeoverTextTimer = null;
+}
+
+// [V2-POLISH / MICRO-ARCADE-CANVAS]
+// The load-session lifecycle boundary, unchanged in shape from Stage 6:
+// syncMobileLoadState() still calls exactly these two, on exactly the same
+// not-loading -> loading and loading -> not-loading edges. Only what lives
+// behind them changed (ASCII frames -> pixel canvas), which is the whole
+// point of keeping the boundary — a future scene pool swaps the contents of
+// startArcadeAnimation() without touching this seam or the loader.
+// Both are idempotent; every exit path calls stop unconditionally rather
+// than tracking whether reduced-motion left a timer unset.
+function startMobileTakeoverAnimation() {
+  startMobileTakeoverTextTicker();
+  startArcadeAnimation();
+}
+
 function stopMobileTakeoverAnimation() {
-  if (mobileTakeoverAnimationTimer === null) return;
-  clearInterval(mobileTakeoverAnimationTimer);
-  mobileTakeoverAnimationTimer = null;
+  stopMobileTakeoverTextTicker();
+  stopArcadeAnimation();
 }
 
 // The single place that decides the mobile load state and writes it to the
