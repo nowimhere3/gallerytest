@@ -2773,11 +2773,12 @@ hr {
 
 /* [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT]
    WHAT: Hide and Undo are two separate, always-present controls at every
-   width ABOVE the ≤448px deep-compact tier (unchanged — see
+   width ABOVE the deep-compact tier (unchanged — see
    #pm-hide-undo-slot's `display: contents` base rule further down this
-   file). Only the ≤448px tier turns them into one true mutually-exclusive
-   slot; see that tier's own comment for the exact mechanism and its
-   fixed-geometry guarantee.
+   file). Only the deep-compact tier turns them into one true
+   mutually-exclusive slot; see that tier's own comment (its ceiling is
+   ≤576px as of [STAGE7-463-571-WRAP-FIX], raised from ≤448px) for the
+   exact mechanism and its fixed-geometry guarantee.
    PRIOR AUDIT (superseded): an earlier pass considered a literal one-slot
    swap unsafe, because main.js's `lastHiddenRelativePath !== null` (the
    truthful "Undo available" condition — see syncUndoHideButton()) stays
@@ -2816,11 +2817,12 @@ hr {
    Unlike .pm-automations-group (now a tray at every width — see
    [PM-AUTOMATIONS-CANONICAL]), Hide/Undo is untouched by that pass: this
    wrapper still uses `display: contents` unconditionally, making it
-   invisible to layout everywhere above the ≤448px tier, so
+   invisible to layout everywhere above the deep-compact tier, so
    #overlay-hide-btn/#overlay-undo-hide-btn render as direct flex items of
    .presentation-controls-bar exactly where they always have — wide PM is
-   completely unaffected by this wrapper's existence. The ≤448px override
-   turns it into a real, fixed-size single
+   completely unaffected by this wrapper's existence. The deep-compact
+   tier's override (≤576px as of [STAGE7-463-571-WRAP-FIX], raised from
+   ≤448px) turns it into a real, fixed-size single
    slot; see that tier's own comment. */
 .pm-hide-undo-slot {
   display: contents;
@@ -3657,15 +3659,65 @@ hr {
    demand.
    THREE NESTED TIERS, ALL COMPUTED (not guessed) against this eight-control
    budget — see each tier's own comment for its exact numbers:
-     ≤448px (this block) — 38px controls
-     ≤380px              — 34px controls
+     ≤576px (this block) — 38px controls (ceiling raised from 448px by
+                            [STAGE7-463-571-WRAP-FIX] below — see that note
+                            for why)
+     ≤400px              — 34px controls (was mistakenly coded as ≤380px
+                            until [STAGE7-378-402-WRAP-FIX] below corrected
+                            it to match this tier's own always-400px budget)
      ≤340px              — 32px controls, the true shrinkable floor
-   380px and 340px (not the brief's suggested "360"/"326") are this pass's
+   400px and 340px (not the brief's suggested "360"/"326") are this pass's
    own breakpoint choices: 340px matches the file's EXISTING ≤340px
    convention used for the ordinary transport a few hundred lines up, so a
    phone at ~326px inherits a tier already verified against a comparable
    width elsewhere in this file rather than a brand-new one-off number. */
-@media (max-width: 448px) {
+@media (max-width: 576px) {
+  /* [UI-REDESIGN / STAGE 7] [PM-DEEP-COMPACT-TOOLBAR] [STAGE7-463-571-WRAP-FIX]
+     WHAT: Ceiling raised from 448px to 576px — this tier's merged
+     Hide-or-Undo slot + 38px controls now also cover the width band that
+     used to fall to the ≤700px/≤520px tiers above (three separate flexible
+     text buttons — Hide, Undo, Exit — sharing whatever room was left after
+     six fixed icon buttons).
+     WHY: real-browser testing found the PM toolbar wrapping (⚙ Settings
+     onto a second row) across roughly 463–571px. Diagnosis: those two
+     wider tiers budget Hide+Undo+Exit as THREE independently-sized text
+     buttons against a bar capped at min(98vw, 440px)/min(97vw, 600px);
+     that combined budget (~144–161px there) is only marginally larger
+     than what three real rendered buttons need, and in practice wasn't
+     enough — with no further tier below 520px to hand off to before this
+     fix, that whole 449–520px span (and part of the 521–700px span) had
+     no safety margin. Rather than hand-tune three text buttons' padding
+     against an estimate I can't verify pixel-for-pixel without a browser,
+     this reuses the SAME merged-slot mechanism already verified safe by
+     real-browser testing at 360px and 448px: collapsing Hide/Undo into
+     one fixed-width slot removes a whole extra flexible text button (and
+     its gap) from the budget, which is what actually creates real margin
+     rather than a bare fit. The two widths this fix must not disturb —
+     448px (already this tier, unaffected) and 360px (the narrower ≤400px
+     tier below, unaffected) — both stay exactly as they were; only the
+     previously-broken 449–576px band changes rendering, and nothing
+     above 576px is touched (the ≤700px tier's own already-passing
+     521–700px range keeps its original 46px styling above this new
+     ceiling).
+     Verified across the full newly-covered range using this block's own
+     WIDTH BUDGET math below, plus the ≤520px/≤700px tiers' own
+     `.presentation-controls` width rules (unchanged, still what caps the
+     bar's outer width — this block only ever set `.presentation-controls-
+     bar`'s own internal sizing, never the outer wrapper's width):
+       449px  → outer bar capped at ~440px (≤520px rule) → 87px leftover
+                for Exit — same margin the real-browser-verified 448px
+                case already has.
+       520px  → same ~440px cap → 87px leftover, unchanged.
+       521px  → outer bar now governed by the ≤700px rule's min(97vw,600px)
+                instead (uncapped at this width, ≈505px) → 152px leftover.
+       576px  → ≈559px bar → 206px leftover.
+     Every point in the newly-covered range has at least as much margin as
+     the already-proven 448px case, so this is a strict improvement, not a
+     new unverified budget.
+     FUTURE: if a tier's ceiling and its own width-budget comment ever
+     drift apart again (as happened here and at
+     [STAGE7-378-402-WRAP-FIX]), treat that mismatch itself as the bug to
+     fix, not just the symptom. */
   /* WIDTH BUDGET (verified, not assumed), for the eight-position toolbar
      (♡ ⚡ ◀ ⏯ ▶ [Hide-or-Undo slot] Exit ⚙): bar width min(98vw, 440px) —
      at 448px viewport, 98vw = 439px, so the bar is 439px. Minus 16px
@@ -3673,7 +3725,11 @@ hr {
      Hide/Undo slot is a deliberate fixed 74px (see .pm-hide-undo-slot
      below); 7 gaps × 5px = 35px. That leaves 423 − 228 − 74 − 35 = 86px for
      Exit alone — comfortable margin over a four-letter word even with its
-     own padding. */
+     own padding. (This budget describes the 449–520px portion of this
+     tier's now-wider range, where the outer bar is still capped at 440px
+     by the ≤520px tier's own `.presentation-controls` rule; see
+     [STAGE7-463-571-WRAP-FIX] above for the rest of the range, which has
+     even more room.) */
   /* [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-POPOUT]
      WHAT: `flex-wrap: wrap` plus a softened `border-radius` — the
      Automations row (below) becomes a genuine second flex LINE inside this
@@ -3817,17 +3873,39 @@ hr {
   }
 }
 
-/* [UI-REDESIGN / STAGE 6] [PM-DEEP-COMPACT-TOOLBAR]
+/* [UI-REDESIGN / STAGE 7] [PM-DEEP-COMPACT-TOOLBAR] [STAGE7-378-402-WRAP-FIX]
+   WHAT: Ceiling corrected from 380px to 400px, matching the budget this
+   comment already computed below.
+   WHY: this comment's own math was always computed for a 400px ceiling
+   ("the widest viewport this tier covers") but the @media rule underneath
+   it was written as max-width: 380px — a stage 6 transcription mismatch
+   between the documented budget and the shipped breakpoint. That left
+   381–400px (confirmed in real-browser testing as a ~378–402px failing
+   band, browser/emulator width rounding included) falling through to the
+   deep-compact tier above instead (its ceiling was ≤448px at the time;
+   see [STAGE7-463-571-WRAP-FIX] on that tier for why it is now ≤576px),
+   whose fixed 38px controls were only budget-
+   verified at that tier's own 448px ceiling, not across its full range —
+   at 381–402px there isn't enough leftover width for Exit, so it (and
+   #overlay-btn-gear/⚙ Settings immediately after it in flex order) wraps
+   to a second row. Restoring the ceiling to 400px puts this whole band
+   back on the already-verified 34px-control budget below, with real
+   margin at both ends (84px leftover for Exit at 400px, 64px at 380px —
+   see the two computations immediately below, unchanged).
+   FUTURE: if this tier's ceiling is ever intentionally changed again, keep
+   the @media value and this comment's own width-budget arithmetic in sync
+   — this bug was exactly the two drifting apart.
    WIDTH BUDGET at 400px (the widest viewport this tier covers, since it
-   sits below the ≤448px tier above), for the eight-position toolbar:
+   sits below the deep-compact tier above), for the eight-position toolbar:
    bar width min(98vw, 440px) = 392px. Minus 12px padding (6px × 2) leaves
    380px. Six 34px icon controls take 204px; the Hide/Undo slot is a
    deliberate fixed 64px (see .pm-hide-undo-slot below); 7 gaps × 4px =
    28px. That leaves 380 − 204 − 64 − 28 = 84px for Exit alone.
-   At the tier's own 380px ceiling: bar = 372.4px ≈ 372px. Content = 372 −
-   12 = 360px. Remaining for Exit = 360 − 204 − 64 − 28 = 64px. Both ends of
-   this tier's range carry real margin, not a bare fit. */
-@media (max-width: 380px) {
+   At the tier's own 380px point (no longer the ceiling, still comfortably
+   inside this tier): bar = 372.4px ≈ 372px. Content = 372 − 12 = 360px.
+   Remaining for Exit = 360 − 204 − 64 − 28 = 64px. Both points carry real
+   margin, not a bare fit. */
+@media (max-width: 400px) {
   .presentation-controls-bar {
     --pm-control-size: 34px;
     --pm-icon-size: 15px;
@@ -3858,7 +3936,8 @@ hr {
   }
 
   /* [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT] Same fixed-slot
-     mechanism as the ≤448px tier, this tier's own narrower width. */
+     mechanism as the deep-compact tier (≤576px), this tier's own narrower
+     width. */
   .pm-hide-undo-slot {
     flex: 0 0 64px;
     width: 64px;
