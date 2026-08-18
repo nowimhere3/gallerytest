@@ -1124,6 +1124,39 @@ function renderMobileActivityBarSweep(tick) {
 // Deck, submarine/sonar and other media/arcade sequences. The same selected
 // scene can later power the planned desktop left-rail Live Status takeover.
 //
+// [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
+// WHAT: Micro-Arcade scenes use scene-specific framing and choreography
+// rather than a mandatory close-up/reveal formula. Close perspective is used
+// only where it naturally supports the action or improves readability.
+// WHY: Testing showed that forced close-ups and abrupt integer-scale
+// transitions can reduce scene quality even when they add sprite detail.
+// Full-machine, medium, wide, or close compositions should be chosen
+// according to what makes each tiny scene most readable and entertaining.
+// FUTURE: New Micro-Arcade scenes should optimize for composition,
+// silhouette, motion, timing and payoff rather than following a universal
+// camera template.
+//
+// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST] SUPERSEDED, not deleted — the
+// pass is still worth knowing about because its failure is instructive. It
+// staged every scene as CLOSE-UP -> RECEDE -> ACTION on the theory that a
+// large sprite teaches the viewer what the small one is. That held for
+// Starfighter, where the ship genuinely flies away from the camera, and it
+// was wrong everywhere else: the Projector's whole appeal is seeing the
+// mechanism work at once, Bigfoot's joke needs the clearing in frame, the
+// Pirate's conflict needs sea and monster sharing the canvas, and the UFO's
+// legibility problem was solved far better by drawing a more detailed
+// saucer than by moving a camera around a coarse one. What survives from
+// that pass is the detail work it produced — the 36x13 saucer, the hull gun
+// ports, the arm-swing walk cycle, the off-canvas cell culling — all of
+// which help at any framing.
+//
+// The dramatic shape scenes actually follow is ESTABLISH -> ACTION ->
+// ESCALATE -> PAYOFF -> LOOP. "Establish" means make the scene
+// understandable and appealing; it does not mean open on a giant sprite.
+// Where apparent depth IS used, two rules still apply: recede in integer
+// scale steps using the same mask, and keep apparent size monotonic across
+// the transition — anything that grows mid-recede reads as a cut.
+//
 // ARCHITECTURE — the split that keeps this from becoming a game engine:
 //   SHARED (below, then the controller at the bottom) owns the canvas, the
 //   palette, the pixel-drawing toolkit, timing, scene selection, looping,
@@ -1163,15 +1196,25 @@ const ARCADE_INK = { 1: "#0a5c22", 2: "#00b52a", 3: "#00ff00" };
 // fly-by. `inkOverride` flattens a mask to one intensity, which is how the
 // same tree/ship mask doubles as its own dim background copy.
 
+// Cells outside the canvas are skipped rather than handed to the context to
+// clip. [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST] made this worth doing: the
+// close-up passes deliberately crop large sprites against the frame edge (a
+// 102px bust, a 108px saucer entering from off-left), so a partially visible
+// sprite is now the normal case rather than the exception, and the invisible
+// half was costing a fillRect per cell per frame.
 function drawArcadeSprite(ctx, sprite, left, top, scale, inkOverride) {
   for (let r = 0; r < sprite.length; r++) {
+    const y = top + r * scale;
+    if (y + scale <= 0 || y >= ARCADE_HEIGHT) continue;
     const row = sprite[r];
     for (let c = 0; c < row.length; c++) {
       if (row[c] === ".") continue;
+      const x = left + c * scale;
+      if (x + scale <= 0 || x >= ARCADE_WIDTH) continue;
       const ink = inkOverride || ARCADE_INK[row[c]];
       if (!ink) continue;
       ctx.fillStyle = ink;
-      ctx.fillRect(left + c * scale, top + r * scale, scale, scale);
+      ctx.fillRect(x, y, scale, scale);
     }
   }
 }
@@ -1535,9 +1578,52 @@ function drawStarfighterScene(ctx, state, t, now) {
 //
 // Side-on he has no face at all; the stare pose is the only one with eyes,
 // so the reveal is a genuine change in silhouette rather than a pose swap.
-const BIGFOOT_DURATION_MS = 15000;
+const BIGFOOT_DURATION_MS = 21000;
 const BIGFOOT_GROUND_Y = 56;
 
+// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST]
+// The close-up bust: 34x20 drawn at scale 3 (102x60), which is most of the
+// canvas. Everything here is a landmark cue rather than detail for its own
+// sake — domed skull, heavy brow ridge as one bright band, deep-set dim eye
+// sockets, short muzzle with a bright nose, no visible neck, and shoulders
+// that slope from the jaw straight out past the frame edges. Those are what
+// separate "Bigfoot" from "a person" at this resolution.
+// The eye pixels are deliberately NOT baked into the mask (row 6 is all dim
+// socket): they are drawn afterwards from a gaze offset, which buys the
+// look-around and the blink from one sprite instead of five.
+const BIGFOOT_BUST = [
+  ".........." + "..2.22222222.2.." + "........",
+  "........." + "..222222222222.." + ".........",
+  "........." + ".22222222222222." + ".........",
+  "........." + "2222222222222222" + ".........",
+  "........." + "2233333333333322" + ".........",
+  "........." + "2211111111111122" + ".........",
+  "........." + "2211111111111122" + ".........",
+  "........." + "2211111111111122" + ".........",
+  "........." + "2222211111122222" + ".........",
+  "........." + "2222233333322222" + ".........",
+  "........." + "2222211111122222" + ".........",
+  "........." + ".22211111111222." + ".........",
+  "........." + "..222222222222.." + ".........",
+  "........." + "...2222222222..." + ".........",
+  "......." + "12222222222222222221" + ".......",
+  "...." + "12222222222222222222222221" + "....",
+  "." + "12222222222222222222222222222221" + ".",
+  "2222222222222222222222222222222222",
+  "2222222222222222222222222222222222",
+  "1222222222222222222222222222222221",
+];
+
+// Mask coordinates of the two eyes inside BIGFOOT_BUST, used by the gaze /
+// blink drawing below.
+const BF_BUST_EYE_ROW = 6;
+const BF_BUST_EYE_COLS = [12, 21];
+
+// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST]
+// The distant walk cycle now swings the ARMS as well as the legs — A throws
+// the left arm forward, B the right — and the caller bobs the whole body a
+// pixel between them. At 11x16 the legs alone were too small a change to
+// read as walking; the arm silhouette is what actually sells it.
 const BF_WALK_A = [
   "...22222...",
   "..2222222..",
@@ -1547,7 +1633,7 @@ const BF_WALK_A = [
   "..2222222..",
   ".222222222.",
   "22222222222",
-  "22222222222",
+  "2222222222.",
   ".222222222.",
   ".222222222.",
   "..2222222..",
@@ -1566,7 +1652,7 @@ const BF_WALK_B = [
   "..2222222..",
   ".222222222.",
   "22222222222",
-  "22222222222",
+  ".2222222222",
   ".222222222.",
   ".222222222.",
   "..2222222..",
@@ -1657,58 +1743,61 @@ function drawBigfootScene(ctx, state, t) {
   // (with a blink, a step closer, and a second blink), turn back, walk out,
   // empty forest again — which is the same frame the scene opened on, so the
   // loop closes without a cut.
+  // [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
+  // Framed medium-wide at a CONSTANT scale 2 (22x32) — no close-up, no scale
+  // ladder. Two reasons this beats the bust it replaces: at scale 2 he stands
+  // about as tall as the pines, so the forest reads as his environment rather
+  // than as wallpaper behind a portrait, and the joke needs the clearing in
+  // frame — a face filling the canvas has nowhere to walk out of. Holding one
+  // scale for the whole scene also removes the integer-scale pop entirely.
+  // ESTABLISH (0-1.5s empty forest) -> ACTION (walks in) -> PAYOFF (halt,
+  // turn, stare, blink, step closer) -> LOOP (walks out, forest empty again,
+  // which is the frame it opened on).
+  const scale = 2;
   let sprite = null;
-  let x = 0;
+  let cx = 0;
   let lift = 0;
 
   if (t < 1500) {
-    sprite = null;
-  } else if (t < 6600) {
-    x = arcadePath(
-      [
-        [1500, -14],
-        [6600, 74],
-      ],
-      t
-    );
-    sprite = Math.floor((t - 1500) / 210) % 2 === 0 ? BF_WALK_A : BF_WALK_B;
-    lift = Math.floor((t - 1500) / 210) % 2 === 0 ? 0 : -1;
-  } else if (t < 7100) {
-    x = 74;
+    return;
+  } else if (t < 8000) {
+    const step = Math.floor((t - 1500) / 230) % 2 === 0;
+    sprite = step ? BF_WALK_A : BF_WALK_B;
+    cx = arcadePath([[1500, -16], [8000, 80]], t);
+    lift = step ? 0 : -1;
+  } else if (t < 8600) {
     sprite = BF_WALK_B;
-  } else if (t < 11300) {
-    x = 74;
-    const s = t - 7100;
-    // The stare, with its own small beats so the hold never goes dead.
-    if (s < 1300) sprite = BF_STARE;
-    else if (s < 1520) sprite = BF_BLINK;
-    else if (s < 2400) sprite = BF_STARE;
-    else if (s < 3100) {
+    cx = 80;
+  } else if (t < 14000) {
+    cx = 80;
+    const s = t - 8600;
+    if (s < 1400) sprite = BF_STARE;
+    else if (s < 1650) sprite = BF_BLINK;
+    else if (s < 2900) sprite = BF_STARE;
+    else if (s < 3900) {
       sprite = BF_STARE;
       lift = 2; // one step closer to the camera
-    } else if (s < 3320) {
+    } else if (s < 4150) {
       sprite = BF_BLINK;
       lift = 2;
     } else {
       sprite = BF_STARE;
       lift = 2;
     }
-  } else if (t < 11700) {
-    x = 74;
+  } else if (t < 14600) {
     sprite = BF_WALK_B;
-  } else if (t < 14000) {
-    x = arcadePath(
-      [
-        [11700, 74],
-        [14000, 168],
-      ],
-      t
-    );
-    sprite = Math.floor((t - 11700) / 210) % 2 === 0 ? BF_WALK_A : BF_WALK_B;
-    lift = Math.floor((t - 11700) / 210) % 2 === 0 ? 0 : -1;
+    cx = 80;
+  } else if (t < 19500) {
+    const step = Math.floor((t - 14600) / 230) % 2 === 0;
+    sprite = step ? BF_WALK_A : BF_WALK_B;
+    cx = arcadePath([[14600, 80], [19500, 186]], t);
+    lift = step ? 0 : -1;
   }
 
-  if (sprite) drawArcadeSprite(ctx, sprite, Math.round(x), BIGFOOT_GROUND_Y - sprite.length + lift, 1);
+  if (sprite) {
+    const left = Math.round(cx - (sprite[0].length * scale) / 2);
+    drawArcadeSprite(ctx, sprite, left, BIGFOOT_GROUND_Y - sprite.length * scale + lift, scale);
+  }
 }
 
 // ---- SCENE 3: UFO file abduction ------------------------------------------
@@ -1721,16 +1810,29 @@ function drawBigfootScene(ctx, state, t) {
 // REPLACEMENT file fades in on the ground over the last second, so the scene
 // restarts already holding what it is about to lose. Without that, the loop
 // point popped a file back into existence out of nowhere.
-const UFO_DURATION_MS = 14000;
+const UFO_DURATION_MS = 20000;
 const UFO_GROUND_Y = 52;
 
-const UFO_SAUCER = [
-  ".......22222.......",
-  ".....222222222.....",
-  "..222222222222222..",
-  "3322222222222222233",
-  "..222222222222222..",
-  "......2223222......",
+// [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
+// THE saucer, 36x13, used at scale 1 for the whole scene. It replaced a
+// 19x6 version that was simply too coarse to read as a craft: this one has a
+// domed canopy with a highlight, a hull seam, evenly spaced rim light ports
+// and a distinct emitter. Detail where the viewer actually looks beat any
+// amount of camera movement around the smaller sprite.
+const UFO_SAUCER_BIG = [
+  "..............22333322..............",
+  "...........22333333333322...........",
+  ".........222222222222222222.........",
+  ".......2222222222222222222222.......",
+  ".....22222222222222222222222222.....",
+  "..22222222222222222222222222222222..",
+  "322223222232222322223222232222322223",
+  "322223222232222322223222232222322223",
+  "...222222222222222222222222222222...",
+  "......222222222222222222222222......",
+  ".........222222222222222222.........",
+  "............333333333333............",
+  "...............333333...............",
 ];
 
 const UFO_FILE = [
@@ -1788,17 +1890,24 @@ function drawUfoScene(ctx, state, t, now) {
   // ground. During the last second the target fades back in (dim then mid)
   // as the next delivery.
   let bystanderShake = 0;
-  if (t >= 4600 && t < 9400) bystanderShake = Math.sin(now / 90) > 0 ? 1 : 0;
+  if (t >= 5400 && t < 11400) bystanderShake = Math.sin(now / 90) > 0 ? 1 : 0;
   drawArcadeSprite(ctx, UFO_FILE, bystanderX + bystanderShake, fileTop, 1);
 
+  // [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
+  // The close flyby and the 3->2->1 recede are gone. The readability problem
+  // they were solving is fixed at the source instead: UFO_SAUCER_BIG (36x13,
+  // with canopy, hull seam, rim ports and emitter) is now simply THE saucer
+  // at scale 1, so the craft is legible for the whole scene without any
+  // camera move. A clean readable UFO established in its environment beats a
+  // pass that pops between scales.
   const saucerX = arcadePath(
     [
-      [0, -32],
-      [1200, -32],
-      [4000, targetX],
-      [9800, targetX],
-      [11400, 210],
-      [14000, 210],
+      [0, -40],
+      [1200, -40],
+      [4200, targetX],
+      [11800, targetX],
+      [13600, 210],
+      [20000, 210],
     ],
     t
   );
@@ -1807,40 +1916,40 @@ function drawUfoScene(ctx, state, t, now) {
   // Beam: a trapezoid of horizontal runs, narrow at the emitter and wide at
   // the ground, flickering between two intensities.
   let beamWidth = 0;
-  if (t >= 4600 && t < 5400) beamWidth = 3 + 8 * arcadeClamp01((t - 4600) / 800);
-  else if (t >= 5400 && t < 9200) beamWidth = 11;
-  else if (t >= 9200 && t < 9800) beamWidth = 11 * (1 - arcadeClamp01((t - 9200) / 600));
+  if (t >= 5400 && t < 6400) beamWidth = 3 + 8 * arcadeClamp01((t - 5400) / 1000);
+  else if (t >= 6400 && t < 11200) beamWidth = 11;
+  else if (t >= 11200 && t < 11800) beamWidth = 11 * (1 - arcadeClamp01((t - 11200) / 600));
 
   if (beamWidth > 0.5) {
     // Integer scanline stepping is load-bearing: saucerY carries a sine bob,
     // so a float `y` made the row-parity test below essentially never true
     // and the beam rendered flat dim instead of alternating intensities.
-    const beamTop = Math.round(saucerY) + 3;
+    const beamTop = Math.round(saucerY) + 12;
     const flicker = Math.sin(now / 55) > 0;
     for (let y = beamTop; y < UFO_GROUND_Y; y++) {
       const p = (y - beamTop) / (UFO_GROUND_Y - beamTop);
       const half = Math.max(1, Math.round((beamWidth * (0.35 + 0.65 * p)) / 2));
       ctx.fillStyle = (y + (flicker ? 0 : 1)) % 2 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
-      ctx.fillRect(Math.round(targetX + 9 - half), Math.round(y), half * 2, 1);
+      ctx.fillRect(Math.round(targetX + 18 - half), Math.round(y), half * 2, 1);
     }
   }
 
   // The abducted file: on the ground, then lifted, then gone.
-  if (t < 5400) {
-    drawArcadeSprite(ctx, UFO_FILE, targetX + 5, fileTop, 1);
-  } else if (t < 8600) {
-    const lift = easeInOutCubic(arcadeClamp01((t - 5400) / 3200));
-    const y = fileTop + (saucerY + 4 - fileTop) * lift;
-    drawArcadeSprite(ctx, UFO_FILE, targetX + 5, Math.round(y), 1);
-  } else if (t >= 13000) {
+  if (t < 6400) {
+    drawArcadeSprite(ctx, UFO_FILE, targetX + 14, fileTop, 1);
+  } else if (t < 10400) {
+    const lift = easeInOutCubic(arcadeClamp01((t - 6400) / 4000));
+    const y = fileTop + (saucerY + 9 - fileTop) * lift;
+    drawArcadeSprite(ctx, UFO_FILE, targetX + 14, Math.round(y), 1);
+  } else if (t >= 18800) {
     // The replacement arrives, dim first, so the loop point has something
     // already standing there.
-    const fade = arcadeClamp01((t - 13000) / 1000);
-    drawArcadeSprite(ctx, UFO_FILE, targetX + 5, fileTop, 1, fade > 0.55 ? ARCADE_INK[2] : ARCADE_INK[1]);
+    const fade = arcadeClamp01((t - 18800) / 1000);
+    drawArcadeSprite(ctx, UFO_FILE, targetX + 14, fileTop, 1, fade > 0.55 ? ARCADE_INK[2] : ARCADE_INK[1]);
   }
 
   // Departure streaks — the zip that sells the exit on a wide canvas.
-  if (t >= 9800 && t < 11400) {
+  if (t >= 11800 && t < 13600) {
     ctx.fillStyle = ARCADE_INK[1];
     for (let i = 1; i <= 5; i++) {
       const trailX = saucerX - i * 11;
@@ -1849,24 +1958,24 @@ function drawUfoScene(ctx, state, t, now) {
     }
   }
 
-  if (saucerX > -22 && saucerX < ARCADE_WIDTH + 22) {
-    drawArcadeSprite(ctx, UFO_SAUCER, Math.round(saucerX), Math.round(saucerY), 1);
+  if (saucerX > -38 && saucerX < ARCADE_WIDTH + 2) {
+    drawArcadeSprite(ctx, UFO_SAUCER_BIG, Math.round(saucerX), Math.round(saucerY), 1);
     // Running lights along the rim, chasing.
     const phase = Math.floor(now / 160) % 3;
     ctx.fillStyle = ARCADE_INK[3];
     for (let i = 0; i < 3; i++) {
       if (i !== phase) continue;
-      ctx.fillRect(Math.round(saucerX) + 3 + i * 6, Math.round(saucerY) + 4, 1, 1);
-      ctx.fillRect(Math.round(saucerX) + 15 - i * 6, Math.round(saucerY) + 4, 1, 1);
+      ctx.fillRect(Math.round(saucerX) + 2 + i * 7, Math.round(saucerY) + 6, 1, 1);
+      ctx.fillRect(Math.round(saucerX) + 33 - i * 7, Math.round(saucerY) + 6, 1, 1);
     }
   }
 
   // The swallow: one bright flash inside the saucer.
-  if (t >= 8600 && t < 9200) {
-    const flash = 1 - arcadeClamp01((t - 8600) / 600);
+  if (t >= 10400 && t < 11000) {
+    const flash = 1 - arcadeClamp01((t - 10400) / 600);
     ctx.fillStyle = flash > 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
     const w = Math.max(2, Math.round(15 * flash));
-    ctx.fillRect(Math.round(saucerX + 9 - w / 2), Math.round(saucerY + 2), w, 3);
+    ctx.fillRect(Math.round(saucerX + 18 - w / 2), Math.round(saucerY + 4), w, 3);
   }
 }
 
@@ -1940,6 +2049,9 @@ const PROJECTED_FRAMES = [
 // One speed curve drives both reels and the film. The 8000-9200 window is the
 // jam: alternating near-stall and over-run, which is what a slipping sprocket
 // actually looks like.
+// [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
+// RESTORED to the original pre-close-up curves. The whole mechanism visible
+// at once IS this scene, so it opens on the full machine and never cuts.
 function projectorSpeed(t) {
   if (t < 1500) return 0;
   if (t < 2500) return ((t - 1500) / 1000) * 0.006;
@@ -1968,6 +2080,13 @@ function updateProjectorState(state, t, dt) {
   state.film += speed * dt * 9;
 }
 
+// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST]
+// The establishing close-up: one big reel cropped by the left edge, the film
+// running right out of it through sprockets, and the gate it feeds. Drawn
+// from the same primitives as the booth but at a `scale` multiplier, and
+// positioned so that shrinking 3 -> 2 walks the reel toward exactly where
+// the booth's feed reel will be. That is what makes the cut to the wide
+// shot read as pulling back rather than as changing the subject.
 function drawProjectorScene(ctx, state, t, now) {
   const lamp = projectorLamp(t);
   const jamming = t >= 8000 && t < 9200;
@@ -2100,7 +2219,7 @@ const PIRATE_HULL = [
   ".3.3.3.3.3.3.3.3.3.3.3.3.3.3.",
   "33333333333333333333333333333",
   ".222222222222222222222222222.",
-  ".222222222222222222222222222.",
+  ".222221222222212222222122222.",
   "..2222222222222222222222222..",
   "...22222222222222222222222...",
   "....222222222222222222222....",
@@ -2160,11 +2279,11 @@ const PIRATE_MONSTER = [
   "....22222....",
 ];
 
+// Begins at 3800 where the establishing close-up hands off, at the same x
+// that close-up ends on, so the scale change is the only thing that moves.
 const PIRATE_SHIP_PATH = [
-  [0, -44],
-  [1400, -44],
-  [4200, 40],
-  [6000, 52],
+  [3800, 30],
+  [6000, 50],
   [11000, 58],
   [12400, 90],
   [13400, 104],
@@ -2202,6 +2321,34 @@ function drawPirateSea(ctx, t) {
   ctx.fillRect(0, ARCADE_HEIGHT - 2, ARCADE_WIDTH, 2);
 }
 
+// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST]
+// One ship renderer for both the establishing close-up and the sailing
+// scene — every offset is expressed in hull-mask units and multiplied by
+// `scale`, so the scale-2 close pass is provably the same vessel as the
+// scale-1 ship rather than a lookalike drawn twice.
+function drawPirateShip(ctx, hullLeft, deckY, scale, now, firing) {
+  const rig = Math.sin(now / 520) > 0 ? PIRATE_RIG_A : PIRATE_RIG_B;
+  const flag = Math.floor(now / 260) % 2 === 0 ? PIRATE_FLAG_A : PIRATE_FLAG_B;
+  drawArcadeSprite(ctx, PIRATE_HULL, hullLeft, deckY, scale);
+  drawArcadeSprite(ctx, rig, hullLeft + 7 * scale, deckY - rig.length * scale + scale, scale);
+  drawArcadeSprite(ctx, flag, hullLeft + 15 * scale, deckY - rig.length * scale - 2 * scale, scale);
+  drawArcadeLine(
+    ctx,
+    hullLeft + 28 * scale,
+    deckY + scale,
+    hullLeft + 34 * scale,
+    deckY - 2 * scale,
+    ARCADE_INK[2]
+  );
+
+  if (firing) {
+    ctx.fillStyle = ARCADE_INK[3];
+    ctx.fillRect(hullLeft + 29 * scale, deckY + 2 * scale, 4 * scale, 3 * scale);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(hullLeft + 33 * scale, deckY + scale, 3 * scale, 5 * scale);
+  }
+}
+
 function drawPirateScene(ctx, state, t, now) {
   // Moon and a couple of clouds, high and dim so they never fight the action.
   ctx.fillStyle = ARCADE_INK[1];
@@ -2217,6 +2364,13 @@ function drawPirateScene(ctx, state, t, now) {
 
   drawPirateSea(ctx, t);
 
+  // [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
+  // No establishing close-up. A full-ship entrance at scale 1 is the stronger
+  // composition here: the sea, the wave line, the mast and sail silhouette
+  // and the monster all have to share the frame for the conflict to read, and
+  // a scale-2 hull crowded every one of them out. The gun ports added to the
+  // hull mask during the close-up pass are KEPT — they improve the ship at
+  // every scale and cost nothing.
   const shipX = arcadePath(PIRATE_SHIP_PATH, t);
   // Ordinary bob, plus a hard rock when the near-miss lands beside the bow.
   let bob = Math.sin(now / 430) * 1.4;
@@ -2271,22 +2425,7 @@ function drawPirateScene(ctx, state, t, now) {
   // margin — past these bounds nothing it draws can land on the canvas, and
   // this is the heaviest scene in the pool.
   if (shipX > -PIRATE_HULL[0].length - 4 && shipX < ARCADE_WIDTH + 2) {
-    const rig = Math.sin(now / 520) > 0 ? PIRATE_RIG_A : PIRATE_RIG_B;
-    const hullLeft = Math.round(shipX);
-    drawArcadeSprite(ctx, PIRATE_HULL, hullLeft, deckY, 1);
-    drawArcadeSprite(ctx, rig, hullLeft + 7, deckY - rig.length + 1, 1);
-    const flag = Math.floor(now / 260) % 2 === 0 ? PIRATE_FLAG_A : PIRATE_FLAG_B;
-    drawArcadeSprite(ctx, flag, hullLeft + 15, deckY - rig.length - 1, 1);
-    // Bowsprit.
-    drawArcadeLine(ctx, hullLeft + 28, deckY + 1, hullLeft + 34, deckY - 2, ARCADE_INK[2]);
-
-    // Muzzle flash.
-    if (t >= 6100 && t < 6400) {
-      ctx.fillStyle = ARCADE_INK[3];
-      ctx.fillRect(hullLeft + 29, deckY + 2, 4, 3);
-      ctx.fillStyle = ARCADE_INK[2];
-      ctx.fillRect(hullLeft + 33, deckY + 1, 3, 5);
-    }
+    drawPirateShip(ctx, Math.round(shipX), deckY, 1, now, t >= 6100 && t < 6400);
   }
 
   // Cannonball: a real parabola across ~60px of open water. This is the beat
@@ -2364,16 +2503,16 @@ const ARCADE_SCENES = [
   {
     name: "bigfoot",
     durationMs: BIGFOOT_DURATION_MS,
-    // Mid-stare with the eyes OPEN. 8600 would land inside the blink beat,
-    // which is the one stare frame with no eyes in it at all.
-    stillAtMs: 8000,
+    // Mid-stare, eyes open, forest in frame — the scene's actual joke.
+    stillAtMs: 10000,
     fade: 0.92,
     draw: drawBigfootScene,
   },
   {
     name: "ufo-abduction",
     durationMs: UFO_DURATION_MS,
-    stillAtMs: 7000,
+    // Beam active with the file halfway lifted.
+    stillAtMs: 8000,
     fade: 0.8,
     draw: drawUfoScene,
   },
@@ -2389,6 +2528,7 @@ const ARCADE_SCENES = [
   {
     name: "pirate-ship",
     durationMs: PIRATE_DURATION_MS,
+    // Cannonball at the apex of its arc, ship and monster both in frame.
     stillAtMs: 7100,
     fade: 0.75,
     draw: drawPirateScene,
