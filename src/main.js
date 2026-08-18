@@ -1124,6 +1124,17 @@ function renderMobileActivityBarSweep(tick) {
 // Deck, submarine/sonar and other media/arcade sequences. The same selected
 // scene can later power the planned desktop left-rail Live Status takeover.
 //
+// [V2-POLISH / MICRO-ARCADE-CREATIVE-PACK]
+// WHAT: The Micro-Arcade pool was deliberately pruned and expanded around a
+// higher entertainment bar, with scene choreography delegated more heavily to
+// the implementer rather than predetermined through detailed storyboards.
+// WHY: The strongest scenes emerged when composition and animation served the
+// idea naturally. Scene concepts now define intent and emotional territory
+// while leaving framing, timing and choreography open to creative execution.
+// FUTURE: Keep only scenes that are genuinely enjoyable to watch. Prefer a
+// smaller pool of distinctive, high-quality micro-films over a large pool of
+// merely functional animations.
+//
 // [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
 // WHAT: Micro-Arcade scenes use scene-specific framing and choreography
 // rather than a mandatory close-up/reveal formula. Close perspective is used
@@ -1375,116 +1386,299 @@ function drawArcadeBurst(ctx, burst, now, lifeMs) {
 
 // ---- SCENE 1: starfighter -------------------------------------------------
 //
-// The approved prototype, re-staged for 160px. What the extra 32 columns buy:
-// the cruise lanes move from 40/88 out to 30/130, so lateral moves are long
-// enough to read as flying rather than sidestepping; enemies now use five
-// lanes instead of three; and the dodge clears by ~40px instead of ~23px,
-// which is the difference between "it moved" and "that was close".
-// Structure is unchanged: under-belly intro, pull-away, lower-third arcade
-// mode, firing, dodging, enemy attack, explosions, fly-back-over-camera loop.
-const ARCADE_SHIP = [
-  ".......3.......",
-  "......323......",
-  "......323......",
-  ".....32223.....",
-  ".....32223.....",
-  "..2..32223..2..",
-  ".2222222222222.",
-  "..222.323.222..",
-  "..2...323...2..",
-  "......3.3......",
-  "......1.1......",
+// [V2-POLISH / STARFIGHTER-FLAGSHIP]
+// WHAT: The original Starfighter Micro-Arcade prototype was expanded into a
+// longer authored cinematic dogfight with richer spacecraft detail, multiple
+// combat beats, enemy variation, environmental hazards, a distinct climax,
+// and an integrated return-to-camera loop.
+// WHY: Starfighter naturally supports near-to-far perspective because
+// physical recession is part of the scene itself. The expanded timeline
+// gives the battle enough space to read clearly and avoids excessive
+// repetition during real library loads.
+// FUTURE: Treat Starfighter as a quality benchmark for action-oriented
+// Micro-Arcade scenes: readable silhouettes, composition-driven perspective,
+// meaningful choreography, distinct escalation and payoff, and no
+// unnecessary gameplay architecture.
+//
+// HOW THE NEAR->FAR TRANSITION AVOIDS SCALE POPPING — the quality gate of
+// this rebuild. Three things, together:
+//   1. FIVE authored sizes, not integer scaling of one mask. Every size is
+//      generated from ONE shared profile by buildFighterMask(), so the
+//      silhouette — nose, canopy, swept delta, wingtip lights, twin engine
+//      cores — is provably identical at every distance. The eye tracks the
+//      shape, so the shape must not change.
+//   2. Gentle ratios. 73 -> 49 -> 33 -> 23 -> 15 px is about x0.67 per step,
+//      versus the old 75 -> 15 in three violent jumps. Each step is near the
+//      threshold where a size change reads as distance rather than as a cut.
+//   3. Every step is COVERED by motion: the ship is translating and banking
+//      through the swap, the engine plume shortens with distance, and the
+//      starfield streaks hardest exactly across the transition. A size
+//      change the viewer is not looking at is a size change they do not see.
+const SF_DURATION_MS = 28000;
+
+// One profile, five distances. `bank` squeezes one half-span and stretches
+// the other, which changes the SILHOUETTE rather than just sliding the
+// sprite — a banking ship has to look banked, not merely displaced.
+function buildFighterMask(w, h, bank) {
+  const width = 2 * w + 1;
+  const cx = w;
+  const g = Array.from({ length: h }, () => new Array(width).fill("."));
+  const put = (r, c, ch) => {
+    if (r >= 0 && r < h && c >= 0 && c < width) g[r][c] = ch;
+  };
+
+  for (let r = 0; r < h; r++) {
+    const p = r / (h - 1);
+    const fus = Math.max(0, Math.round(w * (0.08 + 0.26 * Math.min(1, p * 2.4))));
+    let wing = 0;
+    if (p >= 0.4 && p <= 0.86) {
+      const wp = (p - 0.4) / 0.46;
+      wing = Math.round(w * (0.3 + 0.7 * Math.min(1, wp * 1.6)));
+      if (wp > 0.72) wing = Math.round(wing * (1 - (wp - 0.72) * 2));
+    }
+    const half = Math.max(fus, wing);
+    const lh = Math.max(0, Math.round(half * (bank > 0 ? 0.62 : 1)));
+    const rh = Math.max(0, Math.round(half * (bank < 0 ? 0.62 : 1)));
+    for (let c = cx - lh; c <= cx + rh; c++) put(r, c, "2");
+  }
+
+  // Canopy — the single brightest mass, and the cue that reads as "cockpit"
+  // even when the whole ship is 15px wide.
+  for (let r = Math.round(h * 0.18); r <= Math.round(h * 0.36); r++) {
+    const cw = Math.max(0, Math.round(w * 0.1));
+    for (let c = cx - cw; c <= cx + cw; c++) put(r, c, "3");
+  }
+  put(0, cx, "3");
+
+  // Twin engine cores.
+  const eRow = h - Math.max(1, Math.round(h * 0.12)) - 1;
+  const eOff = Math.max(1, Math.round(w * 0.22));
+  for (let d = 0; d <= Math.max(0, Math.round(h * 0.06)); d++) {
+    put(eRow + d, cx - eOff, "3");
+    put(eRow + d, cx + eOff, "3");
+  }
+
+  // Wingtip navigation lights.
+  for (let r = 0; r < h; r++) {
+    const p = r / (h - 1);
+    if (p <= 0.62 || p >= 0.72) continue;
+    const row = g[r];
+    const lit = row.indexOf("2");
+    if (lit < 0) continue;
+    let rit = width - 1;
+    while (rit > 0 && row[rit] === ".") rit -= 1;
+    put(r, lit, "3");
+    put(r, rit, "3");
+  }
+
+  return { mask: g.map((r) => r.join("")), engineOff: eOff, w, h };
+}
+
+// XL is the close pass; S is the combat size. The two intermediate steps
+// exist purely so no single change in apparent size is large enough to read
+// as a cut.
+const SF_XL = buildFighterMask(36, 35, 0);
+const SF_L = buildFighterMask(24, 25, 0);
+const SF_M = buildFighterMask(16, 17, 0);
+const SF_SM = buildFighterMask(11, 13, 0);
+const SF_S = buildFighterMask(7, 11, 0);
+const SF_S_BANK_L = buildFighterMask(7, 11, -1);
+const SF_S_BANK_R = buildFighterMask(7, 11, 1);
+const SF_XL_BANK_L = buildFighterMask(36, 35, -1);
+const SF_XL_BANK_R = buildFighterMask(36, 35, 1);
+const SF_RECEDE = [SF_XL, SF_L, SF_M, SF_SM, SF_S];
+
+// Three enemy silhouettes, each deliberately unlike the player's delta.
+// SCOUT is a round drone, INTERCEPTOR a wide downward chevron, HEAVY a
+// blocky cruiser — distinguishable at a glance by outline alone.
+const SF_SCOUT = ["..333..", ".32223.", "3222223", ".22222.", "..2.2.."];
+
+const SF_INTERCEPTOR = ["22222222222", "12222222221", ".233333332.", "..2333332..", "....333...."];
+
+const SF_HEAVY = [
+  "...22222222222...",
+  ".222222222222222.",
+  "22222333333322222",
+  "22233333333333222",
+  "32233333333333223",
+  "22233333333333222",
+  "22222333333322222",
+  ".222222222222222.",
+  "....222222222....",
 ];
 
-const ARCADE_DRONE = ["..333..", ".32223.", "3222223", ".22222.", "..2.2.."];
+const SF_ROCK = [".22..", "22322", "23222", ".222."];
 
-const ARCADE_ROCK = [".22..", "22322", "23222", ".222."];
+// ---- timeline -------------------------------------------------------------
+// CLOSE PASS   0     - 4000   hull fills frame, banking, stars streaking
+// RECESSION    4000  - 7000   five sizes over 3s, covered by motion
+// DOGFIGHT     7000  - 20000  beats A..E
+// CLIMAX       20000 - 25200  the heavy
+// RETURN       25200 - 28000  grows back over the camera, loop seam
+const SF_PASS_MS = 4000;
+const SF_RECEDE_MS = 7000;
+const SF_FIGHT_MS = 20000;
+const SF_CLIMAX_MS = 25200;
 
-const SF_INTRO_MS = 2200;
-const SF_PLAY_MS = 11100;
-const SF_OUTRO_MS = 1700;
-const SF_DURATION_MS = SF_INTRO_MS + SF_PLAY_MS + SF_OUTRO_MS;
+const SF_SHIP_Y = 50;
+const SF_NOSE_Y = 44;
+const SF_ENEMY_VY = 0.024;
+const SF_BULLET_VY = -0.085;
+const SF_HAZARD_VY = 0.042;
 
-const SF_SHIP_CY = 50;
-const SF_SHIP_NOSE_Y = 44;
-const SF_ENEMY_VY = 0.025;
-const SF_BULLET_VY = -0.08;
-const SF_HAZARD_VY = 0.045;
-
-// The 5500 -> 6500 leg is the dodge: the gunner fires down column 96 at
-// t=5600 and its shot reaches the fighter's row around 6100, by which time
-// this path has carried the fighter out past x=56.
+// Lateral flight path for the whole battle, in scene time. The dodges at
+// 11200 and 18300 are authored to be clear of incoming fire; the long
+// 12800->14600 sweep is the pursuit.
 const SF_SHIP_PATH = [
-  [0, 80],
-  [1000, 80],
-  [1700, 34],
-  [2900, 34],
-  [3400, 126],
-  [4700, 126],
-  [5100, 96],
-  [5500, 96],
-  [6500, 30],
-  [7900, 30],
-  [8700, 130],
-  [9400, 130],
-  [10100, 80],
-  [11100, 80],
+  [7000, 80],
+  [8000, 80],
+  [8700, 44],
+  [9800, 44],
+  [10600, 96],
+  [11200, 96],
+  [12100, 30],
+  [12800, 30],
+  [14600, 132],
+  [15400, 132],
+  [16200, 60],
+  [17200, 96],
+  [17900, 96],
+  [18300, 24],
+  [19200, 24],
+  [19900, 80],
+  [21000, 80],
+  [21700, 128],
+  [22600, 128],
+  [23200, 80],
+  [24600, 80],
+  [25200, 80],
 ];
 
+// kind: scout | interceptor | heavy. fireAt fires one aimed shot downward.
+//
+// Every enemy's x is the x the SHIP PATH actually puts the fighter at when
+// it fires, and every spawn time is solved backwards from the intended
+// collision height so the shot connects where it is meant to. Hand-picking
+// round numbers for these produced a scene whose climax silently never hit —
+// the heavy sat at x=80 while the fighter fired from x=128 — which is
+// exactly the kind of miss that looks like "nothing happened" rather than
+// like a bug. The numbers below are solved, not guessed.
 const SF_ENEMIES = [
-  { t: 800, x: 34, kind: "drone" },
-  { t: 800, x: 126, kind: "drone" },
-  { t: 2500, x: 126, kind: "drone" },
-  { t: 4500, x: 96, kind: "drone", fireAt: 5600 },
-  { t: 7000, x: 30, kind: "drone" },
-  { t: 7000, x: 130, kind: "rock" },
+  // BEAT A — first contact: a formation drifts in, two die.
+  { t: 7080, x: 70, kind: "scout" },
+  { t: 8090, x: 44, kind: "scout" },
+  { t: 7300, x: 120, kind: "scout" },
+  // BEAT B — crossing attack with return fire, then a kill.
+  { t: 9885, x: 96, kind: "interceptor", fireAt: 10500 },
+  { t: 10200, x: 140, kind: "scout" },
+  // BEAT C — pursuit across the full width, three exchanges.
+  { t: 11880, x: 41, kind: "scout" },
+  { t: 12990, x: 92, kind: "interceptor" },
+  { t: 13830, x: 132, kind: "scout" },
+  // BEAT E — ambush: two vectors at once, crossfire, counterattack.
+  { t: 17585, x: 24, kind: "interceptor", fireAt: 17900 },
+  { t: 17200, x: 128, kind: "scout", fireAt: 18200 },
+  { t: 18490, x: 40, kind: "scout" },
+  // CLIMAX — three hits required, all from x=80 where the path parks.
+  { t: 20200, x: 80, kind: "heavy", fireAt: 21400 },
 ];
 
-// Each entry fires from wherever SF_SHIP_PATH has the fighter at that instant,
-// which is why the path parks it under a target just beforehand.
-const SF_SHOTS = [1800, 3700, 7800, 8800];
+// Extra aimed shots from the heavy, so the climax threat fires a pattern
+// rather than a single pellet.
+const SF_HEAVY_VOLLEY = [21400, 22100, 22800];
 
-const SF_STARS = Array.from({ length: 30 }, (_, i) => ({
+const SF_SHOTS = [8200, 9000, 10900, 13000, 13900, 14900, 18600, 19400, 21900, 23400, 23700, 24000];
+
+// BEAT D — a drifting debris field the fighter threads through. Bullets
+// destroy fragments; the fighter simply flies among them.
+const SF_DEBRIS = [
+  { t: 15100, x: 20 },
+  { t: 15100, x: 58 },
+  { t: 15400, x: 104 },
+  { t: 15400, x: 140 },
+  { t: 15900, x: 38 },
+  { t: 15900, x: 122 },
+  { t: 16400, x: 76 },
+];
+
+const SF_STARS = Array.from({ length: 40 }, (_, i) => ({
   x: (i * 37) % ARCADE_WIDTH,
   y: (i * 53) % ARCADE_HEIGHT,
-  depth: 0.35 + ((i * 17) % 10) / 12,
+  depth: 0.3 + ((i * 17) % 12) / 13,
 }));
 
 function createStarfighterState() {
-  return { enemies: [], bullets: [], hazards: [], bursts: [], spawned: 0, fired: 0 };
+  return { enemies: [], bullets: [], hazards: [], debris: [], bursts: [], spawned: 0, fired: 0, rocks: 0, volley: 0 };
+}
+
+// Star speed carries the whole depth illusion, so it is driven by the phase
+// rather than being constant: fast during the close pass and both accel
+// phases, slow while the dogfight needs a calm background.
+function starfighterStarSpeed(t) {
+  if (t < SF_PASS_MS) return 0.05;
+  if (t < SF_RECEDE_MS) return 0.115;
+  if (t < SF_FIGHT_MS) return 0.014;
+  if (t < SF_CLIMAX_MS) return 0.02;
+  return 0.13;
+}
+
+function starfighterShipX(t) {
+  return arcadePath(SF_SHIP_PATH, t);
 }
 
 function updateStarfighter(state, t, dt, now) {
-  const flying = t < SF_INTRO_MS || t > SF_INTRO_MS + SF_PLAY_MS;
-  const starSpeed = flying ? 0.075 : 0.016;
+  const speed = starfighterStarSpeed(t);
   for (const star of SF_STARS) {
-    star.y += starSpeed * star.depth * dt;
+    star.y += speed * star.depth * dt;
     if (star.y > ARCADE_HEIGHT) {
       star.y -= ARCADE_HEIGHT;
       star.x = (star.x + 41) % ARCADE_WIDTH;
     }
   }
 
-  const a = t - SF_INTRO_MS;
-  if (a < 0 || a > SF_PLAY_MS) return;
+  if (t < SF_RECEDE_MS || t > SF_CLIMAX_MS) return;
 
-  while (state.spawned < SF_ENEMIES.length && SF_ENEMIES[state.spawned].t <= a) {
+  while (state.spawned < SF_ENEMIES.length && SF_ENEMIES[state.spawned].t <= t) {
     const def = SF_ENEMIES[state.spawned];
-    state.enemies.push({ x: def.x, y: -6, kind: def.kind, fireAt: def.fireAt || 0, fired: false, dead: false });
+    state.enemies.push({
+      x: def.x,
+      y: def.kind === "heavy" ? -10 : -6,
+      kind: def.kind,
+      hp: def.kind === "heavy" ? 3 : 1,
+      fireAt: def.fireAt || 0,
+      fired: false,
+      dead: false,
+    });
     state.spawned += 1;
   }
-  while (state.fired < SF_SHOTS.length && SF_SHOTS[state.fired] <= a) {
-    state.bullets.push({ x: arcadePath(SF_SHIP_PATH, SF_SHOTS[state.fired]), y: SF_SHIP_NOSE_Y, dead: false });
+  while (state.fired < SF_SHOTS.length && SF_SHOTS[state.fired] <= t) {
+    state.bullets.push({ x: starfighterShipX(SF_SHOTS[state.fired]), y: SF_NOSE_Y, dead: false });
     state.fired += 1;
+  }
+  while (state.rocks < SF_DEBRIS.length && SF_DEBRIS[state.rocks].t <= t) {
+    state.debris.push({ x: SF_DEBRIS[state.rocks].x, y: -6, dead: false });
+    state.rocks += 1;
+  }
+
+  const heavy = state.enemies.find((e) => e.kind === "heavy" && !e.dead);
+  while (state.volley < SF_HEAVY_VOLLEY.length && SF_HEAVY_VOLLEY[state.volley] <= t) {
+    if (heavy) {
+      // A spread, not a pellet — this is what makes the heavy read as a
+      // different class of threat.
+      for (const off of [-7, 0, 7]) state.hazards.push({ x: heavy.x + off, y: heavy.y + 6 });
+    }
+    state.volley += 1;
   }
 
   for (const enemy of state.enemies) {
-    enemy.y += SF_ENEMY_VY * dt;
-    if (!enemy.fired && enemy.fireAt && a >= enemy.fireAt) {
+    enemy.y += SF_ENEMY_VY * dt * (enemy.kind === "heavy" ? 0.42 : 1);
+    if (enemy.kind === "heavy" && enemy.y > 16) enemy.y = 16;
+    if (!enemy.fired && enemy.fireAt && t >= enemy.fireAt && enemy.kind !== "heavy") {
       enemy.fired = true;
       state.hazards.push({ x: enemy.x, y: enemy.y + 3 });
     }
   }
+  for (const rock of state.debris) rock.y += SF_ENEMY_VY * 0.85 * dt;
   for (const bullet of state.bullets) bullet.y += SF_BULLET_VY * dt;
   for (const hazard of state.hazards) hazard.y += SF_HAZARD_VY * dt;
 
@@ -1492,491 +1686,148 @@ function updateStarfighter(state, t, dt, now) {
     if (bullet.dead) continue;
     for (const enemy of state.enemies) {
       if (enemy.dead) continue;
-      const halfW = enemy.kind === "rock" ? 3 : 4;
-      if (Math.abs(bullet.x - enemy.x) <= halfW && Math.abs(bullet.y - enemy.y) <= 4) {
-        enemy.dead = true;
+      const halfW = enemy.kind === "heavy" ? 9 : enemy.kind === "interceptor" ? 6 : 4;
+      const halfH = enemy.kind === "heavy" ? 5 : 4;
+      if (Math.abs(bullet.x - enemy.x) <= halfW && Math.abs(bullet.y - enemy.y) <= halfH) {
         bullet.dead = true;
-        state.bursts.push({ x: enemy.x, y: enemy.y, born: now, seed: (enemy.x % 7) * 0.9 });
+        enemy.hp -= 1;
+        if (enemy.hp <= 0) {
+          enemy.dead = true;
+          state.bursts.push({
+            x: enemy.x,
+            y: enemy.y,
+            born: now,
+            seed: (enemy.x % 7) * 0.9,
+            reach: enemy.kind === "heavy" ? 30 : enemy.kind === "interceptor" ? 12 : 9,
+            life: enemy.kind === "heavy" ? 1500 : 460,
+          });
+        } else {
+          // Non-fatal hit: a small spark, so shots that do not kill still
+          // read as landing.
+          state.bursts.push({ x: bullet.x, y: enemy.y + 3, born: now, seed: 2.1, reach: 5, life: 240 });
+        }
+        break;
+      }
+    }
+    if (bullet.dead) continue;
+    for (const rock of state.debris) {
+      if (rock.dead) continue;
+      if (Math.abs(bullet.x - rock.x) <= 3 && Math.abs(bullet.y - rock.y) <= 3) {
+        rock.dead = true;
+        bullet.dead = true;
+        state.bursts.push({ x: rock.x, y: rock.y, born: now, seed: 1.4, reach: 7, life: 380 });
       }
     }
   }
 
-  state.enemies = state.enemies.filter((e) => !e.dead && e.y < ARCADE_HEIGHT + 8);
+  state.enemies = state.enemies.filter((e) => !e.dead && e.y < ARCADE_HEIGHT + 10);
+  state.debris = state.debris.filter((r) => !r.dead && r.y < ARCADE_HEIGHT + 8);
   state.bullets = state.bullets.filter((b) => !b.dead && b.y > -6);
   state.hazards = state.hazards.filter((h) => h.y < ARCADE_HEIGHT + 6);
-  state.bursts = state.bursts.filter((b) => now - b.born < ARCADE_BURST_MS);
+  state.bursts = state.bursts.filter((b) => now - b.born < (b.life || ARCADE_BURST_MS));
+}
+
+// Engine plume, drawn beneath whichever hull size is current. Length scales
+// with the hull so it shortens naturally with distance — one of the cues
+// carrying the recession.
+function drawFighterPlume(ctx, entry, left, top, thrust, now) {
+  const cx = left + entry.w;
+  const baseY = top + entry.h;
+  const unit = Math.max(1, Math.round(entry.w / 7));
+  const pulse = Math.floor(now / 70) % 3;
+  const bands = [
+    [ARCADE_INK[3], unit * (1 + pulse) * thrust],
+    [ARCADE_INK[2], unit * 2 * thrust],
+    [ARCADE_INK[1], unit * (1 + ((pulse + 1) % 3)) * thrust],
+  ];
+  for (const side of [-1, 1]) {
+    let y = baseY - unit;
+    for (const [ink, len] of bands) {
+      const h = Math.max(1, Math.round(len));
+      ctx.fillStyle = ink;
+      ctx.fillRect(Math.round(cx + side * entry.engineOff - unit / 2), Math.round(y), Math.max(1, unit), h);
+      y += h;
+    }
+  }
 }
 
 function drawStarfighterScene(ctx, state, t, now) {
-  const flying = t < SF_INTRO_MS || t > SF_INTRO_MS + SF_PLAY_MS;
+  // Background: stars streak when the ship is moving through depth and sit
+  // still during the dogfight, so speed is legible without any HUD.
+  const streak = starfighterStarSpeed(t) > 0.04;
   ctx.fillStyle = ARCADE_INK[1];
-  for (const star of SF_STARS) ctx.fillRect(Math.round(star.x), Math.round(star.y), 1, flying ? 3 : 1);
+  for (const star of SF_STARS) {
+    const bright = star.depth > 1.1;
+    ctx.fillStyle = bright ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(Math.round(star.x), Math.round(star.y), 1, streak ? Math.round(2 + star.depth * 3) : 1);
+  }
 
-  let shipCx = ARCADE_WIDTH / 2;
-  let shipCy = SF_SHIP_CY;
-  let scale = 1;
+  let entry = SF_S;
+  let cx = ARCADE_WIDTH / 2;
+  let cy = SF_SHIP_Y;
+  let thrust = 1;
 
-  if (t < SF_INTRO_MS) {
-    const p = easeInOutCubic(t / SF_INTRO_MS);
-    scale = Math.max(1, Math.round(5 - 4 * p));
-    shipCy = 24 + (SF_SHIP_CY - 24) * p;
-  } else if (t < SF_INTRO_MS + SF_PLAY_MS) {
-    const a = t - SF_INTRO_MS;
-    shipCx = arcadePath(SF_SHIP_PATH, a);
-    shipCy = SF_SHIP_CY + Math.sin(a / 520);
+  if (t < SF_PASS_MS) {
+    // CLOSE PASS. Never static: the hull drifts, banks through the middle of
+    // the beat, and rides a slow vertical float.
+    const p = t / SF_PASS_MS;
+    const bankPhase = Math.sin(p * Math.PI * 1.4);
+    entry = bankPhase > 0.45 ? SF_XL_BANK_R : bankPhase < -0.45 ? SF_XL_BANK_L : SF_XL;
+    cx = 80 + Math.sin(p * Math.PI * 1.1) * 16;
+    cy = 26 + p * 8 + Math.sin(now / 520) * 1.5;
+    thrust = 1.5 + Math.sin(now / 90) * 0.25;
+  } else if (t < SF_RECEDE_MS) {
+    // RECESSION.
+    const p = (t - SF_PASS_MS) / (SF_RECEDE_MS - SF_PASS_MS);
+    const idx = Math.min(SF_RECEDE.length - 1, Math.floor(p * SF_RECEDE.length));
+    entry = SF_RECEDE[idx];
+    const e = easeInOutCubic(p);
+    cx = 80 + Math.sin(p * Math.PI) * 14;
+    cy = 30 + (SF_SHIP_Y - 30) * e;
+    thrust = 1.8 - 0.8 * e;
+  } else if (t <= SF_CLIMAX_MS) {
+    // COMBAT. Bank state is derived from actual lateral velocity, so the
+    // ship banks because it is turning rather than on a timer.
+    cx = starfighterShipX(t);
+    const dx = starfighterShipX(Math.min(SF_CLIMAX_MS, t + 120)) - cx;
+    entry = dx > 5 ? SF_S_BANK_R : dx < -5 ? SF_S_BANK_L : SF_S;
+    cy = SF_SHIP_Y + Math.sin(t / 520);
+    thrust = Math.abs(dx) > 5 ? 1.4 : 1;
   } else {
-    const p = easeInOutCubic((t - SF_INTRO_MS - SF_PLAY_MS) / SF_OUTRO_MS);
-    scale = Math.max(1, Math.round(1 + 4 * p));
-    shipCy = SF_SHIP_CY + (24 - SF_SHIP_CY) * p;
+    // RETURN. The recession list played backwards, so the last frame of the
+    // scene is the same hull at the same scale the first frame opens on.
+    const p = (t - SF_CLIMAX_MS) / (SF_DURATION_MS - SF_CLIMAX_MS);
+    const idx = Math.min(SF_RECEDE.length - 1, Math.floor((1 - p) * SF_RECEDE.length));
+    entry = SF_RECEDE[idx];
+    const e = easeInOutCubic(p);
+    cx = 80 + Math.sin((1 - p) * Math.PI) * 14;
+    cy = SF_SHIP_Y + (26 - SF_SHIP_Y) * e;
+    thrust = 1 + 0.9 * e;
   }
 
+  // Enemies, debris, fire.
+  for (const rock of state.debris) drawArcadeSpriteCentered(ctx, SF_ROCK, rock.x, rock.y, 1);
   for (const enemy of state.enemies) {
-    drawArcadeSpriteCentered(ctx, enemy.kind === "rock" ? ARCADE_ROCK : ARCADE_DRONE, enemy.x, enemy.y, 1);
+    const sprite = enemy.kind === "heavy" ? SF_HEAVY : enemy.kind === "interceptor" ? SF_INTERCEPTOR : SF_SCOUT;
+    drawArcadeSpriteCentered(ctx, sprite, enemy.x, enemy.y, 1);
   }
+
+  // Player fire is a long bright lance; enemy fire is a short mid-tone
+  // dash. Different length, different brightness, opposite direction —
+  // three independent cues so they never read as the same object.
   ctx.fillStyle = ARCADE_INK[3];
-  for (const bullet of state.bullets) ctx.fillRect(Math.round(bullet.x), Math.round(bullet.y), 1, 3);
+  for (const bullet of state.bullets) ctx.fillRect(Math.round(bullet.x), Math.round(bullet.y), 1, 4);
   ctx.fillStyle = ARCADE_INK[2];
-  for (const hazard of state.hazards) ctx.fillRect(Math.round(hazard.x), Math.round(hazard.y), 1, 2);
+  for (const hazard of state.hazards) ctx.fillRect(Math.round(hazard.x), Math.round(hazard.y), 2, 2);
 
-  const box = drawArcadeSpriteCentered(ctx, ARCADE_SHIP, shipCx, shipCy, scale);
+  const left = Math.round(cx - entry.w);
+  const top = Math.round(cy - entry.h / 2);
+  drawFighterPlume(ctx, entry, left, top, thrust, now);
+  drawArcadeSprite(ctx, entry.mask, left, top, 1);
 
-  // Engine wash, only while the hull is close enough for it to read. Sprite
-  // columns 6 and 8 are the two engine bells; the plume starts ON the
-  // sprite's own exhaust row (10) and overwrites it, so the three bands read
-  // as one continuous flame tapering bright -> mid -> dim.
-  if (scale > 1) {
-    const pulse = Math.floor(now / 70) % 3;
-    const bands = [
-      [ARCADE_INK[3], scale * (1 + pulse)],
-      [ARCADE_INK[2], scale * 2],
-      [ARCADE_INK[1], scale * (1 + ((pulse + 1) % 3))],
-    ];
-    for (const col of [6, 8]) {
-      let y = box.top + 10 * scale;
-      for (const [ink, length] of bands) {
-        ctx.fillStyle = ink;
-        ctx.fillRect(box.left + col * scale, y, scale, length);
-        y += length;
-      }
-    }
-  }
+  for (const burst of state.bursts) drawArcadeBurst(ctx, burst, now, burst.life);
 
-  for (const burst of state.bursts) drawArcadeBurst(ctx, burst, now);
-
-  // Score-style readout of the REAL number of files loaded so far. Purely a
-  // mirror; when nothing is counted yet it simply is not drawn.
   if (mobileLoadLoadedCount > 0) drawArcadeNumber(ctx, mobileLoadLoadedCount, 3, 3, ARCADE_INK[1]);
-}
-
-// ---- SCENE 2: bigfoot encounter -------------------------------------------
-//
-// Character comedy, not action. The whole scene is built around one joke: he
-// stops, turns, and looks straight at you. Everything else — the empty-forest
-// beats at both ends, the long walk-in, the deliberate hold — exists to give
-// that beat somewhere to land. The 160px width is what makes the walk read as
-// travel rather than a shuffle.
-//
-// Side-on he has no face at all; the stare pose is the only one with eyes,
-// so the reveal is a genuine change in silhouette rather than a pose swap.
-const BIGFOOT_DURATION_MS = 21000;
-const BIGFOOT_GROUND_Y = 56;
-
-// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST]
-// The close-up bust: 34x20 drawn at scale 3 (102x60), which is most of the
-// canvas. Everything here is a landmark cue rather than detail for its own
-// sake — domed skull, heavy brow ridge as one bright band, deep-set dim eye
-// sockets, short muzzle with a bright nose, no visible neck, and shoulders
-// that slope from the jaw straight out past the frame edges. Those are what
-// separate "Bigfoot" from "a person" at this resolution.
-// The eye pixels are deliberately NOT baked into the mask (row 6 is all dim
-// socket): they are drawn afterwards from a gaze offset, which buys the
-// look-around and the blink from one sprite instead of five.
-const BIGFOOT_BUST = [
-  ".........." + "..2.22222222.2.." + "........",
-  "........." + "..222222222222.." + ".........",
-  "........." + ".22222222222222." + ".........",
-  "........." + "2222222222222222" + ".........",
-  "........." + "2233333333333322" + ".........",
-  "........." + "2211111111111122" + ".........",
-  "........." + "2211111111111122" + ".........",
-  "........." + "2211111111111122" + ".........",
-  "........." + "2222211111122222" + ".........",
-  "........." + "2222233333322222" + ".........",
-  "........." + "2222211111122222" + ".........",
-  "........." + ".22211111111222." + ".........",
-  "........." + "..222222222222.." + ".........",
-  "........." + "...2222222222..." + ".........",
-  "......." + "12222222222222222221" + ".......",
-  "...." + "12222222222222222222222221" + "....",
-  "." + "12222222222222222222222222222221" + ".",
-  "2222222222222222222222222222222222",
-  "2222222222222222222222222222222222",
-  "1222222222222222222222222222222221",
-];
-
-// Mask coordinates of the two eyes inside BIGFOOT_BUST, used by the gaze /
-// blink drawing below.
-const BF_BUST_EYE_ROW = 6;
-const BF_BUST_EYE_COLS = [12, 21];
-
-// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST]
-// The distant walk cycle now swings the ARMS as well as the legs — A throws
-// the left arm forward, B the right — and the caller bobs the whole body a
-// pixel between them. At 11x16 the legs alone were too small a change to
-// read as walking; the arm silhouette is what actually sells it.
-const BF_WALK_A = [
-  "...22222...",
-  "..2222222..",
-  "..2233222..",
-  "..2222222..",
-  "...22222...",
-  "..2222222..",
-  ".222222222.",
-  "22222222222",
-  "2222222222.",
-  ".222222222.",
-  ".222222222.",
-  "..2222222..",
-  "..222.222..",
-  ".222...222.",
-  ".22.....22.",
-  "222.....222",
-];
-
-const BF_WALK_B = [
-  "...22222...",
-  "..2222222..",
-  "..2233222..",
-  "..2222222..",
-  "...22222...",
-  "..2222222..",
-  ".222222222.",
-  "22222222222",
-  ".2222222222",
-  ".222222222.",
-  ".222222222.",
-  "..2222222..",
-  "...22222...",
-  "...22.22...",
-  "...22.22...",
-  "..222.222..",
-];
-
-const BF_STARE = [
-  "...22222...",
-  "..2222222..",
-  "..2322232..",
-  "..2222222..",
-  "...22222...",
-  "..2222222..",
-  ".222222222.",
-  "22222222222",
-  "22222222222",
-  "22222222222",
-  ".222222222.",
-  "..2222222..",
-  "..22...22..",
-  "..22...22..",
-  "..22...22..",
-  ".222...222.",
-];
-
-const BF_BLINK = [
-  "...22222...",
-  "..2222222..",
-  "..2222222..",
-  "..2222222..",
-  "...22222...",
-  "..2222222..",
-  ".222222222.",
-  "22222222222",
-  "22222222222",
-  "22222222222",
-  ".222222222.",
-  "..2222222..",
-  "..22...22..",
-  "..22...22..",
-  "..22...22..",
-  ".222...222.",
-];
-
-// Three stacked triangles read as a conifer far more cheaply than a mask, and
-// letting height vary per tree is what stops the treeline looking stamped.
-function drawArcadePine(ctx, cx, baseY, height, ink) {
-  ctx.fillStyle = ink;
-  const tiers = 3;
-  const tierH = Math.max(2, Math.floor(height / tiers));
-  for (let tier = 0; tier < tiers; tier++) {
-    const top = baseY - height + tier * tierH;
-    for (let r = 0; r <= tierH; r++) {
-      const half = Math.floor((r / (tierH + 1)) * (2 + tier * 1.7));
-      ctx.fillRect(cx - half, top + r, half * 2 + 1, 1);
-    }
-  }
-  ctx.fillRect(cx, baseY - 3, 1, 3);
-}
-
-const BF_TREES = [
-  { x: 6, h: 26 },
-  { x: 20, h: 18 },
-  { x: 33, h: 30 },
-  { x: 48, h: 21 },
-  { x: 62, h: 27 },
-  { x: 78, h: 19 },
-  { x: 92, h: 29 },
-  { x: 108, h: 22 },
-  { x: 122, h: 26 },
-  { x: 138, h: 18 },
-  { x: 152, h: 28 },
-];
-
-function drawBigfootScene(ctx, state, t) {
-  for (const tree of BF_TREES) drawArcadePine(ctx, tree.x, BIGFOOT_GROUND_Y, tree.h, ARCADE_INK[1]);
-
-  ctx.fillStyle = ARCADE_INK[2];
-  ctx.fillRect(0, BIGFOOT_GROUND_Y, ARCADE_WIDTH, 1);
-  ctx.fillStyle = ARCADE_INK[1];
-  for (let x = 2; x < ARCADE_WIDTH; x += 7) ctx.fillRect(x, BIGFOOT_GROUND_Y + 3, 2, 1);
-  for (let x = 5; x < ARCADE_WIDTH; x += 9) ctx.fillRect(x, BIGFOOT_GROUND_Y + 6, 3, 1);
-
-  // Timeline. Beats, in order: empty forest, walk in, halt, turn, stare
-  // (with a blink, a step closer, and a second blink), turn back, walk out,
-  // empty forest again — which is the same frame the scene opened on, so the
-  // loop closes without a cut.
-  // [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
-  // Framed medium-wide at a CONSTANT scale 2 (22x32) — no close-up, no scale
-  // ladder. Two reasons this beats the bust it replaces: at scale 2 he stands
-  // about as tall as the pines, so the forest reads as his environment rather
-  // than as wallpaper behind a portrait, and the joke needs the clearing in
-  // frame — a face filling the canvas has nowhere to walk out of. Holding one
-  // scale for the whole scene also removes the integer-scale pop entirely.
-  // ESTABLISH (0-1.5s empty forest) -> ACTION (walks in) -> PAYOFF (halt,
-  // turn, stare, blink, step closer) -> LOOP (walks out, forest empty again,
-  // which is the frame it opened on).
-  const scale = 2;
-  let sprite = null;
-  let cx = 0;
-  let lift = 0;
-
-  if (t < 1500) {
-    return;
-  } else if (t < 8000) {
-    const step = Math.floor((t - 1500) / 230) % 2 === 0;
-    sprite = step ? BF_WALK_A : BF_WALK_B;
-    cx = arcadePath([[1500, -16], [8000, 80]], t);
-    lift = step ? 0 : -1;
-  } else if (t < 8600) {
-    sprite = BF_WALK_B;
-    cx = 80;
-  } else if (t < 14000) {
-    cx = 80;
-    const s = t - 8600;
-    if (s < 1400) sprite = BF_STARE;
-    else if (s < 1650) sprite = BF_BLINK;
-    else if (s < 2900) sprite = BF_STARE;
-    else if (s < 3900) {
-      sprite = BF_STARE;
-      lift = 2; // one step closer to the camera
-    } else if (s < 4150) {
-      sprite = BF_BLINK;
-      lift = 2;
-    } else {
-      sprite = BF_STARE;
-      lift = 2;
-    }
-  } else if (t < 14600) {
-    sprite = BF_WALK_B;
-    cx = 80;
-  } else if (t < 19500) {
-    const step = Math.floor((t - 14600) / 230) % 2 === 0;
-    sprite = step ? BF_WALK_A : BF_WALK_B;
-    cx = arcadePath([[14600, 80], [19500, 186]], t);
-    lift = step ? 0 : -1;
-  }
-
-  if (sprite) {
-    const left = Math.round(cx - (sprite[0].length * scale) / 2);
-    drawArcadeSprite(ctx, sprite, left, BIGFOOT_GROUND_Y - sprite.length * scale + lift, scale);
-  }
-}
-
-// ---- SCENE 3: UFO file abduction ------------------------------------------
-//
-// The Browser Gallery joke: something is quietly making off with your files.
-// Deliberately cute rather than sinister — the saucer is round, the beam is
-// soft, and it leaves politely.
-//
-// The loop closes on a product-appropriate gag: after the saucer zips away, a
-// REPLACEMENT file fades in on the ground over the last second, so the scene
-// restarts already holding what it is about to lose. Without that, the loop
-// point popped a file back into existence out of nowhere.
-const UFO_DURATION_MS = 20000;
-const UFO_GROUND_Y = 52;
-
-// [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
-// THE saucer, 36x13, used at scale 1 for the whole scene. It replaced a
-// 19x6 version that was simply too coarse to read as a craft: this one has a
-// domed canopy with a highlight, a hull seam, evenly spaced rim light ports
-// and a distinct emitter. Detail where the viewer actually looks beat any
-// amount of camera movement around the smaller sprite.
-const UFO_SAUCER_BIG = [
-  "..............22333322..............",
-  "...........22333333333322...........",
-  ".........222222222222222222.........",
-  ".......2222222222222222222222.......",
-  ".....22222222222222222222222222.....",
-  "..22222222222222222222222222222222..",
-  "322223222232222322223222232222322223",
-  "322223222232222322223222232222322223",
-  "...222222222222222222222222222222...",
-  "......222222222222222222222222......",
-  ".........222222222222222222.........",
-  "............333333333333............",
-  "...............333333...............",
-];
-
-const UFO_FILE = [
-  "333333333",
-  "311111113",
-  "311112113",
-  "311122213",
-  "311222223",
-  "312222223",
-  "333333333",
-];
-
-const UFO_STARS = [
-  [8, 6],
-  [23, 13],
-  [39, 4],
-  [52, 17],
-  [67, 9],
-  [88, 5],
-  [101, 15],
-  [118, 8],
-  [133, 18],
-  [147, 6],
-  [155, 21],
-  [14, 24],
-];
-
-function drawUfoScene(ctx, state, t, now) {
-  // Sky: stars twinkle on a slow deterministic cycle so the field is never
-  // dead but never busy either.
-  for (let i = 0; i < UFO_STARS.length; i++) {
-    const [sx, sy] = UFO_STARS[i];
-    const twinkle = Math.sin(now / 700 + i * 1.7) > -0.4;
-    ctx.fillStyle = twinkle ? ARCADE_INK[2] : ARCADE_INK[1];
-    ctx.fillRect(sx, sy, 1, 1);
-  }
-
-  // Ground: a horizon line with a low rolling hill behind it.
-  ctx.fillStyle = ARCADE_INK[1];
-  for (let x = 0; x < ARCADE_WIDTH; x++) {
-    const hill = Math.round(Math.sin(x / 26) * 3 + Math.sin(x / 11) * 1.2);
-    ctx.fillRect(x, UFO_GROUND_Y - 3 - hill, 1, 1);
-  }
-  ctx.fillStyle = ARCADE_INK[2];
-  ctx.fillRect(0, UFO_GROUND_Y, ARCADE_WIDTH, 1);
-  ctx.fillStyle = ARCADE_INK[1];
-  for (let x = 3; x < ARCADE_WIDTH; x += 11) ctx.fillRect(x, UFO_GROUND_Y + 4, 2, 1);
-  for (let x = 8; x < ARCADE_WIDTH; x += 13) ctx.fillRect(x, UFO_GROUND_Y + 8, 3, 1);
-
-  const targetX = 62;
-  const bystanderX = 116;
-  const fileTop = UFO_GROUND_Y - UFO_FILE.length;
-
-  // The bystander file, and the target file whenever it is still on the
-  // ground. During the last second the target fades back in (dim then mid)
-  // as the next delivery.
-  let bystanderShake = 0;
-  if (t >= 5400 && t < 11400) bystanderShake = Math.sin(now / 90) > 0 ? 1 : 0;
-  drawArcadeSprite(ctx, UFO_FILE, bystanderX + bystanderShake, fileTop, 1);
-
-  // [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
-  // The close flyby and the 3->2->1 recede are gone. The readability problem
-  // they were solving is fixed at the source instead: UFO_SAUCER_BIG (36x13,
-  // with canopy, hull seam, rim ports and emitter) is now simply THE saucer
-  // at scale 1, so the craft is legible for the whole scene without any
-  // camera move. A clean readable UFO established in its environment beats a
-  // pass that pops between scales.
-  const saucerX = arcadePath(
-    [
-      [0, -40],
-      [1200, -40],
-      [4200, targetX],
-      [11800, targetX],
-      [13600, 210],
-      [20000, 210],
-    ],
-    t
-  );
-  const saucerY = 16 + Math.sin(now / 620) * 1.5;
-
-  // Beam: a trapezoid of horizontal runs, narrow at the emitter and wide at
-  // the ground, flickering between two intensities.
-  let beamWidth = 0;
-  if (t >= 5400 && t < 6400) beamWidth = 3 + 8 * arcadeClamp01((t - 5400) / 1000);
-  else if (t >= 6400 && t < 11200) beamWidth = 11;
-  else if (t >= 11200 && t < 11800) beamWidth = 11 * (1 - arcadeClamp01((t - 11200) / 600));
-
-  if (beamWidth > 0.5) {
-    // Integer scanline stepping is load-bearing: saucerY carries a sine bob,
-    // so a float `y` made the row-parity test below essentially never true
-    // and the beam rendered flat dim instead of alternating intensities.
-    const beamTop = Math.round(saucerY) + 12;
-    const flicker = Math.sin(now / 55) > 0;
-    for (let y = beamTop; y < UFO_GROUND_Y; y++) {
-      const p = (y - beamTop) / (UFO_GROUND_Y - beamTop);
-      const half = Math.max(1, Math.round((beamWidth * (0.35 + 0.65 * p)) / 2));
-      ctx.fillStyle = (y + (flicker ? 0 : 1)) % 2 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
-      ctx.fillRect(Math.round(targetX + 18 - half), Math.round(y), half * 2, 1);
-    }
-  }
-
-  // The abducted file: on the ground, then lifted, then gone.
-  if (t < 6400) {
-    drawArcadeSprite(ctx, UFO_FILE, targetX + 14, fileTop, 1);
-  } else if (t < 10400) {
-    const lift = easeInOutCubic(arcadeClamp01((t - 6400) / 4000));
-    const y = fileTop + (saucerY + 9 - fileTop) * lift;
-    drawArcadeSprite(ctx, UFO_FILE, targetX + 14, Math.round(y), 1);
-  } else if (t >= 18800) {
-    // The replacement arrives, dim first, so the loop point has something
-    // already standing there.
-    const fade = arcadeClamp01((t - 18800) / 1000);
-    drawArcadeSprite(ctx, UFO_FILE, targetX + 14, fileTop, 1, fade > 0.55 ? ARCADE_INK[2] : ARCADE_INK[1]);
-  }
-
-  // Departure streaks — the zip that sells the exit on a wide canvas.
-  if (t >= 11800 && t < 13600) {
-    ctx.fillStyle = ARCADE_INK[1];
-    for (let i = 1; i <= 5; i++) {
-      const trailX = saucerX - i * 11;
-      if (trailX < -20) continue;
-      ctx.fillRect(Math.round(trailX), Math.round(saucerY + 3), 8, 1);
-    }
-  }
-
-  if (saucerX > -38 && saucerX < ARCADE_WIDTH + 2) {
-    drawArcadeSprite(ctx, UFO_SAUCER_BIG, Math.round(saucerX), Math.round(saucerY), 1);
-    // Running lights along the rim, chasing.
-    const phase = Math.floor(now / 160) % 3;
-    ctx.fillStyle = ARCADE_INK[3];
-    for (let i = 0; i < 3; i++) {
-      if (i !== phase) continue;
-      ctx.fillRect(Math.round(saucerX) + 2 + i * 7, Math.round(saucerY) + 6, 1, 1);
-      ctx.fillRect(Math.round(saucerX) + 33 - i * 7, Math.round(saucerY) + 6, 1, 1);
-    }
-  }
-
-  // The swallow: one bright flash inside the saucer.
-  if (t >= 10400 && t < 11000) {
-    const flash = 1 - arcadeClamp01((t - 10400) / 600);
-    ctx.fillStyle = flash > 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
-    const w = Math.max(2, Math.round(15 * flash));
-    ctx.fillRect(Math.round(saucerX + 18 - w / 2), Math.round(saucerY + 4), w, 3);
-  }
 }
 
 // ---- SCENE 4: projector booth ---------------------------------------------
@@ -2206,271 +2057,954 @@ function drawProjectorScene(ctx, state, t, now) {
   }
 }
 
-// ---- SCENE 5: pirate ship -------------------------------------------------
+// ---- SCENE: science lab ---------------------------------------------------
 //
-// One ship, one monster, one cannon payoff — deliberately not a naval sim.
-// The wide canvas is doing real work here: the cannonball's arc needs
-// horizontal distance to read as a lob rather than a poke, and the ship needs
-// somewhere to sail in FROM and out TO.
-const PIRATE_DURATION_MS = 15000;
-const PIRATE_WATER_Y = 46;
+// Wide bench, no camera moves. The entertainment here is SIMULTANEITY — the
+// promise is "we're cooking something up for you", so the rule I set myself
+// was that at any instant at least three different things must be moving:
+// a flame licking, bubbles rising, a droplet travelling the tube, vapour
+// curling, a needle creeping. A single-focus composition would have wasted
+// the concept.
+const LAB_DURATION_MS = 27000;
+const LAB_BENCH_Y = 52;
 
-const PIRATE_HULL = [
-  ".3.3.3.3.3.3.3.3.3.3.3.3.3.3.",
-  "33333333333333333333333333333",
-  ".222222222222222222222222222.",
-  ".222221222222212222222122222.",
-  "..2222222222222222222222222..",
-  "...22222222222222222222222...",
-  "....222222222222222222222....",
-  ".......222222222222222.......",
+// Glassware, all visibly different silhouettes rather than one triangle
+// repeated. Sizes are ~35% up on the previous bench so liquid levels, bubbles
+// and shapes are legible instead of implied.
+const LAB_ROUND = [
+  "...33333...",
+  "..3.....3..",
+  ".33.....33.",
+  "3.........3",
+  "3.........3",
+  "3.........3",
+  "3.........3",
+  ".3.......3.",
+  "..3.....3..",
+  "...33333...",
 ];
 
-const PIRATE_RIG_A = [
-  ".......3.......",
-  ".......3.......",
-  ".3333333333333.",
-  ".2222222222222.",
-  ".2222222222222.",
-  "..222222222222.",
-  "..222222222222.",
-  "...22222222222.",
-  "...22222222222.",
-  "....2222222222.",
-  ".....222222222.",
-  ".......3.......",
-  ".......3.......",
-  ".......3.......",
-  ".......3.......",
-  ".......3.......",
+const LAB_CONE = [
+  "..3333333..",
+  "..3.....3..",
+  "..3.....3..",
+  ".3.......3.",
+  ".3.......3.",
+  "3.........3",
+  "3.........3",
+  "3.........3",
+  "33333333333",
 ];
 
-const PIRATE_RIG_B = [
-  ".......3.......",
-  ".......3.......",
-  ".3333333333333.",
-  ".2222222222222.",
-  "..222222222222.",
-  "..222222222222.",
-  "...22222222222.",
-  "...22222222222.",
-  "....2222222222.",
-  "....2222222222.",
-  ".....222222222.",
-  ".......3.......",
-  ".......3.......",
-  ".......3.......",
-  ".......3.......",
-  ".......3.......",
-];
+const LAB_BEAKER = ["33.....33", "3.......3", "3.......3", "3.......3", "3.......3", "3.......3", "33333333 "];
 
-const PIRATE_FLAG_A = ["3333.", ".333.", "..3.."];
-const PIRATE_FLAG_B = ["3333.", "3333.", ".33.."];
+const LAB_CYLINDER = ["333", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "333"];
 
-const PIRATE_MONSTER = [
-  "..2.2...2.2..",
-  "...222.222...",
-  "..222222222..",
-  ".22233222222.",
-  ".22233222222.",
-  ".22222222222.",
-  "..222222222..",
-  "...2222222...",
-  "....22222....",
-];
+const LAB_VIAL = ["3..3", "3..3", "3..3", "3..3", "33.3", ".33."];
 
-// Begins at 3800 where the establishing close-up hands off, at the same x
-// that close-up ends on, so the scale change is the only thing that moves.
-const PIRATE_SHIP_PATH = [
-  [3800, 30],
-  [6000, 50],
-  [11000, 58],
-  [12400, 90],
-  [13400, 104],
-  [15000, 210],
-];
+const LAB_TILE = ["3333333", "3222223", "32.3.23", "32333.3", "3222223", "3333333"];
 
-// Head y: submerged below the waterline, surfaces, recoils on the hit,
-// submerges, then pops up again behind the ship for the last gag.
-const PIRATE_MONSTER_PATH = [
-  [0, 66],
-  [4200, 66],
-  [5400, 34],
-  [7900, 34],
-  [8200, 42],
-  [8800, 36],
-  [9000, 36],
-  [9700, 66],
-  [12600, 66],
-  [13300, 40],
-  [14200, 40],
-  [14800, 66],
-];
-
-function drawPirateSea(ctx, t) {
-  ctx.fillStyle = ARCADE_INK[2];
-  for (let x = 0; x < ARCADE_WIDTH; x++) {
-    const y = PIRATE_WATER_Y + Math.round(Math.sin((x + t * 0.018) / 7) * 1.6);
-    ctx.fillRect(x, y, 1, 1);
-  }
-  ctx.fillStyle = ARCADE_INK[1];
-  for (let x = 0; x < ARCADE_WIDTH; x += 3) {
-    ctx.fillRect(x, PIRATE_WATER_Y + 5 + Math.round(Math.sin((x - t * 0.012) / 5) * 1.2), 2, 1);
-    ctx.fillRect(x + 1, PIRATE_WATER_Y + 10 + Math.round(Math.sin((x + t * 0.02) / 9) * 1.4), 2, 1);
-  }
-  ctx.fillRect(0, ARCADE_HEIGHT - 2, ARCADE_WIDTH, 2);
-}
-
-// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST]
-// One ship renderer for both the establishing close-up and the sailing
-// scene — every offset is expressed in hull-mask units and multiplied by
-// `scale`, so the scale-2 close pass is provably the same vessel as the
-// scale-1 ship rather than a lookalike drawn twice.
-function drawPirateShip(ctx, hullLeft, deckY, scale, now, firing) {
-  const rig = Math.sin(now / 520) > 0 ? PIRATE_RIG_A : PIRATE_RIG_B;
-  const flag = Math.floor(now / 260) % 2 === 0 ? PIRATE_FLAG_A : PIRATE_FLAG_B;
-  drawArcadeSprite(ctx, PIRATE_HULL, hullLeft, deckY, scale);
-  drawArcadeSprite(ctx, rig, hullLeft + 7 * scale, deckY - rig.length * scale + scale, scale);
-  drawArcadeSprite(ctx, flag, hullLeft + 15 * scale, deckY - rig.length * scale - 2 * scale, scale);
-  drawArcadeLine(
-    ctx,
-    hullLeft + 28 * scale,
-    deckY + scale,
-    hullLeft + 34 * scale,
-    deckY - 2 * scale,
-    ARCADE_INK[2]
-  );
-
-  if (firing) {
-    ctx.fillStyle = ARCADE_INK[3];
-    ctx.fillRect(hullLeft + 29 * scale, deckY + 2 * scale, 4 * scale, 3 * scale);
-    ctx.fillStyle = ARCADE_INK[2];
-    ctx.fillRect(hullLeft + 33 * scale, deckY + scale, 3 * scale, 5 * scale);
-  }
-}
-
-function drawPirateScene(ctx, state, t, now) {
-  // Moon and a couple of clouds, high and dim so they never fight the action.
-  ctx.fillStyle = ARCADE_INK[1];
-  for (let dy = -5; dy <= 5; dy++) {
-    const half = Math.round(Math.sqrt(Math.max(0, 25 - dy * dy)));
-    ctx.fillRect(134 - half, 12 + dy, half * 2, 1);
-  }
-  drawArcadeCircle(ctx, 134, 12, 5, ARCADE_INK[2]);
-  ctx.fillStyle = ARCADE_INK[1];
-  ctx.fillRect(20, 8, 14, 1);
-  ctx.fillRect(24, 10, 16, 1);
-  ctx.fillRect(66, 5, 12, 1);
-
-  drawPirateSea(ctx, t);
-
-  // [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
-  // No establishing close-up. A full-ship entrance at scale 1 is the stronger
-  // composition here: the sea, the wave line, the mast and sail silhouette
-  // and the monster all have to share the frame for the conflict to read, and
-  // a scale-2 hull crowded every one of them out. The gun ports added to the
-  // hull mask during the close-up pass are KEPT — they improve the ship at
-  // every scale and cost nothing.
-  const shipX = arcadePath(PIRATE_SHIP_PATH, t);
-  // Ordinary bob, plus a hard rock when the near-miss lands beside the bow.
-  let bob = Math.sin(now / 430) * 1.4;
-  if (t >= 10400 && t < 11200) bob += Math.sin((t - 10400) / 55) * 2.2;
-  const deckY = PIRATE_WATER_Y - 6 + Math.round(bob);
-
-  const monsterY = arcadePath(PIRATE_MONSTER_PATH, t);
-  const monsterX = t >= 12600 ? 34 : 122;
-  if (monsterY < 64) {
-    // Tentacles first, so the head sits in front of them.
-    if (t >= 4600 && t < 9700) {
-      for (const side of [-1, 1]) {
-        for (let seg = 0; seg < 9; seg++) {
-          const sy = PIRATE_WATER_Y - seg * 2;
-          const sx = monsterX + side * (11 + seg) + Math.round(Math.sin(seg / 1.6 + now / 320) * 3);
-          if (sy < monsterY + 6) continue;
-          ctx.fillStyle = seg % 2 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
-          ctx.fillRect(sx, sy, 2, 2);
-        }
+// Liquid poured into a vessel mask: fills from the bottom up to `level` rows,
+// clipped to whatever is inside the glass on each row. One helper keeps every
+// vessel's liquid consistent instead of hand-placing rectangles per flask.
+function drawLabLiquid(ctx, mask, left, top, level, ink) {
+  ctx.fillStyle = ink;
+  for (let r = mask.length - 1; r >= 0 && mask.length - r <= level; r--) {
+    const row = mask[r];
+    let lo = -1;
+    let hi = -1;
+    for (let c = 0; c < row.length; c++) {
+      if (row[c] !== ".") {
+        if (lo < 0) lo = c;
+        hi = c;
       }
     }
-    const blink = t > 5600 && t < 5800;
-    drawArcadeSprite(
-      ctx,
-      PIRATE_MONSTER,
-      monsterX - 6,
-      Math.round(monsterY),
-      1,
-      blink ? ARCADE_INK[2] : null
-    );
+    if (lo < 0 || hi - lo < 2) continue;
+    ctx.fillRect(left + lo + 1, top + r, hi - lo - 1, 1);
+  }
+}
+
+function drawLabBubbles(ctx, left, top, w, h, count, rate, now, seed, ink) {
+  for (let i = 0; i < count; i++) {
+    const ph = ((now / rate + i * 0.31 + seed) % 1);
+    const by = top + h - Math.round(ph * h);
+    ctx.fillStyle = ph > 0.65 ? ARCADE_INK[3] : ink;
+    ctx.fillRect(left + 1 + ((i * 5 + seed * 3) % Math.max(1, w - 2)), by, 1, 1);
+  }
+}
+
+// Reaction energy 0..1 — the spine every other element reads from, so the
+// whole bench escalates together instead of each vessel running its own clock.
+function labEnergy(t) {
+  if (t < 3000) return 0.08;
+  if (t < 6000) return 0.08 + 0.32 * ((t - 3000) / 3000);
+  if (t < 13000) return 0.4 + 0.25 * ((t - 6000) / 7000);
+  if (t < 19000) return 0.65 + 0.3 * ((t - 13000) / 6000);
+  if (t < 21500) return 0.95;
+  if (t < 22200) return 1;
+  if (t < 24500) return 0.35;
+  return 0.15;
+}
+
+// THE COMPLICATION, 13.5s-17s: pressure runs away, the centre flask foams up
+// toward its neck, the flame flares and the gauge pushes into the red — then a
+// hand reaches in and throttles the burner back. Without a scare in the middle
+// the bench was just pleasant activity; the near-miss gives the success at the
+// end something to be a success over.
+function labPanic(t) {
+  if (t < 13500 || t > 17000) return 0;
+  if (t < 15200) return (t - 13500) / 1700;
+  if (t < 15900) return 1;
+  return 1 - (t - 15900) / 1100;
+}
+
+function drawLabScene(ctx, state, t, now) {
+  const e = Math.min(1, labEnergy(t) + labPanic(t) * 0.35);
+  const panic = labPanic(t);
+  const burnerOn = t > 2600;
+  const bench = LAB_BENCH_Y;
+
+  // bench slab + a shelf line behind, for depth
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, bench, ARCADE_WIDTH, 1);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, bench + 3, ARCADE_WIDTH, 1);
+  ctx.fillRect(0, 8, ARCADE_WIDTH, 1);
+  for (let x = 4; x < ARCADE_WIDTH; x += 30) ctx.fillRect(x, bench + 1, 3, 2);
+
+  // ---- LEFT: burner + main round-bottom flask ----
+  const rx = 8;
+  const ry = bench - LAB_ROUND.length - 5;
+  drawArcadeSprite(ctx, LAB_ROUND, rx, ry, 1);
+  ctx.fillStyle = ARCADE_INK[3];
+  ctx.fillRect(rx + 4, ry - 7, 1, 8);
+  ctx.fillRect(rx + 6, ry - 7, 1, 8);
+  ctx.fillRect(rx + 3, ry - 8, 5, 1);
+  drawLabLiquid(ctx, LAB_ROUND, rx, ry, 6, ARCADE_INK[1]);
+  drawLabBubbles(ctx, rx, ry + 3, 11, 7, 8, 240 - e * 110, now, 0, ARCADE_INK[2]);
+  // burner
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(rx + 2, bench - 4, 7, 1);
+  ctx.fillRect(rx + 5, bench - 3, 1, 3);
+  if (burnerOn) {
+    const fl = 3 + Math.round(e * 4) + Math.round(panic * 5) + (Math.floor(now / 80) % 2);
+    for (let i = 0; i < fl; i++) {
+      ctx.fillStyle = i < fl - 2 ? ARCADE_INK[3] : ARCADE_INK[2];
+      const w = Math.max(1, 4 - Math.floor(i / 2));
+      ctx.fillRect(rx + 5 - Math.floor(w / 2), bench - 5 - i, w, 1);
+    }
   }
 
-  // Splashes: the cannon impact and the near-miss both throw water.
-  if (t >= 7900 && t < 8500) {
-    drawArcadeBurst(ctx, { x: 122, y: 36, born: 7900, seed: 1.1, reach: 11 }, t, 600);
+  // ---- LEFT-CENTRE: a beaker simmering on its own ----
+  const bx = 24;
+  const by2 = bench - LAB_BEAKER.length;
+  drawArcadeSprite(ctx, LAB_BEAKER, bx, by2, 1);
+  drawLabLiquid(ctx, LAB_BEAKER, bx, by2, 4, ARCADE_INK[1]);
+  drawLabBubbles(ctx, bx, by2 + 2, 9, 4, 4, 460, now, 1, ARCADE_INK[2]);
+
+  // ---- tubing: round flask -> centre cone, droplets travelling ----
+  const ax = rx + 5;
+  const tox = 62;
+  const tubePt = (p) => [ax + (tox - ax) * p, ry - 8 - Math.sin(p * Math.PI) * 12 + p * p * 4];
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let p = 0; p <= 1.001; p += 0.02) {
+    const [x, y] = tubePt(p);
+    ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
   }
-  if (t >= 10300 && t < 11000) {
-    const age = (t - 10300) / 700;
-    ctx.fillStyle = age < 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
+  if (t > 7000) {
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = tubePt((now / 1500 + i * 0.25) % 1);
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(Math.round(x), Math.round(y) - 1, 1, 2);
+    }
+  }
+
+  // ---- CENTRE: the main conical flask (the reaction vessel) ----
+  const cx2 = 57;
+  const cy2 = bench - LAB_CONE.length;
+  drawArcadeSprite(ctx, LAB_CONE, cx2, cy2, 1);
+  const fill = 2 + Math.round(arcadeClamp01((t - 7000) / 11000) * 6);
+  drawLabLiquid(ctx, LAB_CONE, cx2, cy2, fill, ARCADE_INK[1]);
+  drawLabBubbles(ctx, cx2, cy2 + 3, 11, 6, 7, 300 - e * 160, now, 2, ARCADE_INK[2]);
+
+  // foam surging up the neck during the complication
+  if (panic > 0.05) {
+    const foam = Math.round(panic * 11);
+    for (let i = 0; i < foam; i++) {
+      ctx.fillStyle = i > foam - 3 ? ARCADE_INK[3] : ARCADE_INK[2];
+      ctx.fillRect(cx2 + 2 + ((i * 2) % 4), cy2 - i, 5 + (i % 3), 1);
+    }
+    ctx.fillStyle = Math.floor(now / 130) % 2 === 0 ? ARCADE_INK[3] : ARCADE_INK[1];
+    ctx.fillRect(88, bench - 6, 5, 5);
+  }
+  // a hand throttles the burner back
+  if (t > 15600 && t < 17200) {
+    const p = arcadeClamp01((t - 15600) / 700) - arcadeClamp01((t - 16600) / 600);
+    const hx = rx + 14 - Math.round(p * 11);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(hx, bench - 7, 7, 4);
+    ctx.fillRect(hx + 6, bench - 10, 3, 7);
+  }
+  // vapour
+  if (t > 9000) {
     for (let i = 0; i < 7; i++) {
-      const spread = age * 13;
-      ctx.fillRect(
-        Math.round(86 + (i - 3) * spread * 0.5),
-        Math.round(PIRATE_WATER_Y - age * 15 + Math.abs(i - 3) * 2.2),
-        1,
-        2
-      );
+      const ph = (now / 1700 + i * 0.15) % 1;
+      ctx.fillStyle = ph > 0.55 ? ARCADE_INK[1] : ARCADE_INK[2];
+      ctx.fillRect(cx2 + 5 + Math.round(Math.sin(ph * 7 + i) * (1 + ph * 5)), cy2 - Math.round(ph * 20), 1, 1);
     }
   }
 
-  // The ship. Culled by the hull's own width (29px) rather than a generous
-  // margin — past these bounds nothing it draws can land on the canvas, and
-  // this is the heaviest scene in the pool.
-  if (shipX > -PIRATE_HULL[0].length - 4 && shipX < ARCADE_WIDTH + 2) {
-    drawPirateShip(ctx, Math.round(shipX), deckY, 1, now, t >= 6100 && t < 6400);
-  }
+  // ---- CENTRE-RIGHT: graduated cylinder + gauge ----
+  const gx2 = 74;
+  drawArcadeSprite(ctx, LAB_CYLINDER, gx2, bench - LAB_CYLINDER.length, 1);
+  drawLabLiquid(ctx, LAB_CYLINDER, gx2, bench - LAB_CYLINDER.length, 5 + Math.round(e * 4), ARCADE_INK[1]);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 1; i < 6; i++) ctx.fillRect(gx2 + 3, bench - 2 - i * 2, 2, 1);
 
-  // Cannonball: a real parabola across ~60px of open water. This is the beat
-  // the extra width was bought for.
-  if (t >= 6300 && t < 7900) {
-    const p = (t - 6300) / 1600;
-    const bx = 84 + (122 - 84) * p;
-    const by = 42 + (36 - 42) * p - Math.sin(p * Math.PI) * 22;
-    ctx.fillStyle = ARCADE_INK[1];
-    for (let i = 1; i <= 3; i++) {
-      const tp = Math.max(0, p - i * 0.06);
-      ctx.fillRect(
-        Math.round(84 + (122 - 84) * tp),
-        Math.round(42 + (36 - 42) * tp - Math.sin(tp * Math.PI) * 22),
-        1,
-        1
-      );
-    }
+  const gx = 100;
+  const gy = 18;
+  drawArcadeCircle(ctx, gx, gy, 10, ARCADE_INK[2]);
+  drawArcadeCircle(ctx, gx, gy, 2, ARCADE_INK[1]);
+  for (let i = 0; i <= 6; i++) {
+    const a = Math.PI * (0.85 + (i / 6) * 1.3);
+    ctx.fillStyle = i > 4 ? ARCADE_INK[3] : ARCADE_INK[1];
+    ctx.fillRect(Math.round(gx + Math.cos(a) * 8), Math.round(gy + Math.sin(a) * 8), 1, 1);
+  }
+  const na = Math.PI * (0.85 + e * 1.3);
+  drawArcadeLine(ctx, gx, gy, gx + Math.cos(na) * 8, gy + Math.sin(na) * 8, ARCADE_INK[3]);
+
+  // ---- RIGHT: test-tube rack, receiving vial, side flask ----
+  const tr = 116;
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(tr - 2, bench - 20, 30, 1);
+  for (let i = 0; i < 4; i++) {
+    const tx = tr + i * 7;
     ctx.fillStyle = ARCADE_INK[3];
-    ctx.fillRect(Math.round(bx), Math.round(by), 2, 2);
+    ctx.fillRect(tx, bench - 20, 1, 17);
+    ctx.fillRect(tx + 4, bench - 20, 1, 17);
+    ctx.fillRect(tx + 1, bench - 3, 3, 1);
+    const lvl = 3 + Math.round(Math.abs(Math.sin(now / 900 + i)) * 7 * e) + i;
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(tx + 1, bench - 3 - lvl, 3, lvl);
+    if (i % 2 === 0) drawLabBubbles(ctx, tx, bench - 3 - lvl, 5, lvl, 3, 700, now, i, ARCADE_INK[2]);
+    const dp = (now / 1200 + i * 0.3) % 1;
+    if (dp < 0.4) {
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(tx + 2, bench - 23 + Math.round(dp * 2.5 * 14), 1, 2);
+    }
+  }
+  const vx2 = 148;
+  drawArcadeSprite(ctx, LAB_VIAL, vx2, bench - LAB_VIAL.length, 1);
+  drawLabLiquid(ctx, LAB_VIAL, vx2, bench - LAB_VIAL.length, 3, ARCADE_INK[1]);
+
+  // ---- payoff ----
+  if (t >= 21500 && t < 22200) {
+    const p = (t - 21500) / 700;
+    const r = Math.round(8 + p * 30);
+    drawArcadeCircle(ctx, cx2 + 5, cy2 + 3, r, p < 0.5 ? ARCADE_INK[3] : ARCADE_INK[2]);
+    drawArcadeCircle(ctx, cx2 + 5, cy2 + 3, Math.max(1, r - 5), ARCADE_INK[1]);
+  }
+  if (t >= 22200) {
+    const p = arcadeClamp01((t - 22200) / 2200);
+    const ty = cy2 - 3 - Math.round(easeInOutCubic(p) * 18);
+    if (Math.floor(now / 160) % 2 === 0) {
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(cx2 + 1, ty - 1, 9, 8);
+    }
+    drawArcadeSprite(ctx, LAB_TILE, cx2 + 2, ty, 1);
+  }
+}
+
+// ---- SCENE: deep sea diver ------------------------------------------------
+//
+// Almost entirely negative space. The lamp cone is the only thing that
+// reveals anything, so the viewer discovers the seabed at the same moment
+// the diver does — which is the whole reason this is a diver scene and not a
+// submarine scene. Personal, close, and slow until it very suddenly isn't.
+const DIVER_DURATION_MS = 28000;
+
+const DIVER_SPRITE = [
+  "..2222..",
+  ".233332.",
+  ".233332.",
+  "..2222..",
+  ".222222.",
+  "22222222",
+  "22222222",
+  "2.2222.2",
+  "..2222..",
+  "..2..2..",
+  ".22..22.",
+];
+
+const DIVER_CHEST = [
+  ".2222222222.",
+  "222222222222",
+  "23333333332 ",
+  "222222222222",
+  "2.22222222.2",
+  "222222222222",
+];
+
+const DIVER_PARTICLES = Array.from({ length: 26 }, (_, i) => ({
+  x: (i * 53) % ARCADE_WIDTH,
+  y: (i * 29) % ARCADE_HEIGHT,
+  sp: 0.004 + ((i * 7) % 5) / 700,
+}));
+
+function createDiverState() {
+  return { bubbles: [] };
+}
+
+function updateDiverState(state, t, dt, now) {
+  for (const p of DIVER_PARTICLES) {
+    p.y -= p.sp * dt;
+    if (p.y < 0) p.y += ARCADE_HEIGHT;
+  }
+  // bubble trail from the helmet, denser when the diver bolts
+  const rate = t > 23000 ? 70 : 320;
+  if (!state.last || now - state.last > rate) {
+    state.last = now;
+    const dy = diverY(t);
+    state.bubbles.push({ x: diverX(t) + 3 + ((now / 97) % 3), y: dy, born: now });
+  }
+  state.bubbles = state.bubbles.filter((b) => now - b.born < 3200);
+  for (const b of state.bubbles) b.y -= 0.011 * dt;
+}
+
+function diverX(t) {
+  return arcadePath(
+    [
+      [0, 74],
+      [9000, 74],
+      [12000, 52],
+      [17000, 52],
+      [20000, 62],
+      [23000, 62],
+      [28000, 70],
+    ],
+    t
+  );
+}
+
+function diverY(t) {
+  return arcadePath(
+    [
+      [0, -12],
+      [8500, 30],
+      [12000, 34],
+      [20500, 34],
+      [23000, 30],
+      [28000, -14],
+    ],
+    t
+  );
+}
+
+function drawDiverScene(ctx, state, t, now) {
+  // drifting motes — the only thing proving the water is water early on
+  ctx.fillStyle = ARCADE_INK[1];
+  for (const p of DIVER_PARTICLES) ctx.fillRect(Math.round(p.x), Math.round(p.y), 1, 1);
+
+  const dx = diverX(t);
+  const dy = diverY(t);
+
+  // ---- lamp cone: reveals the world, sweeps when the diver looks around ----
+  let aim = 0.5;
+  if (t > 17000 && t < 20500) aim = 0.5 + Math.sin((t - 17000) / 900) * 0.55;
+  if (t > 20500) aim = 0.95;
+  const coneLen = 46;
+  const cxs = dx + 4;
+  const cys = dy + 6;
+  for (let i = 6; i < coneLen; i++) {
+    const spread = Math.round(i * 0.42);
+    const ang = Math.PI * (0.18 + aim * 0.64);
+    const px = cxs + Math.cos(ang) * i;
+    const py = cys + Math.sin(ang) * i;
+    if (i % 2) continue;
+    ctx.fillStyle = i < 26 ? ARCADE_INK[1] : ARCADE_INK[1];
+    ctx.fillRect(Math.round(px - spread / 2), Math.round(py), Math.max(1, spread), 1);
   }
 
-  // Incoming: the monster hurls something back, and it lands just off the bow.
-  if (t >= 9000 && t < 10400) {
-    const p = (t - 9000) / 1400;
-    const hx = 114 + (86 - 114) * p;
-    const hy = 38 + (46 - 38) * p - Math.sin(p * Math.PI) * 18;
-    ctx.fillStyle = ARCADE_INK[2];
-    ctx.fillRect(Math.round(hx), Math.round(hy), 2, 2);
+  // ---- seabed + wreck, only from the point the descent nears it ----
+  if (t > 6000) {
+    const reveal = arcadeClamp01((t - 6000) / 2600);
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let x = 0; x < ARCADE_WIDTH; x++) {
+      const h = 3 + Math.round(Math.sin(x / 19) * 2 + Math.sin(x / 7) * 1.2);
+      if (x / ARCADE_WIDTH > reveal + 0.15) continue;
+      ctx.fillRect(x, ARCADE_HEIGHT - h, 1, h);
+    }
+    // wreck: a broken hull leaning on the seabed
+    if (reveal > 0.5) {
+      ctx.fillStyle = ARCADE_INK[1];
+      drawArcadeLine(ctx, 96, 60, 132, 46, ARCADE_INK[2]);
+      drawArcadeLine(ctx, 96, 60, 128, 58, ARCADE_INK[1]);
+      drawArcadeLine(ctx, 132, 46, 128, 58, ARCADE_INK[1]);
+      for (let i = 0; i < 5; i++) ctx.fillRect(104 + i * 6, 55 - i * 2, 2, 2);
+      // mast stub
+      drawArcadeLine(ctx, 120, 51, 118, 34, ARCADE_INK[1]);
+    }
   }
 
-  // Bird, for the last beat — something alive after the fight is over.
-  if (t >= 12800 && t < 14600) {
-    const p = (t - 12800) / 1800;
-    const bx = 10 + p * 150;
-    const flap = Math.floor(now / 150) % 2 === 0;
+  // ---- the chest: found, opened, treasure ----
+  if (t > 9500) {
+    const chestX = 40;
+    const chestY = 52;
+    drawArcadeSprite(ctx, DIVER_CHEST, chestX, chestY, 1);
+    if (t > 13000) {
+      // lid swings up
+      const p = arcadeClamp01((t - 13000) / 900);
+      drawArcadeLine(
+        ctx,
+        chestX,
+        chestY,
+        chestX + 12 - Math.round(p * 5),
+        chestY - Math.round(p * 7),
+        ARCADE_INK[2]
+      );
+      // glow pouring out, pulsing
+      const gl = Math.floor(now / 180) % 2 === 0 ? 3 : 2;
+      for (let i = 0; i < 7; i++) {
+        const ph = (now / 900 + i * 0.14) % 1;
+        ctx.fillStyle = ph > 0.6 ? ARCADE_INK[2] : ARCADE_INK[gl];
+        ctx.fillRect(chestX + 2 + i, chestY - 1 - Math.round(ph * 9), 1, 1);
+      }
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(chestX + 3, chestY + 2, 6, 2);
+    }
+  }
+
+  // ---- THE PAYOFF: it was never a wreck's shadow ----
+  // Two eyes, far enough apart that the implied head is wider than the
+  // whole seabed. Nothing else is ever drawn of it — the negative space
+  // does the work, and drawing a body would only make it smaller.
+  if (t > 20500) {
+    const p = arcadeClamp01((t - 20500) / 1400);
+    const open = Math.round(p * 5);
+    if (open > 0) {
+      for (const ex of [26, 118]) {
+        ctx.fillStyle = ARCADE_INK[1];
+        ctx.fillRect(ex - 9, 16 - open - 1, 18, open * 2 + 3);
+        ctx.fillStyle = ARCADE_INK[3];
+        ctx.fillRect(ex - 7, 16 - open, 14, open * 2);
+        ctx.fillStyle = ARCADE_INK[1];
+        // slit pupil, tracking the diver
+        const px = ex + Math.round((dx - ex) * 0.06);
+        ctx.fillRect(px - 1, 16 - open, 3, open * 2);
+      }
+      // the faintest suggestion of a brow ridge between them
+      ctx.fillStyle = ARCADE_INK[1];
+      for (let x = 30; x < 116; x += 3) {
+        ctx.fillRect(x, 8 + Math.round(Math.sin(x / 26) * 2), 2, 1);
+      }
+    }
+  }
+
+  // bubbles
+  for (const b of state.bubbles) {
+    const age = (now - b.born) / 3200;
+    ctx.fillStyle = age > 0.6 ? ARCADE_INK[1] : ARCADE_INK[2];
+    ctx.fillRect(Math.round(b.x), Math.round(b.y), 1, 1);
+  }
+
+  // the diver
+  if (dy > -12 && dy < ARCADE_HEIGHT) {
+    drawArcadeSprite(ctx, DIVER_SPRITE, Math.round(dx), Math.round(dy), 1);
+    // air line back up to the surface
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let y = 0; y < dy; y += 3) {
+      ctx.fillRect(Math.round(dx + 4 + Math.sin(y / 9 + now / 900) * 3), y, 1, 2);
+    }
+  }
+}
+
+// ---- SCENE: vintage superspy ----------------------------------------------
+//
+// The only scene in the pool with a CAMERA. Everything else is staged in a
+// fixed 160px frame; this one is a ~900px world the camera tracks across,
+// because a five-act story crammed into one static tableau read as clutter
+// rather than as cinema — the first version drew the fence, the vault, the
+// alarm and the getaway all at once and none of them had room. Panning gives
+// each act a clean, uncrowded composition and turns the canvas width into
+// pacing instead of a constraint.
+//
+// Staged in silhouette against searchlights: a suited figure in pure outline
+// reads instantly at 5x11 where any attempt at a face would read as noise.
+// Original throughout — no borrowed iconography.
+const SPY_DURATION_MS = 32000;
+const SPY_GROUND_Y = 50;
+
+const SPY_AGENT = [".222.", ".222.", "22222", "32223", "22222", "22222", ".222.", ".2.2.", ".2.2.", "22.22"];
+const SPY_AGENT_RUN = [".222.", ".222.", "22222", "32223", "22222", ".2222", ".2.2.", "22..2", "2...2", "......"];
+const SPY_AGENT_CROUCH = ["......", "......", ".222..", "32223.", "222222", "22222.", ".2..2.", "22..22"];
+
+const SPY_GUARD = [".22.", ".22.", "2222", "2222", ".22.", ".2.2", ".2.2", "22.2"];
+
+const SPY_CAR = [
+  ".....2222222......",
+  "...2233333322....",
+  "..223333333322...",
+  ".22222222222222..",
+  "222222222222222 2",
+  "222222222222222222",
+  ".33.222222.33.....",
+];
+
+// The camera. Authored as its own path so the pan can lead the action —
+// it drifts ahead of the spy during stealth and snaps behind the car once
+// the chase starts, which is what makes the escape feel fast.
+function spyCam(t) {
+  return arcadePath(
+    [
+      [0, 0],
+      [3000, 10],
+      [7000, 120],
+      [11000, 190],
+      [14500, 270],
+      [18500, 300],
+      [19500, 320],
+      [24000, 470],
+      [28000, 690],
+      [31000, 790],
+      [32000, 820],
+    ],
+    t
+  );
+}
+
+// World x of the agent through the stealth acts.
+function spyAgentWorldX(t) {
+  return arcadePath(
+    [
+      [0, 30],
+      [3000, 70],
+      [5200, 120],
+      [7000, 150],
+      [9000, 205],
+      [11000, 240],
+      [12800, 250],
+      [14500, 330],
+      [18500, 355],
+      [19600, 380],
+      [22500, 470],
+      [24200, 520],
+    ],
+    t
+  );
+}
+
+function drawSpyScene(ctx, state, t, now) {
+  const cam = spyCam(t);
+  const X = (worldX) => Math.round(worldX - cam);
+  const onScreen = (worldX, pad) => worldX - cam > -(pad || 40) && worldX - cam < ARCADE_WIDTH + (pad || 40);
+
+  const alarm = t > 18500 && t < 29000;
+  const flash = alarm && Math.floor(now / 200) % 2 === 0;
+
+  // ---- sky: stars parallax at a fraction of the camera ----
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 0; i < 18; i++) {
+    const sx = ((i * 61 - cam * 0.15) % 190 + 190) % 190 - 15;
+    ctx.fillRect(Math.round(sx), 3 + ((i * 13) % 11), 1, 1);
+  }
+  drawArcadeCircle(ctx, X(120) + 0, 9, 4, ARCADE_INK[1]);
+
+  // ---- ground ----
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, SPY_GROUND_Y, ARCADE_WIDTH, 1);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 0; i < 40; i++) {
+    const wx = i * 26;
+    if (onScreen(wx, 10)) ctx.fillRect(X(wx), SPY_GROUND_Y + 4, 6, 1);
+  }
+
+  // ---- ACT 1: perimeter fence + searchlight towers ----
+  for (const [wx, phase] of [[0, 0], [230, 1.9]]) {
+    if (!onScreen(wx, 60)) continue;
+    const tx = X(wx);
     ctx.fillStyle = ARCADE_INK[2];
-    if (flap) {
-      ctx.fillRect(Math.round(bx), 9, 2, 1);
-      ctx.fillRect(Math.round(bx) + 2, 8, 2, 1);
-      ctx.fillRect(Math.round(bx) + 4, 9, 2, 1);
+    ctx.fillRect(tx - 1, 22, 3, SPY_GROUND_Y - 22);
+    ctx.fillRect(tx - 3, 20, 7, 3);
+    const aim = Math.PI * (0.34 + Math.sin(now / 1600 + phase) * 0.15);
+    for (let i = 5; i < 40; i++) {
+      const px = tx + Math.cos(aim) * i;
+      const py = 22 + Math.sin(aim) * i;
+      if (py > SPY_GROUND_Y) break;
+      const spread = Math.max(2, Math.round(i * 0.4));
+      ctx.fillStyle = i % 3 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
+      ctx.fillRect(Math.round(px - spread / 2), Math.round(py), spread, 1);
+    }
+  }
+  // chain-link fence
+  for (let wx = 40; wx < 200; wx += 4) {
+    if (!onScreen(wx, 6)) continue;
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(X(wx), 34, 1, SPY_GROUND_Y - 34);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  if (onScreen(120, 90)) ctx.fillRect(X(40), 34, 160, 1);
+
+  // ---- ACT 1b: the security beam and the gadget that kills it ----
+  const beamAlive = t < 9200;
+  if (onScreen(212, 30)) {
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(X(206), 30, 2, 6);
+    ctx.fillRect(X(206), SPY_GROUND_Y - 8, 2, 6);
+    if (beamAlive) {
+      ctx.fillStyle = Math.floor(now / 120) % 2 === 0 ? ARCADE_INK[3] : ARCADE_INK[2];
+      for (let y = 36; y < SPY_GROUND_Y - 8; y += 2) ctx.fillRect(X(207), y, 1, 1);
+    } else if (t < 10200) {
+      // dying sparks
+      ctx.fillStyle = ARCADE_INK[2];
+      for (let i = 0; i < 4; i++) ctx.fillRect(X(207) + ((i * 3) % 5) - 2, 38 + i * 3, 1, 1);
+    }
+  }
+  // the gadget: a small disc the agent sets down, which pulses then kills it
+  if (t > 7600 && t < 11500 && onScreen(200, 20)) {
+    const pulse = Math.floor(now / 140) % 2 === 0;
+    ctx.fillStyle = t < 9200 && pulse ? ARCADE_INK[3] : ARCADE_INK[2];
+    ctx.fillRect(X(199), SPY_GROUND_Y - 3, 4, 2);
+    if (t < 9200) {
+      const r = 3 + Math.round(((now / 90) % 10));
+      drawArcadeCircle(ctx, X(201), SPY_GROUND_Y - 3, r, ARCADE_INK[1]);
+    }
+  }
+
+  // ---- ACT 1c: a guard on patrol ----
+  const guardWorld = 268 + Math.sin(t / 2100) * 30;
+  if (onScreen(guardWorld, 20)) {
+    drawArcadeSprite(ctx, SPY_GUARD, X(guardWorld), SPY_GROUND_Y - SPY_GUARD.length, 1);
+    // torch
+    ctx.fillStyle = ARCADE_INK[1];
+    const dir = Math.cos(t / 2100) > 0 ? 1 : -1;
+    for (let i = 2; i < 14; i += 2) ctx.fillRect(X(guardWorld) + 2 + dir * i, SPY_GROUND_Y - 6 + (i >> 2), 2, 1);
+  }
+
+  // ---- ACT 2: the facility wall + vault ----
+  if (onScreen(360, 120)) {
+    ctx.fillStyle = flash ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(X(300), 26, 1, SPY_GROUND_Y - 26);
+    ctx.fillRect(X(430), 26, 1, SPY_GROUND_Y - 26);
+    ctx.fillRect(X(300), 26, 131, 1);
+    for (let i = 0; i < 8; i++) {
+      const wx = 312 + i * 15;
+      ctx.fillStyle = flash ? ARCADE_INK[3] : i % 3 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
+      ctx.fillRect(X(wx), 31, 4, 3);
+    }
+    // vault
+    const vx = X(348);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(vx, 36, 14, 14);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(vx + 1, 37, 12, 12);
+    drawArcadeCircle(ctx, vx + 7, 43, 3, ARCADE_INK[2]);
+    if (t > 15600) {
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(vx - 6, 36, 6, 14);
+      if (t < 18500) {
+        ctx.fillStyle = Math.floor(now / 150) % 2 === 0 ? ARCADE_INK[3] : ARCADE_INK[2];
+        ctx.fillRect(vx + 5, 41, 5, 5);
+      }
+    }
+  }
+
+  // ---- ACT 3: the closing gate, and the pursuer ----
+  if (t > 22000 && onScreen(560, 60)) {
+    const p = arcadeClamp01((t - 22000) / 3200);
+    const gh = Math.round(p * 28);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(X(556), 20, 2, SPY_GROUND_Y - 20);
+    ctx.fillRect(X(600), 20, 2, SPY_GROUND_Y - 20);
+    ctx.fillRect(X(556), 20, 46, 2);
+    for (let i = 0; i < gh; i += 3) ctx.fillRect(X(558), 22 + i, 42, 1);
+  }
+  if (t > 24500) {
+    const chaseX = arcadePath([[24500, 420], [31000, 700]], t);
+    if (onScreen(chaseX, 30)) {
+      drawArcadeSprite(ctx, SPY_CAR, X(chaseX), SPY_GROUND_Y - 7, 1, ARCADE_INK[1]);
+      if (flash) {
+        ctx.fillStyle = ARCADE_INK[3];
+        ctx.fillRect(X(chaseX) + 6, SPY_GROUND_Y - 11, 2, 2);
+      }
+    }
+  }
+
+  // ---- the agent ----
+  let agentWorld = spyAgentWorldX(t);
+  let sprite = SPY_AGENT;
+  let agentVisible = t < 24600;
+  if (t > 4200 && t < 5200) sprite = SPY_AGENT_CROUCH; // ducks a sweep
+  else if (t > 7600 && t < 9200) sprite = SPY_AGENT_CROUCH; // placing the gadget
+  else if (t > 11400 && t < 12900) sprite = SPY_AGENT_CROUCH; // hides from the guard
+  else if (t > 18500) sprite = Math.floor(t / 130) % 2 === 0 ? SPY_AGENT_RUN : SPY_AGENT;
+  else if (t > 3000 && t < 14500) sprite = Math.floor(t / 210) % 2 === 0 ? SPY_AGENT_RUN : SPY_AGENT;
+
+  if (agentVisible && onScreen(agentWorld, 20)) {
+    drawArcadeSprite(ctx, sprite, X(agentWorld), SPY_GROUND_Y - sprite.length, 1);
+    // the stolen tile, once taken, stays visibly in hand for the rest of it
+    if (t > 17400) {
+      ctx.fillStyle = Math.floor(now / 150) % 2 === 0 ? ARCADE_INK[3] : ARCADE_INK[2];
+      ctx.fillRect(X(agentWorld) - 2, SPY_GROUND_Y - sprite.length - 3, 4, 4);
+    }
+  }
+
+  // ---- ACT 4: the car, the dock, and the payoff ----
+  const carWorld = arcadePath(
+    [
+      [20000, 620],
+      [23200, 505],
+      [24400, 505],
+      [28600, 800],
+      [30000, 872],
+      [32000, 940],
+    ],
+    t
+  );
+  const launched = t > 24400;
+
+  // the dock and the water beyond it
+  if (onScreen(840, 140)) {
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(X(700), SPY_GROUND_Y, Math.max(0, X(846) - X(700)), 1);
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let i = 0; i < 5; i++) ctx.fillRect(X(760 + i * 20), SPY_GROUND_Y + 1, 2, 6);
+    // sea
+    for (let x = Math.max(0, X(846)); x < ARCADE_WIDTH; x++) {
+      const wy = SPY_GROUND_Y + 4 + Math.round(Math.sin((x + cam * 0.6 + now / 90) / 6) * 1.6);
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(x, wy, 1, 1);
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(x, wy + 5, 1, 1);
+    }
+  }
+
+  if (t > 20000 && onScreen(carWorld, 40)) {
+    // arc off the end of the dock, then submerge
+    let carY = SPY_GROUND_Y - 7;
+    let submerged = false;
+    if (t > 29300) {
+      const p = arcadeClamp01((t - 29300) / 900);
+      carY = SPY_GROUND_Y - 7 - Math.round(Math.sin(p * Math.PI) * 9) + Math.round(p * 14);
+      submerged = p >= 1;
+    }
+    if (!submerged) {
+      drawArcadeSprite(ctx, SPY_CAR, X(carWorld), Math.round(carY), 1);
+      if (launched) {
+        ctx.fillStyle = ARCADE_INK[1];
+        for (let i = 1; i <= 5; i++) ctx.fillRect(X(carWorld) - i * 8 - 4, Math.round(carY) + 3 + (i % 2), 6, 1);
+      }
     } else {
-      ctx.fillRect(Math.round(bx), 8, 2, 1);
-      ctx.fillRect(Math.round(bx) + 2, 9, 2, 1);
-      ctx.fillRect(Math.round(bx) + 4, 8, 2, 1);
+      // PAYOFF: it surfaces as a submersible — hull, conning tower, periscope,
+      // and the stolen tile still glowing behind the canopy.
+      const subY = SPY_GROUND_Y + 8;
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(X(carWorld) + 1, subY, 16, 4);
+      ctx.fillRect(X(carWorld) + 5, subY - 3, 6, 3);
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(X(carWorld) + 7, subY - 8, 1, 5);
+      ctx.fillRect(X(carWorld) + 7, subY - 9, 3, 1);
+      ctx.fillRect(X(carWorld) + 12, subY + 1, 2, 2);
+      // bubbles
+      ctx.fillStyle = ARCADE_INK[1];
+      for (let i = 0; i < 5; i++) {
+        const ph = (now / 700 + i * 0.2) % 1;
+        ctx.fillRect(X(carWorld) - 3 - i * 3, subY + 2 - Math.round(ph * 6), 1, 1);
+      }
+    }
+    // the splash as it hits
+    if (t > 29900 && t < 30600) {
+      const p = (t - 29900) / 700;
+      ctx.fillStyle = p < 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
+      for (let i = 0; i < 9; i++) {
+        ctx.fillRect(
+          X(carWorld) + 8 + Math.round((i - 4) * p * 9),
+          SPY_GROUND_Y + 6 - Math.round(Math.sin(p * Math.PI) * 12) + Math.abs(i - 4),
+          1,
+          2
+        );
+      }
+    }
+  }
+}
+
+
+
+// ---- SCENE: aquarium ------------------------------------------------------
+//
+// The calm one. No story, no payoff to wait for — the brief is simply "this is
+// a nice little aquarium", so the design goal was continuous life rather than
+// progression.
+//
+// SEAMLESS LOOP: every fish's motion is a pure function of scene time whose
+// period divides AQUARIUM_DURATION_MS exactly (32s / 1, 2 or 4). At t=duration
+// every swimmer is therefore back where it began, so the wrap is invisible
+// even on a load long enough to replay it several times. Bubbles and seaweed
+// key off `now` instead and are continuous by construction.
+const AQUARIUM_DURATION_MS = 32000;
+const AQ_FLOOR_Y = 54;
+
+// Fish silhouettes, deliberately unalike: a plain swimmer, a tall round one,
+// a tiny dart, a long slow cruiser, and a flat bottom-dweller.
+const AQ_FISH_S = [".22.", "2222", "3222", ".22."];
+const AQ_FISH_S_L = [".22.", "2222", "2223", ".22."];
+const AQ_FISH_ROUND = ["..222..", ".22222.", "3222222", ".222222", "..2222."];
+const AQ_FISH_TINY = ["22.", "323"];
+const AQ_FISH_BIG = [
+  "....22222....",
+  "..222222222..",
+  ".32222222222.",
+  "3222222222222",
+  ".32222222222.",
+  "..222222222..",
+  "....22222....",
+];
+const AQ_FISH_FLAT = [".2222.", "322222", ".2222."];
+
+// The landmark: a little sunken ship, listing to port with a snapped mast,
+// two portholes and a half-buried bow.
+const AQ_WRECK = [
+  "..........3..........",
+  ".........3...........",
+  "........3............",
+  "......33.............",
+  ".....3...............",
+  "..3333333333333......",
+  ".3.2.....2....33.....",
+  "33333333333333333....",
+  "..3333333333333333...",
+];
+
+function aqFish(t, period, phase) {
+  // 0..1, wrapping. Period divides the scene duration so the loop is clean.
+  return ((t / period + phase) % 1 + 1) % 1;
+}
+
+function drawAqSeaweed(ctx, baseX, height, now, seed) {
+  for (let i = 0; i < height; i++) {
+    const sway = Math.sin(now / 900 + seed + i / 3.2) * (i / height) * 3.5;
+    ctx.fillStyle = i > height - 3 ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(Math.round(baseX + sway), AQ_FLOOR_Y - i, 2, 1);
+  }
+}
+
+function drawAquariumScene(ctx, state, t, now) {
+  // tank glass
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, 1, ARCADE_WIDTH, 1);
+  ctx.fillRect(0, 0, 1, ARCADE_HEIGHT);
+  ctx.fillRect(ARCADE_WIDTH - 1, 0, 1, ARCADE_HEIGHT);
+  // surface shimmer
+  for (let x = 2; x < ARCADE_WIDTH - 2; x += 2) {
+    const s = Math.sin((x + now / 40) / 7) > 0.3;
+    ctx.fillStyle = s ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(x, 3, 1, 1);
+  }
+
+  // gravel + rocks
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let x = 1; x < ARCADE_WIDTH - 1; x++) {
+    const h = 4 + Math.round(Math.sin(x / 13) * 1.6 + Math.sin(x / 5) * 0.9);
+    ctx.fillRect(x, ARCADE_HEIGHT - h, 1, h);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  for (let x = 3; x < ARCADE_WIDTH; x += 7) ctx.fillRect(x, AQ_FLOOR_Y + 4, 2, 1);
+  // a couple of boulders
+  for (const [bx, bw] of [[18, 9], [96, 7]]) {
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(bx, AQ_FLOOR_Y - 1, bw, 5);
+    ctx.fillRect(bx + 1, AQ_FLOOR_Y - 3, bw - 2, 3);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(bx + 1, AQ_FLOOR_Y - 3, bw - 2, 1);
+  }
+
+  drawAqSeaweed(ctx, 8, 22, now, 0);
+  drawAqSeaweed(ctx, 12, 15, now, 1.4);
+  drawAqSeaweed(ctx, 140, 26, now, 2.1);
+  drawAqSeaweed(ctx, 146, 17, now, 3.3);
+  drawAqSeaweed(ctx, 70, 12, now, 4.7);
+
+  // the sunken ship, the tank's landmark
+  const wreckX = 46;
+  const wreckY = AQ_FLOOR_Y - AQ_WRECK.length + 3;
+  drawArcadeSprite(ctx, AQ_WRECK, wreckX, wreckY, 1);
+  // it burps a bubble now and then, from the same porthole
+  const burp = (now / 2600) % 1;
+  if (burp < 0.5) {
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(wreckX + 4, wreckY + 6 - Math.round(burp * 2 * 26), 1, 1);
+  }
+
+  // air stone, bottom left — a continuous column, the tank's heartbeat
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(30, AQ_FLOOR_Y + 3, 5, 2);
+  for (let i = 0; i < 9; i++) {
+    const ph = ((now / 1500 + i * 0.111) % 1);
+    const by = AQ_FLOOR_Y + 2 - Math.round(ph * (AQ_FLOOR_Y - 2));
+    ctx.fillStyle = ph > 0.7 ? ARCADE_INK[1] : ARCADE_INK[2];
+    ctx.fillRect(32 + Math.round(Math.sin(ph * 9 + i) * 2), by, 1, 1);
+  }
+
+  // ---- fish ----
+  // Big slow cruiser, right to left, one full traverse per loop.
+  {
+    const p = aqFish(t, AQUARIUM_DURATION_MS, 0.15);
+    const x = ARCADE_WIDTH + 16 - p * (ARCADE_WIDTH + 34);
+    const y = 20 + Math.sin(p * Math.PI * 4) * 5;
+    drawArcadeSprite(ctx, AQ_FISH_BIG, Math.round(x), Math.round(y), 1);
+    // tail beat
+    ctx.fillStyle = ARCADE_INK[2];
+    const tw = Math.abs(Math.sin(now / 340)) > 0.5 ? 3 : 2;
+    ctx.fillRect(Math.round(x) + 13, Math.round(y) + 2, tw, 3);
+
+    // THE GAG: a tiny fish tucks in behind the cruiser and tags along, then
+    // loses interest and peels off.
+    const follow = p > 0.28 && p < 0.62;
+    if (follow) {
+      const fx = x + 17 + Math.sin(now / 300) * 2;
+      drawArcadeSprite(ctx, AQ_FISH_TINY, Math.round(fx), Math.round(y + 3), 1);
+    }
+  }
+
+  // Round fish, left to right, twice per loop, bobbing.
+  {
+    const p = aqFish(t, AQUARIUM_DURATION_MS / 2, 0.6);
+    const x = -10 + p * (ARCADE_WIDTH + 22);
+    const y = 32 + Math.sin(p * Math.PI * 6) * 6;
+    drawArcadeSprite(ctx, AQ_FISH_ROUND, Math.round(x), Math.round(y), 1);
+  }
+
+  // Two small fish loosely schooling, right to left, twice per loop.
+  for (let i = 0; i < 2; i++) {
+    const p = aqFish(t, AQUARIUM_DURATION_MS / 2, 0.05 + i * 0.06);
+    const x = ARCADE_WIDTH + 8 - p * (ARCADE_WIDTH + 20);
+    const y = 12 + i * 5 + Math.sin(p * Math.PI * 8 + i) * 3;
+    drawArcadeSprite(ctx, AQ_FISH_S_L, Math.round(x), Math.round(y), 1);
+  }
+
+  // Tiny darter: four traversals, moves in bursts then coasts.
+  {
+    const p = aqFish(t, AQUARIUM_DURATION_MS / 4, 0.33);
+    const burst = Math.min(1, Math.max(0, (Math.sin(p * Math.PI * 6) + 1) / 2));
+    const x = -6 + (p * 0.75 + burst * 0.25) * (ARCADE_WIDTH + 14);
+    const y = 40 + Math.sin(p * Math.PI * 10) * 4;
+    drawArcadeSprite(ctx, AQ_FISH_TINY, Math.round(x), Math.round(y), 1);
+  }
+
+  // Bottom-dweller, hugging the gravel, one slow pass per loop.
+  {
+    const p = aqFish(t, AQUARIUM_DURATION_MS, 0.72);
+    const x = -8 + p * (ARCADE_WIDTH + 18);
+    const y = AQ_FLOOR_Y - 3 + Math.sin(p * Math.PI * 12) * 1.2;
+    drawArcadeSprite(ctx, AQ_FISH_FLAT, Math.round(x), Math.round(y), 1);
+  }
+
+  // A shy one that peeks out of the wreck and thinks better of it.
+  {
+    const ph = (t / (AQUARIUM_DURATION_MS / 2)) % 1;
+    if (ph > 0.55 && ph < 0.78) {
+      const out = Math.sin(((ph - 0.55) / 0.23) * Math.PI) * 6;
+      drawArcadeSprite(ctx, AQ_FISH_S, Math.round(wreckX + 8 + out), wreckY + 5, 1);
     }
   }
 }
@@ -2494,27 +3028,15 @@ const ARCADE_SCENES = [
   {
     name: "starfighter",
     durationMs: SF_DURATION_MS,
-    stillAtMs: SF_INTRO_MS + 2100,
+    // The heavy on screen, its three-shot spread descending, the fighter
+    // banking clear with a lance in flight — the frame with the most
+    // "tiny space battle" context in it, rather than the one with the most
+    // pixels.
+    stillAtMs: 22000,
     fade: 0.62,
     create: createStarfighterState,
     update: updateStarfighter,
     draw: drawStarfighterScene,
-  },
-  {
-    name: "bigfoot",
-    durationMs: BIGFOOT_DURATION_MS,
-    // Mid-stare, eyes open, forest in frame — the scene's actual joke.
-    stillAtMs: 10000,
-    fade: 0.92,
-    draw: drawBigfootScene,
-  },
-  {
-    name: "ufo-abduction",
-    durationMs: UFO_DURATION_MS,
-    // Beam active with the file halfway lifted.
-    stillAtMs: 8000,
-    fade: 0.8,
-    draw: drawUfoScene,
   },
   {
     name: "projector",
@@ -2526,12 +3048,35 @@ const ARCADE_SCENES = [
     draw: drawProjectorScene,
   },
   {
-    name: "pirate-ship",
-    durationMs: PIRATE_DURATION_MS,
-    // Cannonball at the apex of its arc, ship and monster both in frame.
-    stillAtMs: 7100,
-    fade: 0.75,
-    draw: drawPirateScene,
+    name: "science-lab",
+    durationMs: LAB_DURATION_MS,
+    stillAtMs: 19000,
+    fade: 0.94,
+    draw: drawLabScene,
+  },
+  {
+    name: "deep-sea-diver",
+    durationMs: DIVER_DURATION_MS,
+    stillAtMs: 22200,
+    fade: 0.86,
+    create: createDiverState,
+    update: updateDiverState,
+    draw: drawDiverScene,
+  },
+  {
+    name: "superspy",
+    durationMs: SPY_DURATION_MS,
+    // Agent at the vault with the glowing tile, alarm just lit.
+    stillAtMs: 17800,
+    fade: 0.94,
+    draw: drawSpyScene,
+  },
+  {
+    name: "aquarium",
+    durationMs: AQUARIUM_DURATION_MS,
+    stillAtMs: 9000,
+    fade: 0.9,
+    draw: drawAquariumScene,
   },
 ];
 
@@ -2554,10 +3099,56 @@ let arcadeLastRender = 0;
 let arcadeCurrentScene = null;
 let arcadePreviousScene = null;
 
-function pickArcadeScene() {
+// [V2-POLISH / MICRO-ARCADE-TEST-SEQUENTIAL]
+// TESTING SWITCH — flip to "random" to restore production behavior.
+// "random"     — ship behavior: uniform pick excluding the previous scene.
+// "sequential" — walks the pool in ARCADE_SCENES order, one step per load
+//                session, so every scene can be reviewed without reloading
+//                until chance offers it.
+// This is the ONLY thing that differs between the two modes. Both funnel
+// through the same pickArcadeScene() call site, so the lifecycle, the
+// same-scene looping and the rAF ownership are untouched by the choice.
+const MICRO_ARCADE_SELECTION_MODE = "sequential";
+const MICRO_ARCADE_TEST_INDEX_KEY = "bg-micro-arcade-test-index";
+
+// sessionStorage, deliberately: it is scoped to the tab, dies with it, and
+// needs no schema, migration or cleanup. Wrapped because storage access
+// throws outright in some privacy modes and sandboxed frames, and a testing
+// aid must never be able to break a real load.
+function readArcadeTestIndex() {
+  try {
+    const raw = window.sessionStorage.getItem(MICRO_ARCADE_TEST_INDEX_KEY);
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed % ARCADE_SCENES.length : 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
+function writeArcadeTestIndex(index) {
+  try {
+    window.sessionStorage.setItem(MICRO_ARCADE_TEST_INDEX_KEY, String(index));
+  } catch (err) {
+    /* testing aid only — a storage failure must not affect the load */
+  }
+}
+
+// The production selector, kept intact and reachable.
+function pickArcadeSceneRandom() {
   const candidates =
     ARCADE_SCENES.length > 1 ? ARCADE_SCENES.filter((scene) => scene !== arcadePreviousScene) : ARCADE_SCENES;
-  const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function pickArcadeSceneSequential() {
+  const index = readArcadeTestIndex();
+  writeArcadeTestIndex((index + 1) % ARCADE_SCENES.length);
+  return ARCADE_SCENES[index];
+}
+
+function pickArcadeScene() {
+  const chosen =
+    MICRO_ARCADE_SELECTION_MODE === "sequential" ? pickArcadeSceneSequential() : pickArcadeSceneRandom();
   arcadeCurrentScene = chosen;
   arcadePreviousScene = chosen;
   return chosen;
