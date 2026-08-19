@@ -85,6 +85,25 @@ export async function runSyncV3Pass({ profileStore, dirHandle, state = {}, write
   // stamped and settled, before this pass reads or reasons about them.
   await profileStore.whenFactsSettled();
 
+  // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+  // [WHY: reload-before-publish. Same-origin tabs share IndexedDB but not
+  //  ProfileStore memory, and the V3 writer role is pinned to ONE tab - so the
+  //  tab that publishes is quite possibly not the tab the user is typing in.
+  //  Without this it would publish its own stale view, and the other tab's
+  //  change would sit durable-but-unpublished until the writer happened to
+  //  change something itself.
+  //
+  //  Placed here rather than in the BroadcastChannel handler on purpose: it must
+  //  hold when a message was missed, when it arrived late, and on a browser with
+  //  no BroadcastChannel at all. The channel makes peers current in milliseconds;
+  //  this makes the PUBLISHER current unconditionally. refreshFromStorage merges
+  //  rather than assigns, so it can never discard a local mutation that has not
+  //  reached storage yet.]
+  if (typeof profileStore.refreshFromStorage === "function") {
+    await profileStore.refreshFromStorage();
+    await profileStore.whenFactsSettled();
+  }
+
   const deviceId = profileStore.getDeviceId();
   if (!deviceId) return { status: "no-device-identity" };
 
