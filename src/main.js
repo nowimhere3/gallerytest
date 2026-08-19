@@ -8142,14 +8142,41 @@ function renderProfileSync() {
     //  would be told it is running Sync V1 over a folder nothing has ever
     //  written to. Every line here states plainly that no syncing happens yet;
     //  that remains true until the stage that adds the V3 transport.]
-    case "v3-ready":
-      line = `Sync V3 — folder connected: "${status.v3FolderName}". No V3 transport yet, so nothing is being synced.`;
+    case "v3-ready": {
+      // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+      // [WHY: says which of the two things is true rather than one comforting
+      //  sentence covering both. A pass that merged peers but was refused a
+      //  publish is genuinely half-working, and the user is entitled to know
+      //  their device is reading but not contributing.]
+      line = `Sync V3 — folder connected: "${status.v3FolderName}".`;
+      if (status.v3PublishBlocked) {
+        line += ` Reading only — publishing is disabled (${status.v3PublishBlocked}).`;
+      } else if (!status.v3LiveWritesEnabled) {
+        line += " Reading only — live V3 writes are not enabled yet.";
+      }
+      if (status.v3MergedPeers) {
+        line += ` · ${status.v3MergedPeers} peer device${status.v3MergedPeers === 1 ? "" : "s"} merged`;
+      }
+      if (status.v3SkippedPeers && status.v3SkippedPeers.length) {
+        const count = status.v3SkippedPeers.length;
+        line += ` · ${count} director${count === 1 ? "y" : "ies"} skipped this pass (will retry)`;
+      }
       break;
+    }
     case "v3-permission-needed":
       line = `Sync V3 — permission needed for "${status.v3FolderName}". Nothing is being synced.`;
       break;
     case "v3-not-configured":
       line = "Sync V3 is active — no V3 folder chosen yet. Nothing is being synced.";
+      break;
+    // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+    // [WHY: a V3 status must never reach the `default` branch below, which
+    //  renders "✓ Connected … Sync V1" because its only mode test is
+    //  `mode === "v2"`. A V3 pass that failed read-back verification reported as
+    //  a connected V1 sync is the precise false reassurance Stage B removed from
+    //  V1, so every V3 status this engine can produce gets an explicit arm.]
+    case "v3-verify-failed":
+      line = `Sync V3 not completed — ${status.message || "nothing was accepted; local Profile data is unaffected."}`;
       break;
     case "connected":
     default: {

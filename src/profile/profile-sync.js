@@ -56,7 +56,18 @@ import {
   saveV3ActivationState,
   clearV3ActivationState,
   ACTIVATION_V3,
+  V2_ASSOCIATION_STORE,
+  V3_ASSOCIATION_STORE,
 } from "../storage/profile-sync-store.js";
+// [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+// [WHY: V3_LIVE_WRITES_ENABLED is imported here as well as consulted inside the
+//  pass, because the scheduler has to make the same decision one level up: a
+//  cadence that polls every three seconds to run a read-only pass that can never
+//  publish is pure cost. Both readings come from the ONE constant, so enabling
+//  live writes turns on the pass and its cadence together and cannot half-enable
+//  either.]
+import { runSyncV3Pass } from "./sync-v3.js";
+import { V3_LIVE_WRITES_ENABLED } from "./sync-v3-write-policy.js";
 import { DEFAULT_PROFILE_NAME } from "./indexeddb.js";
 // [PHASE-6-SYNC-V2]
 // [STAGE-E-LIVE-INTEGRATION]
@@ -426,6 +437,11 @@ export class ProfileSync {
   // the V2 status line the user is reading. When mode IS v3, #status mirrors
   // this as "v3-<value>" — see #refreshV3Connection.
   #v3Status = "not-configured";
+  // Per-pass carry-over for the V3 pass, mirroring #passState's role for V2:
+  // what this device last successfully published, so the pass can tell "our own
+  // generation is still propagating" from "our own generation is wrong".
+  #v3PassState = {};
+  #lastV3PassInfo = null;
   // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
   // [WHY: started in the CONSTRUCTOR and awaited by #reconcileImpl, so no
   //  reconcile can possibly run before this installation's transport is known.
@@ -517,6 +533,28 @@ export class ProfileSync {
       }
     } catch (error) {
       console.warn("[SYNCV3] Could not read the saved V3 sync configuration.", error);
+    }
+
+    // Last, because it depends on the mode every branch above may have changed.
+    await this.#applyAssociationStoreForMode();
+  }
+
+  // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+  // [WHY: the ONE place that decides which association row ProfileStore uses,
+  //  and it decides it from the one place that already knows the transport mode.
+  //  ProfileStore is never told what mode is running — it is handed an adapter —
+  //  so "which row?" cannot drift apart from "which transport?" the way two
+  //  independent mode checks eventually would.
+  //
+  //  Tolerant of a store without the method so a test double, or a future
+  //  ProfileStore-shaped object, does not have to implement it to be usable.]
+  async #applyAssociationStoreForMode() {
+    if (!this.#profile || typeof this.#profile.setAssociationStore !== "function") return;
+    const store = this.#mode === ACTIVATION_V3 ? V3_ASSOCIATION_STORE : V2_ASSOCIATION_STORE;
+    try {
+      await this.#profile.setAssociationStore(store);
+    } catch (error) {
+      console.warn(`[SYNCV3] Could not point the association cache at "${store.id}".`, error);
     }
   }
 
@@ -699,7 +737,22 @@ export class ProfileSync {
     //  otherwise. Returning here rather than letting the pass reach #reconcileV3
     //  keeps the button honest: no status flicker through "Syncing…", no
     //  lastSyncAt refresh, no implication that a V3 sync exists yet.]
-    if (this.#mode === ACTIVATION_V3) return;
+    //
+    // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+    // [WHY: now runs the real pass instead of returning. It remains honest while
+    //  live writes are off because the PASS is what refuses to write — it reads,
+    //  merges and adopts, creates no directory, publishes nothing, and reports
+    //  publishBlocked. A manual Sync Now that adopts a peer's changes is useful;
+    //  one that silently did nothing at all was not.]
+    if (this.#mode === ACTIVATION_V3) {
+      if (!this.#v3DirHandle) return;
+      if (this.#debounceTimer) {
+        clearTimeout(this.#debounceTimer);
+        this.#debounceTimer = null;
+      }
+      await this.#reconcile();
+      return;
+    }
     if (!this.#dirHandle) return;
     if (this.#debounceTimer) {
       clearTimeout(this.#debounceTimer);
@@ -910,10 +963,23 @@ export class ProfileSync {
       this.#baselineFingerprint = null;
       this.#lastPassInfo = null;
       this.#passState = {};
+      // A fresh transport gets fresh per-pass carry-over; the V2 settle state
+      // describes a different folder entirely.
+      this.#v3PassState = {};
+      this.#lastV3PassInfo = null;
+
+      // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+      // [WHY: repointed the moment the mode changes, not at the next boot. This
+      //  is the one path that flips the mode WITHOUT going through
+      //  #loadActivation, so without this line the installation would run V3 for
+      //  the rest of the session while still reading and writing the V2
+      //  association cache - the exact contamination this stage prevents, in the
+      //  one window nobody would think to test.]
+      await this.#applyAssociationStoreForMode();
 
       await this.#refreshV3Connection();
-      // #shouldPoll() is false in V3 mode: this clears the V2 cadence and arms
-      // nothing, which is how polling stops without a second stop path.
+      // Arms the V3 cadence once live writes are enabled, and nothing while they
+      // are off - see #shouldPoll.
       this.#armPollTimer();
       return { ok: true, mode: ACTIVATION_V3 };
     };
@@ -1047,6 +1113,20 @@ export class ProfileSync {
       v3FolderName: this.#v3FolderName,
       v3ConnectedAt: this.#v3ConnectedAt,
       v3ActivatedAt: this.#v3ActivatedAt,
+      // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+      // [WHY: `v3PublishBlocked` is surfaced rather than hidden. A device that
+      //  merged peers but published nothing has done something real and something
+      //  incomplete, and a status surface unable to tell those apart is how
+      //  "connected" starts covering for a device that is silently not
+      //  contributing.]
+      v3LiveWritesEnabled: V3_LIVE_WRITES_ENABLED,
+      v3PublishBlocked: this.#lastV3PassInfo ? this.#lastV3PassInfo.publishBlocked : null,
+      v3MergedPeers: this.#lastV3PassInfo ? this.#lastV3PassInfo.mergedPeers : null,
+      v3SkippedPeers: (this.#lastV3PassInfo ? this.#lastV3PassInfo.skippedPeers : []) || [],
+      v3Peers: (this.#lastV3PassInfo ? this.#lastV3PassInfo.peers : []) || [],
+      v3Duplicates: (this.#lastV3PassInfo ? this.#lastV3PassInfo.duplicates : []) || [],
+      associationStoreId:
+        typeof this.#profile.getAssociationStoreId === "function" ? this.#profile.getAssociationStoreId() : null,
     };
   }
 
@@ -1079,6 +1159,17 @@ export class ProfileSync {
     //  installation polls nothing. That is intended while V3 has no pass to run;
     //  the stage that introduces the V3 transport extends this predicate
     //  deliberately rather than inheriting a cadence it never asked for.]
+    // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+    // [WHY: V3's cadence is ready and gated on the SAME constant the pass uses to
+    //  authorize a write. Polling a read-only pass every three seconds would burn
+    //  Drive requests to reach a decision that is already known to be "cannot
+    //  publish", and — more to the point — a device that cannot write has nothing
+    //  to converge TOWARDS: it can adopt peers, but it never contributes, so the
+    //  cadence buys nothing until Stage 03B makes writing possible. One constant
+    //  governs both, so they cannot be half-enabled.]
+    if (this.#mode === ACTIVATION_V3) {
+      return !this.#disposed && V3_LIVE_WRITES_ENABLED && Boolean(this.#v3DirHandle);
+    }
     return !this.#disposed && this.#mode === ACTIVATION_V2 && Boolean(this.#dirHandle) && this.#autoSync;
   }
 
@@ -1165,7 +1256,20 @@ export class ProfileSync {
     //  permission, so every favourite/tag click would queue pointless work three
     //  seconds later. Checked before the handle test below because that one is
     //  about the V1/V2 handle, which V3 mode has deliberately released.]
-    if (this.#mode === ACTIVATION_V3) return;
+    // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+    // [WHY: the V3 path is wired and deliberately inert. With live writes off a
+    //  debounced pass could only re-read Drive and decline to publish, so every
+    //  favourite or tag click would queue a pointless round trip three seconds
+    //  later. Gated on the same constant as the scheduler and the pass itself.]
+    if (this.#mode === ACTIVATION_V3) {
+      if (!V3_LIVE_WRITES_ENABLED || !this.#v3DirHandle) return;
+      if (this.#debounceTimer) clearTimeout(this.#debounceTimer);
+      this.#debounceTimer = setTimeout(() => {
+        this.#debounceTimer = null;
+        this.#reconcile().catch((error) => console.warn("[SYNCV3] Auto sync failed.", error));
+      }, AUTO_SYNC_DEBOUNCE_MS);
+      return;
+    }
     if (!this.#dirHandle || !this.#autoSync) return;
     // [PROFILE-SYNC-BASELINE] While a conflict is unresolved, Auto Sync
     // must never write over the synced copy — see resolveConflict, the
@@ -1234,7 +1338,7 @@ export class ProfileSync {
     //  V1 manifests into whatever folder it had, with no error anywhere. The
     //  default arm is deliberately not V1: an unrecognised mode is a bug, and the
     //  safe response to a bug about WHICH transport to run is to run none.]
-    if (this.#mode === ACTIVATION_V3) return this.#reconcileV3();
+    if (this.#mode === ACTIVATION_V3) return this.#reconcileV3(options);
     if (this.#mode === ACTIVATION_V2) return this.#reconcileV2(options);
     if (this.#mode === ACTIVATION_V1) return this.#reconcileV1();
 
@@ -1252,8 +1356,76 @@ export class ProfileSync {
   //  time here would be claiming a sync that provably never happened, which is
   //  the same untruth Stage B removed from V1's verified publish. The only thing
   //  a V3 pass may do in this stage is re-check that the folder is still usable.]
-  async #reconcileV3() {
+  async #reconcileV3({ background = false } = {}) {
+    // Re-checks the folder first: this also updates #v3Status, which is what the
+    // V3 panel renders, and answers "is the handle still usable" before the pass
+    // spends any time on it.
     await this.#refreshV3Connection();
+    if (!this.#v3DirHandle || this.#v3Status !== "ready") return;
+
+    let result;
+    try {
+      result = await runSyncV3Pass({
+        profileStore: this.#profile,
+        dirHandle: this.#v3DirHandle,
+        state: this.#v3PassState,
+      });
+    } catch (error) {
+      console.error("[SYNCV3] Sync pass threw.", error);
+      this.#status = "offline";
+      this.#message = "Sync could not complete. Local changes are saved.";
+      this.#emit();
+      return;
+    }
+
+    this.#lastV3PassInfo = {
+      mergedPeers: result.mergedPeers || 0,
+      skippedPeers: result.skippedPeers || [],
+      peers: result.peers || [],
+      duplicates: result.duplicates || [],
+      published: Boolean(result.published),
+      adopted: Boolean(result.adopted),
+      publishBlocked: result.publishBlocked || null,
+      ownGenerationSettling: result.ownGenerationSettling || null,
+    };
+
+    switch (result.status) {
+      case "permission-needed":
+        this.#v3Status = "permission-needed";
+        this.#status = "v3-permission-needed";
+        this.#message = result.message || null;
+        this.#emit();
+        return;
+
+      case "verify-failed":
+        // Stage B's discipline, unchanged: nothing accepted, nothing cleaned up,
+        // local data untouched, and no claim that a sync happened.
+        this.#status = "v3-verify-failed";
+        this.#message = result.message || null;
+        this.#emit();
+        return;
+
+      case "no-device-identity":
+        this.#status = "offline";
+        this.#message = "This device has no sync identity yet. Local changes are saved.";
+        this.#emit();
+        return;
+
+      case "ok":
+        this.#status = "v3-ready";
+        this.#message = null;
+        // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+        // [WHY: a background pass that changed nothing observable emits nothing,
+        //  the same quietness rule #acceptV2Pass follows. At a three-second
+        //  cadence the alternative is a re-render per tick forever.]
+        if (!background || result.adopted || result.published) this.#emit();
+        return;
+
+      default:
+        this.#status = "offline";
+        this.#message = "Sync could not complete. Local changes are saved.";
+        this.#emit();
+    }
   }
 
   // [PHASE-6-SYNC-V2]

@@ -99,6 +99,12 @@ const V3_ACTIVATION_RECORD_ID = "activation-v3";
 //  stage reaching for ASSOCIATIONS_RECORD_ID because it is the one that already
 //  works, which would silently merge V3's association facts into the V2 cache
 //  that a dormant-but-intact V2 installation still depends on.]
+//
+// [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+// [WHY: no longer reserved — this row is now live, reached only through
+//  V3_ASSOCIATION_STORE. The Stage 01 comment above is kept because it records
+//  why the row was created before anything needed it, which is the decision that
+//  made this stage a swap rather than a migration.]
 const V3_ASSOCIATIONS_RECORD_ID = "associations-v3";
 
 /** The transport mode SyncV3 activation records. Lives only in V3's own row. */
@@ -516,11 +522,13 @@ export async function clearV3ActivationState() {
 }
 
 /**
- * RESERVED for the stage that introduces V3's shared-library facts — see the
- * V3_ASSOCIATIONS_RECORD_ID comment above. Nothing in this stage calls either
- * of these; they exist so the isolated home is already present and tested.
+ * The full `{ libraryId: Fact<profileId|null> }` map for V3, or `{}` if never saved.
  *
- * The full `{ libraryId: Fact<profileId|null> }` map, or `{}` if never saved.
+ * [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+ * [WHY: no longer reserved — this is now the authoritative association cache for
+ *  a V3-mode installation, reached through V3_ASSOCIATION_STORE below. The row
+ *  was created empty in Stage 01 precisely so this stage had an isolated home to
+ *  move into rather than a reason to reach for the V2 cache.]
  */
 export async function loadV3AssociationsCache() {
   const database = await openDatabase();
@@ -535,7 +543,7 @@ export async function loadV3AssociationsCache() {
   }
 }
 
-/** RESERVED — see loadV3AssociationsCache. Replaces the whole V3 associations map. */
+/** Replaces the whole V3 associations map — callers always pass the full, already-merged map. */
 export async function saveV3AssociationsCache(associations) {
   const database = await openDatabase();
 
@@ -549,6 +557,34 @@ export async function saveV3AssociationsCache(associations) {
     database.close();
   }
 }
+
+// ---- Association-cache adapters (SyncV3, Stage 03A) -----------------------
+//
+// [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+// [WHY: ProfileStore must not learn which sync mode is running. Handing it one
+//  of these two objects keeps every "which row?" decision in the module that
+//  owns the row ids, and leaves ProfileStore with a single association code path
+//  rather than an `if (mode === "v3")` at each of its three storage call sites —
+//  the shape that would guarantee one of them eventually gets missed.
+//
+//  Two adapters, not a mode flag, because the failure this prevents is a WRITE
+//  to the wrong row: an adapter can only reach the row its own functions name,
+//  so a V3-mode store is structurally incapable of saving over the dormant V2
+//  cache, whatever a caller believes the mode to be.]
+
+/** The V1/V2 association cache. The default; unchanged behaviour. */
+export const V2_ASSOCIATION_STORE = Object.freeze({
+  id: ASSOCIATIONS_RECORD_ID,
+  load: loadAssociationsCache,
+  save: saveAssociationsCache,
+});
+
+/** The SyncV3 association cache. Isolated from V2's in every direction. */
+export const V3_ASSOCIATION_STORE = Object.freeze({
+  id: V3_ASSOCIATIONS_RECORD_ID,
+  load: loadV3AssociationsCache,
+  save: saveV3AssociationsCache,
+});
 
 /**
  * Forgets the sync-folder relationship entirely ("Disconnect Sync"). Does

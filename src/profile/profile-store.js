@@ -54,7 +54,7 @@ import { SyncIdentity } from "./sync-device.js";
 //  stamps, or merge — this is the only place those two vocabularies meet, the
 //  same boundary ProfileStore already keeps between itself and indexeddb.js.]
 import * as LibraryRegistry from "../storage/library-registry.js";
-import { loadAssociationsCache, saveAssociationsCache } from "../storage/profile-sync-store.js";
+import { V2_ASSOCIATION_STORE } from "../storage/profile-sync-store.js";
 import {
   seedFactsFromProfileData,
   diffFactsAgainstProfileData,
@@ -193,11 +193,30 @@ export class ProfileStore {
   #associations = {};
   #associationsReady;
 
-  constructor({ identity } = {}) {
+  // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+  // [WHY: WHICH persistent row backs #associations is now injected rather than
+  //  hard-coded, because a V3-mode installation must never read or write the
+  //  dormant V2 cache. This is the ONLY thing that changes: the fact model, the
+  //  merge semantics, the projection and every caller are untouched — the shared
+  //  fact is still associations[libraryId] = Fact<profileId|null>, and there is
+  //  still exactly one association authority in this class.
+  //
+  //  An injected adapter rather than a mode flag, because an adapter can only
+  //  reach the row its own two functions name. A flag would leave this class
+  //  able to write either row and relying on a branch being correct at each of
+  //  the three call sites below; the adapter makes writing the wrong row
+  //  unrepresentable.]
+  #associationStore = V2_ASSOCIATION_STORE;
+
+  constructor({ identity, associationStore } = {}) {
     // Loading is intentionally started by the store itself. Consumers keep
     // using the synchronous ProfileStore API; once saved records arrive, the
     // normal subscription mechanism refreshes any loaded media.
     this.#identity = identity || new SyncIdentity();
+    // Defaults to the V1/V2 cache: an installation that has never heard of V3 —
+    // every installation, until ProfileSync resolves its mode — behaves exactly
+    // as it did before this stage.
+    if (associationStore) this.#associationStore = associationStore;
     this.#ready = this.#resolveActiveProfile();
     this.#loadSavedRecords();
     this.#associationsReady = this.#loadAssociations();
@@ -205,10 +224,44 @@ export class ProfileStore {
 
   async #loadAssociations() {
     try {
-      this.#associations = await loadAssociationsCache();
+      this.#associations = await this.#associationStore.load();
     } catch (error) {
-      console.warn("[SYNC-V2] Could not load library associations.", error);
+      console.warn(`[SYNC] Could not load library associations from "${this.#associationStore.id}".`, error);
     }
+  }
+
+  /**
+   * Points this store's association cache at a different persistent row and
+   * reloads it. Called only by ProfileSync, when the installation's transport
+   * mode is resolved or changed.
+   *
+   * [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+   * [WHY: deliberately RELOADS and never SAVES. The outgoing mode's map must not
+   *  follow the store into the incoming mode's row — that single write would
+   *  merge a dormant V2 installation's associations into V3's cache (or worse,
+   *  the reverse), which is precisely the contamination this stage exists to
+   *  prevent. #associations is cleared before the reload so a failed read leaves
+   *  an empty map rather than the previous mode's data masquerading as this
+   *  one's.]
+   */
+  async setAssociationStore(store) {
+    if (!store || typeof store.load !== "function" || typeof store.save !== "function") {
+      throw new Error("[SYNCV3] setAssociationStore requires an adapter with load() and save().");
+    }
+    await this.#associationsReady;
+    if (this.#associationStore && this.#associationStore.id === store.id) return store.id;
+
+    this.#associationStore = store;
+    this.#associations = {};
+    this.#associationsReady = this.#loadAssociations();
+    await this.#associationsReady;
+    this.#emit();
+    return store.id;
+  }
+
+  /** Which association row is currently authoritative. Diagnostics and tests only. */
+  getAssociationStoreId() {
+    return this.#associationStore ? this.#associationStore.id : null;
   }
 
   /** This installation's stable device identity. Null until it resolves. */
@@ -286,9 +339,9 @@ export class ProfileStore {
     this.#associations = MergeEngine.mergeMaps(this.#associations, { [row.libraryId]: fact }, MergeEngine.mergeFact);
 
     try {
-      await saveAssociationsCache(this.#associations);
+      await this.#associationStore.save(this.#associations);
     } catch (error) {
-      console.warn("[SYNC-V2] Could not persist library associations.", error);
+      console.warn(`[SYNC] Could not persist library associations to "${this.#associationStore.id}".`, error);
     }
     // Best-effort: keeps the row's UI-facing `profileId` field (existing,
     // pre-Sync-V2 field — see [LIBRARY-PROFILE-ASSOCIATION] in
@@ -488,9 +541,9 @@ export class ProfileStore {
     if (changed) {
       this.#associations = merged;
       try {
-        await saveAssociationsCache(this.#associations);
+        await this.#associationStore.save(this.#associations);
       } catch (error) {
-        console.warn("[SYNC-V2] Could not persist merged library associations.", error);
+        console.warn(`[SYNC] Could not persist merged library associations to "${this.#associationStore.id}".`, error);
       }
       this.#emit();
     }
