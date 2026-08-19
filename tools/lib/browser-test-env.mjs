@@ -347,6 +347,37 @@ export function createVirtualDirectory(name = "Browser Gallery Profiles", hooks 
       }
       return node.files.get(parts[parts.length - 1]);
     },
+    /**
+     * Deletes straight out of the virtual folder, bypassing the handle API - the
+     * mirror of writeFile above. Additive: nothing that existed before this
+     * behaves differently.
+     *
+     * [SYNCV3 / STAGE-02 / CONTENT-ADDRESSED-DEVICE-DISCOVERY]
+     * [WHY: needed to stage the states this stage has to survive but no correct
+     *  writer ever produces - a folder renamed underneath the app, a manifest
+     *  committed before its data files landed. Both are things Drive does to a
+     *  folder, not things the transport does, so they have to be staged from
+     *  outside the transport's own API.]
+     */
+    removeFile(filePath) {
+      const parts = filePath.split("/");
+      let node = root;
+      for (const part of parts.slice(0, -1)) {
+        node = node.dirs.get(part);
+        if (!node) return false;
+      }
+      return node.files.delete(parts[parts.length - 1]);
+    },
+    /** Removes a whole directory subtree by path. Same purpose as removeFile. */
+    removeDirectory(dirPath) {
+      const parts = dirPath.split("/");
+      let node = root;
+      for (const part of parts.slice(0, -1)) {
+        node = node.dirs.get(part);
+        if (!node) return false;
+      }
+      return node.dirs.delete(parts[parts.length - 1]);
+    },
   };
 }
 
