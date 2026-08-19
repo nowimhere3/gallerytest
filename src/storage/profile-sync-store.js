@@ -66,10 +66,43 @@ const ASSOCIATIONS_RECORD_ID = "associations";
 //  installation predating this stage genuinely is.]
 const ACTIVATION_RECORD_ID = "activation";
 
-/** The only three activation states. "v1" also covers "never activated". */
+/** The only three activation states this record may hold. "v1" also covers "never activated". */
 export const ACTIVATION_V1 = "v1";
 export const ACTIVATION_V2 = "v2";
 export const ACTIVATION_FAILED = "failed";
+
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+// [WHY: SyncV3 gets its OWN rows, and nothing in any V3 code path may write to
+//  the four rows above. The reason is not tidiness — it is that the V2 rows are
+//  the only description of a known-good, shipped configuration, and this branch
+//  is an experiment. If V3 wrote its mode into ACTIVATION_RECORD_ID, that single
+//  write would replace `activatedAt` and the `migration` provenance of the V2
+//  cutover, and there would be no way back to the state the installation was in
+//  before V3 was tried. Separate rows make "leave V3" a DELETE of V3's own row
+//  rather than a reconstruction of V2's.
+//
+//  The cost of separate rows is that "which transport runs" now has two possible
+//  homes, which is exactly the ambiguity ACTIVATION_RECORD_ID's own comment above
+//  warns about. That is resolved by a single, explicit precedence rule stated in
+//  ONE place — ProfileSync#loadActivation: the V3 row wins if and only if it says
+//  "v3"; otherwise the V2 row decides, exactly as it always has. It is a
+//  precedence rule over two explicit persisted values, never an inference from
+//  whether a folder or directory happens to exist.]
+const V3_CONNECTION_RECORD_ID = "sync-v3";
+const V3_ACTIVATION_RECORD_ID = "activation-v3";
+
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+// [WHY: RESERVED, and deliberately created now rather than when it is first
+//  needed. No V3 transport pass exists yet, so nothing reads or writes this row
+//  in this stage. It exists so the stage that DOES introduce V3's shared-library
+//  facts has an isolated home already sitting there — the alternative is a future
+//  stage reaching for ASSOCIATIONS_RECORD_ID because it is the one that already
+//  works, which would silently merge V3's association facts into the V2 cache
+//  that a dormant-but-intact V2 installation still depends on.]
+const V3_ASSOCIATIONS_RECORD_ID = "associations-v3";
+
+/** The transport mode SyncV3 activation records. Lives only in V3's own row. */
+export const ACTIVATION_V3 = "v3";
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
@@ -329,6 +362,194 @@ export async function persistLastIssuedT(lastIssuedT) {
   }
 }
 
+// ---- SyncV3 isolated records (SyncV3, Stage 01) ---------------------------
+//
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+// [WHY: every function below addresses a V3_* record id and NOTHING else. That
+//  is the whole isolation guarantee, and it is enforced structurally rather than
+//  by review: there is no function in this section that takes a record id as an
+//  argument, so no V3 call site can be made to write a V2 row by passing the
+//  wrong string. The V2 functions above are the mirror image — none of them can
+//  reach a V3 row either.
+//
+//  The DEVICE record is the deliberate exception and is NOT duplicated here. A
+//  V3 device identity would make the same installation two peers, and — far
+//  worse — would reset the logical-clock floor that sync-device.js exists to
+//  protect. Same machine, same installation, same deviceId, in every mode.]
+
+/**
+ * The saved V3 sync-folder relationship, or null if V3 has never been connected.
+ * `handle` is the raw FileSystemDirectoryHandle — callers MUST check/request
+ * permission before using it, exactly as loadSyncConfig()'s callers must.
+ */
+export async function loadV3SyncConfig() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(V3_CONNECTION_RECORD_ID));
+    await completeTransaction(transaction);
+
+    if (!record || !record.handle) return null;
+
+    return {
+      handle: record.handle,
+      folderName: record.folderName || record.handle.name || null,
+      connectedAt: record.connectedAt || null,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Records a brand-new (or replacement) V3 sync-folder relationship.
+ *
+ * [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+ * [WHY: no autoSync/baseline/lastSyncAt fields, unlike saveSyncConnection. V3
+ *  has no transport yet, so persisting a "last sync" or a baseline would be
+ *  recording something that has never happened — the exact false reassurance
+ *  Stage B removed from V1. Those fields get added by the stage that earns them.]
+ */
+export async function saveV3SyncConnection(handle) {
+  const database = await openDatabase();
+
+  try {
+    const record = {
+      id: V3_CONNECTION_RECORD_ID,
+      handle,
+      folderName: handle.name,
+      connectedAt: Date.now(),
+    };
+
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).put(record);
+    await completeTransaction(transaction);
+
+    return record;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Forgets the V3 folder relationship only ("Disconnect V3").
+ *
+ * [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+ * [WHY: deletes exactly one row. Not the V3 activation row — an installation
+ *  can legitimately be in V3 mode with no folder chosen yet, which is a state
+ *  the engine reports truthfully rather than a broken one. Not the device row,
+ *  for the same reason clearSyncConfig() does not touch it. And not, under any
+ *  circumstance, the V2 connection row.]
+ */
+export async function clearV3SyncConfig() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).delete(V3_CONNECTION_RECORD_ID);
+    await completeTransaction(transaction);
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * SyncV3's own activation record. Never null: an installation with no record
+ * has genuinely never activated V3, which reads as mode `null` — deliberately
+ * NOT "v1", because this row has no opinion about what runs when V3 is off.
+ * That answer belongs to loadActivationState() alone.
+ *
+ * Shape: { mode: "v3" | null, activatedAt }.
+ */
+export async function loadV3ActivationState() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(V3_ACTIVATION_RECORD_ID));
+    await completeTransaction(transaction);
+
+    return {
+      mode: record && record.mode === ACTIVATION_V3 ? ACTIVATION_V3 : null,
+      activatedAt: (record && record.activatedAt) || null,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+export async function saveV3ActivationState({ activatedAt = null } = {}) {
+  const database = await openDatabase();
+
+  try {
+    const record = { id: V3_ACTIVATION_RECORD_ID, mode: ACTIVATION_V3, activatedAt };
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).put(record);
+    await completeTransaction(transaction);
+    return record;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Leaves V3 mode by deleting V3's activation row.
+ *
+ * [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+ * [WHY: leaving V3 is a DELETE, never a write of "v1"/"v2" anywhere. Because
+ *  the V2 row was never modified on the way in, removing this row restores the
+ *  installation's previous transport exactly — including a `failed` V2 migration
+ *  that must stay failed. Writing a mode here on the way out would be this
+ *  branch guessing at a state V2's own row already records correctly.]
+ */
+export async function clearV3ActivationState() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).delete(V3_ACTIVATION_RECORD_ID);
+    await completeTransaction(transaction);
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * RESERVED for the stage that introduces V3's shared-library facts — see the
+ * V3_ASSOCIATIONS_RECORD_ID comment above. Nothing in this stage calls either
+ * of these; they exist so the isolated home is already present and tested.
+ *
+ * The full `{ libraryId: Fact<profileId|null> }` map, or `{}` if never saved.
+ */
+export async function loadV3AssociationsCache() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(V3_ASSOCIATIONS_RECORD_ID));
+    await completeTransaction(transaction);
+    return record && record.associations && typeof record.associations === "object" ? record.associations : {};
+  } finally {
+    database.close();
+  }
+}
+
+/** RESERVED — see loadV3AssociationsCache. Replaces the whole V3 associations map. */
+export async function saveV3AssociationsCache(associations) {
+  const database = await openDatabase();
+
+  try {
+    const record = { id: V3_ASSOCIATIONS_RECORD_ID, associations: associations || {} };
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).put(record);
+    await completeTransaction(transaction);
+    return record;
+  } finally {
+    database.close();
+  }
+}
+
 /**
  * Forgets the sync-folder relationship entirely ("Disconnect Sync"). Does
  * not touch ProfileStore's own database — Profiles remain exactly as they
@@ -338,6 +559,11 @@ export async function persistLastIssuedT(lastIssuedT) {
  * [WHY: this deletes ONLY the connection row. The device row survives, because
  *  disconnecting a folder does not make this a different installation, and
  *  losing the clock floor here would be silent and unrecoverable.]
+ *
+ * [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+ * [WHY: unchanged, and that IS the V3 requirement — "V2 disconnect must not
+ *  delete V3 configuration" needs no code here precisely because this function
+ *  names one record id and has never been able to address another.]
  */
 export async function clearSyncConfig() {
   const database = await openDatabase();

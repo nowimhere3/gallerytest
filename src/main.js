@@ -161,6 +161,15 @@ const profileSyncChangeBtn = document.getElementById("profile-sync-change-btn");
 const profileSyncDisconnectBtn = document.getElementById("profile-sync-disconnect-btn");
 const profileSyncActivatePanel = document.getElementById("profile-sync-activate-panel");
 const profileSyncActivateBtn = document.getElementById("profile-sync-activate-btn");
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION] Temporary development controls — see
+// the panel's own comment in index.html for why this surface is scaffolding.
+const profileSyncV3Panel = document.getElementById("profile-sync-v3-panel");
+const profileSyncV3StatusText = document.getElementById("profile-sync-v3-status-text");
+const profileSyncV3ChooseBtn = document.getElementById("profile-sync-v3-choose-btn");
+const profileSyncV3ReconnectBtn = document.getElementById("profile-sync-v3-reconnect-btn");
+const profileSyncV3ActivateBtn = document.getElementById("profile-sync-v3-activate-btn");
+const profileSyncV3LeaveBtn = document.getElementById("profile-sync-v3-leave-btn");
+const profileSyncV3DisconnectBtn = document.getElementById("profile-sync-v3-disconnect-btn");
 const profileSyncLinkPanel = document.getElementById("profile-sync-link-panel");
 const profileSyncLinkSelect = document.getElementById("profile-sync-link-select");
 const profileSyncLinkBtn = document.getElementById("profile-sync-link-btn");
@@ -8043,11 +8052,21 @@ profile.subscribe(() => {
 function renderProfileSync() {
   const status = profileSync.getStatus();
 
-  profileSyncChooseBtn.classList.toggle("hidden", status.configured);
-  profileSyncReconnectBtn.classList.toggle("hidden", status.status !== "permission-needed");
+  // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+  // [WHY: every V1/V2 control below is additionally gated on `!isV3`. Under V3
+  //  the engine has deliberately released the V1/V2 handle in memory while
+  //  leaving its stored row untouched, so `status.configured` is false and these
+  //  controls would otherwise re-render as "not configured" — inviting the user
+  //  to choose a V1/V2 folder, which would overwrite the very V2 configuration
+  //  this stage exists to preserve. Hiding them is the honest rendering of "V2 is
+  //  dormant, not gone".]
+  const isV3 = status.mode === "v3";
+
+  profileSyncChooseBtn.classList.toggle("hidden", isV3 || status.configured);
+  profileSyncReconnectBtn.classList.toggle("hidden", isV3 || status.status !== "permission-needed");
   profileSyncConnectedRow.classList.toggle(
     "hidden",
-    !status.configured || status.status === "permission-needed"
+    isV3 || !status.configured || status.status === "permission-needed"
   );
   profileSyncNowBtn.disabled = status.status === "syncing" || status.status === "conflict";
 
@@ -8063,12 +8082,17 @@ function renderProfileSync() {
   // Offered only while still on V1, and only once a folder is actually
   // connected — activating with nothing to migrate from is possible but is a
   // Stage-E-and-later decision, not something to advertise here.
-  profileSyncActivatePanel.classList.toggle("hidden", isV2 || !status.configured || status.status === "syncing");
+  profileSyncActivatePanel.classList.toggle(
+    "hidden",
+    isV2 || isV3 || !status.configured || status.status === "syncing"
+  );
   profileSyncLinkPanel.classList.toggle("hidden", !isV2 || !status.configured);
 
-  if (!status.configured) {
+  if (!status.configured || isV3) {
     profileSyncManagePanel.classList.add("hidden");
   }
+
+  renderSyncV3Panel(status, isV3);
 
   let line;
   switch (status.status) {
@@ -8111,6 +8135,22 @@ function renderProfileSync() {
     case "migration-failed":
       line = `Sync activation did not finish — ${status.message || "Your Profile data is safe and saved locally."}`;
       break;
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: V3 gets its own status strings rather than reusing "connected".
+    //  The default branch below renders "✓ Connected — … Sync V1", because its
+    //  only mode test is `mode === "v2"` — so a V3 installation falling through
+    //  would be told it is running Sync V1 over a folder nothing has ever
+    //  written to. Every line here states plainly that no syncing happens yet;
+    //  that remains true until the stage that adds the V3 transport.]
+    case "v3-ready":
+      line = `Sync V3 — folder connected: "${status.v3FolderName}". No V3 transport yet, so nothing is being synced.`;
+      break;
+    case "v3-permission-needed":
+      line = `Sync V3 — permission needed for "${status.v3FolderName}". Nothing is being synced.`;
+      break;
+    case "v3-not-configured":
+      line = "Sync V3 is active — no V3 folder chosen yet. Nothing is being synced.";
+      break;
     case "connected":
     default: {
       const v2 = status.mode === "v2";
@@ -8132,6 +8172,40 @@ function renderProfileSync() {
     }
   }
   profileSyncStatusText.textContent = line;
+}
+
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+// WHAT: Renders the temporary Sync V3 development panel from the SAME status
+// snapshot renderProfileSync() already read.
+// [WHY: takes `status` as an argument rather than calling getStatus() again.
+//  Two reads of a live engine can straddle a state change, which is how one
+//  panel ends up describing a connection the other has already released — the
+//  same single-snapshot discipline the rest of this render function follows.]
+// FUTURE: this whole function is expected to be deleted by the Profile & Sync
+// Settings redesign stage. Do not grow it into that page.
+function renderSyncV3Panel(status, isV3) {
+  const connected = Boolean(status.v3Configured);
+
+  profileSyncV3ChooseBtn.textContent = connected ? "Change V3 Sync Folder" : "Choose V3 Sync Folder";
+  profileSyncV3ReconnectBtn.classList.toggle("hidden", !connected || status.v3Status !== "permission-needed");
+  profileSyncV3DisconnectBtn.classList.toggle("hidden", !connected);
+  profileSyncV3ActivateBtn.classList.toggle("hidden", isV3);
+  profileSyncV3LeaveBtn.classList.toggle("hidden", !isV3);
+
+  let line;
+  if (!connected) {
+    line = isV3
+      ? "Mode: V3 (active) · No V3 folder chosen yet."
+      : "Mode: " + status.mode + " · No V3 folder chosen yet.";
+  } else if (status.v3Status === "permission-needed") {
+    line = `Mode: ${isV3 ? "V3 (active)" : status.mode} · Folder "${status.v3FolderName}" — permission needed.`;
+  } else {
+    line = `Mode: ${isV3 ? "V3 (active)" : status.mode} · Folder "${status.v3FolderName}" — ready.`;
+  }
+  // Stated on every render, in every state: this stage connects a folder and
+  // nothing more. If a V3 file ever appears in that folder, the stage overran.
+  line += " No V3 transport yet — nothing is written to this folder.";
+  profileSyncV3StatusText.textContent = line;
 }
 
 // [PROFILE-SYNC-SETUP]
@@ -8288,6 +8362,76 @@ profileSyncActivateBtn.addEventListener("click", async () => {
     await profileSync.activateSyncV2();
   } finally {
     profileSyncActivateBtn.disabled = false;
+  }
+  await renderSharedLibraryOptions();
+});
+
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+// WHAT: Handlers for the temporary Sync V3 development controls.
+// [WHY: the picker is called DIRECTLY from the click, with no confirmation modal
+//  in between — unlike the V1/V2 path, which routes through openSyncSetupModal()
+//  to explain the shared-Drive convention. That modal names a specific
+//  recommended folder and belongs to the V1/V2 relationship; reusing it would
+//  point a V3 user at the V2 folder, which is the one folder V3 must never
+//  adopt. The proper V3 setup explanation is part of the later Profile & Sync
+//  Settings stage.]
+async function runV3FolderPicker() {
+  if (!isFsaSupported()) {
+    profileSyncV3StatusText.textContent = "This browser does not support the File System Access API.";
+    return;
+  }
+
+  let dirHandle;
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+  } catch (error) {
+    if (error && error.name === "AbortError") return; // user closed the picker — not an error
+    profileSyncV3StatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    return;
+  }
+
+  await profileSync.connectV3Folder(dirHandle);
+}
+
+profileSyncV3ChooseBtn.addEventListener("click", runV3FolderPicker);
+profileSyncV3ReconnectBtn.addEventListener("click", () => profileSync.reconnectV3());
+
+profileSyncV3DisconnectBtn.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Disconnect the Sync V3 folder?\n\n" +
+      "Nothing in your Profiles is deleted, and your existing Sync V2 configuration is not touched."
+  );
+  if (!confirmed) return;
+  await profileSync.disconnectV3();
+});
+
+profileSyncV3ActivateBtn.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Activate Sync V3 on this device?\n\n" +
+      "• Sync V3 has no transport yet — nothing will be synced or written to the V3 folder.\n" +
+      "• Sync V2 becomes dormant. Its saved configuration is left completely intact.\n" +
+      "• Nothing in your local Profiles is deleted.\n\n" +
+      "You can return to Sync V2 with \"Leave V3 Mode\"."
+  );
+  if (!confirmed) return;
+
+  profileSyncV3ActivateBtn.disabled = true;
+  try {
+    await profileSync.activateSyncV3();
+  } finally {
+    profileSyncV3ActivateBtn.disabled = false;
+  }
+});
+
+profileSyncV3LeaveBtn.addEventListener("click", async () => {
+  profileSyncV3LeaveBtn.disabled = true;
+  try {
+    // Restores whatever V2's own untouched record says this installation was —
+    // see ProfileSync#deactivateSyncV3 for why that is a re-read, not a restore
+    // of remembered fields.
+    await profileSync.deactivateSyncV3();
+  } finally {
+    profileSyncV3LeaveBtn.disabled = false;
   }
   await renderSharedLibraryOptions();
 });

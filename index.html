@@ -1349,6 +1349,30 @@
             <button id="profile-sync-activate-btn" class="secondary" type="button">Activate Sync V2</button>
           </div>
 
+          <!-- [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+               WHAT: A TEMPORARY development surface for the SyncV3 connection
+               and mode plumbing. Deliberately the smallest thing that can
+               exercise connect / activate / reconnect / leave / disconnect.
+               [WHY: the Profile & Sync Settings redesign is a later SyncV3
+                stage, and building it now would mean redesigning a page around
+                a transport that does not exist yet. This block is expected to be
+                DELETED by that stage — it is scaffolding, not a first draft, so
+                it deliberately reuses existing classes and adds no new styling.]
+               FUTURE / DO-NOT-BREAK: nothing here may write to the chosen V3
+               folder. After Stage 01 that folder must still be completely
+               empty. -->
+          <div id="profile-sync-v3-panel" class="profile-sync-activate-panel">
+            <h4 class="profile-sync-heading">Sync V3 (development)</h4>
+            <p id="profile-sync-v3-status-text" class="hint" role="status">Sync V3: not connected</p>
+            <div class="control-stack">
+              <button id="profile-sync-v3-choose-btn" class="secondary" type="button">Choose V3 Sync Folder</button>
+              <button id="profile-sync-v3-reconnect-btn" class="secondary hidden" type="button">Reconnect V3 Folder</button>
+              <button id="profile-sync-v3-activate-btn" class="secondary" type="button">Activate Sync V3</button>
+              <button id="profile-sync-v3-leave-btn" class="secondary hidden" type="button">Leave V3 Mode</button>
+              <button id="profile-sync-v3-disconnect-btn" class="secondary hidden" type="button">Disconnect V3 Folder</button>
+            </div>
+          </div>
+
           <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
                [WHY: the second device's ONLY way to say "this local folder is
                 that shared library". A dropdown of ids the user must pick from
