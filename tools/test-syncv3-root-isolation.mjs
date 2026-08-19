@@ -319,7 +319,14 @@ await test("The installation deviceId is reused, never re-minted, across V3 acti
 });
 
 // 8 -------------------------------------------------------------------------
-await test("V3 mode runs no transport — neither folder is written to", async () => {
+await test("V3 mode writes ONLY the V3 folder; the V2 folder is untouched", async () => {
+  // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+  // [WHY: this test asserted "the V3 folder stays empty" while live V3 writes
+  //  were disabled. They are enabled now, so a V3 installation SHOULD publish -
+  //  and the property this file is actually about was never emptiness, it was
+  //  ISOLATION. Restated accordingly: V3 activity lands in the V3 folder and
+  //  leaves the V1/V2 tree byte-for-byte alone. A test left asserting emptiness
+  //  would now be testing that the feature does not work.]
   const v2Dir = createVirtualDirectory("V2 Sync");
   const v3Dir = createVirtualDirectory("V3 Sync");
   const install = await seedActivatedV2(v2Dir);
@@ -328,8 +335,6 @@ await test("V3 mode runs no transport — neither folder is written to", async (
   // add to, and must not silently rewrite.
   const v2FilesBefore = JSON.stringify(v2Dir.snapshotFiles());
   assert(v2FilesBefore.includes("sync-v2/devices/"), "the seeded V2 installation really did publish");
-  // Captured from the V2 era: the point is that V3 never MOVES this forward,
-  // not that it is null — a seeded V2 installation has legitimately synced.
   const lastSyncAtBeforeV3 = install.sync.getStatus().lastSyncAt;
   assert(Number.isFinite(lastSyncAtBeforeV3), "the seeded V2 installation recorded a real lastSyncAt");
 
@@ -338,25 +343,30 @@ await test("V3 mode runs no transport — neither folder is written to", async (
   await install.sync.activateSyncV3();
   await settle();
 
-  // A local mutation is the strongest trigger available: it is what schedules
-  // the debounced auto-sync pass on a V1/V2 installation.
   install.store.setFavorite("clip.mp4", true);
   await install.store.whenFactsSettled();
   await install.sync.syncNow();
   await settle();
-  // Past AUTO_SYNC_DEBOUNCE_MS — proves the mutation did not merely fail to
-  // publish YET.
   await wait(3600);
   await settle();
 
-  assertEqual(
-    JSON.stringify(v3Dir.snapshotFiles()),
-    "{}",
-    "the V3 folder is still completely empty — no transport, no placeholder"
-  );
+  // The V2 tree is the thing under protection.
   assertEqual(JSON.stringify(v2Dir.snapshotFiles()), v2FilesBefore, "the V2 folder gained and lost nothing under V3");
-  assertEqual(install.sync.getStatus().status, "v3-ready", "status never claims a sync occurred");
-  assertEqual(install.sync.getStatus().lastSyncAt, lastSyncAtBeforeV3, "lastSyncAt was not advanced by V3");
+
+  // And V3 wrote into its OWN folder, under the readable Stage 02 shape.
+  const v3Files = Object.keys(v3Dir.snapshotFiles());
+  assert(
+    v3Files.every((filePath) => filePath.startsWith("sync-v3/")),
+    `every V3 file is under sync-v3/: ${v3Files.join(", ")}`
+  );
+  assert(
+    v3Files.some((filePath) => filePath.endsWith("/device.json")),
+    "a V3 device manifest was published"
+  );
+  assert(
+    !JSON.stringify(v3Dir.snapshotFiles()).includes("sync-v2"),
+    "nothing V2-shaped was written into the V3 folder"
+  );
 });
 
 // 9 -------------------------------------------------------------------------

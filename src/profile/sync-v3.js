@@ -14,15 +14,23 @@
 //    2. every write is gated behind one eligibility decision, because two tabs
 //       of one origin share a deviceId and therefore a device directory.]
 //
-// WHAT: runSyncV3Pass() - one complete V3 reconcile pass.
+// [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+// [WHY: that gate is now a HELD lease rather than a one-shot answer, and the
+//  pass body runs inside it. A tab that cannot acquire the lease is not broken
+//  and is not idle - it runs the identical read, merge and adopt path and simply
+//  writes nothing, which is what keeps two or three tabs on one device all
+//  useful while only one of them touches Drive.]
 //
-// NOT AUTOMATICALLY LIVE: while sync-v3-write-policy.js keeps live writes
-// disabled this pass reads, merges and adopts, but creates no directory and
-// publishes nothing. That is a deliberate state, not an unfinished one.
+// WHAT: runSyncV3Pass() - one complete V3 reconcile pass, and the body it runs
+// under the device's writer lease.
 
 import * as MergeEngine from "./sync-merge.js";
 import * as Transport from "./sync-v3-transport.js";
-import { mayPublishV3 } from "./sync-v3-write-policy.js";
+// [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+// [WHY: the pass no longer acquires anything. It ASKS the tab-lifetime lease
+//  whether this tab currently owns the writer role. Acquiring per pass gave
+//  every tab the role in turn, because passes never overlap.]
+import { WRITE_BLOCKED_NO_WEB_LOCKS } from "./sync-v3-write-policy.js";
 
 // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
 // [WHY: carried over from sync-v2.js unchanged, including the value. Separate
@@ -53,13 +61,18 @@ function asV3Replica(replica) {
 /**
  * Runs one Sync V3 reconcile pass against `dirHandle` for `profileStore`.
  *
- * `mayPublish` is the single write-eligibility seam - see sync-v3-write-policy.js.
- * Injectable so tests can drive both answers; it defaults to the real policy so
- * no caller can accidentally opt out of it by forgetting to pass one.
+ * `writerLease` is the single write-coordination seam - the tab-lifetime lease
+ * created by ProfileSync (see sync-v3-write-policy.js). Omitting it fails
+ * CLOSED: a pass with no lease reads and never writes, so a caller cannot opt
+ * out of coordination by forgetting to pass one.
  *
  * Returns a plain result object; never throws for an ordinary sync failure.
  */
-export async function runSyncV3Pass({ profileStore, dirHandle, state = {}, mayPublish = mayPublishV3 }) {
+export async function runSyncV3Pass({ profileStore, dirHandle, state = {}, writerLease = null }) {
+  // ---- preflight: pure reads, deliberately OUTSIDE the lease ----
+  // Nothing here touches Drive or local state, so holding the writer lease
+  // across it would serialize every tab's permission check behind one tab's
+  // Drive round trip for no benefit at all.
   let permission;
   try {
     permission = await dirHandle.queryPermission({ mode: "readwrite" });
@@ -75,20 +88,41 @@ export async function runSyncV3Pass({ profileStore, dirHandle, state = {}, mayPu
   const deviceId = profileStore.getDeviceId();
   if (!deviceId) return { status: "no-device-identity" };
 
-  // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
-  // [WHY: THE one write-eligibility call, evaluated ONCE per pass and consulted
-  //  for both of the things that touch Drive - creating the directory tree and
-  //  publishing into it. Evaluated here, before any handle is opened with
-  //  create:true, because getDirectoryHandle({ create: true }) IS a write: a pass
-  //  that asked permission only at publish time would already have created
-  //  sync-v3/devices/ on a folder that is supposed to stay untouched.
+  // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+  // [WHY: the answer is resolved ONCE per pass and consulted for both of the
+  //  things that touch Drive - creating the directory tree and publishing into
+  //  it. getDirectoryHandle({ create: true }) IS a write, and the devices
+  //  directory has to exist before discovery can read it, so creation
+  //  necessarily precedes discovery and must be covered by the same answer.
   //
-  //  Asked once rather than twice so the two decisions cannot disagree - under
-  //  Stage 03B a lease could plausibly expire between them, and "created the
-  //  directory but was not allowed to publish into it" is a state worth making
-  //  unreachable rather than handling.]
-  const eligibility = (await mayPublish({ deviceId })) || { allowed: false, reason: "no-eligibility-answer" };
-  const mayWrite = eligibility.allowed === true;
+  //  Nothing clock-sensitive moved. Stamping happens in ProfileStore on user
+  //  mutations, never in this pass; observe-before-tick keeps its exact V2
+  //  position below.]
+  //
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: `ensure()` rather than an acquire/release wrapper. The role is held by
+  //  the tab across passes, so a writer stays the writer and the others stay
+  //  readers - which is what makes a device's published subtree stable instead
+  //  of flip-flopping between two tabs' in-memory views. A reader calls ensure()
+  //  on every pass too, which is exactly how the role transfers once the writer
+  //  tab closes and the browser drops its lock.]
+  const lease = writerLease
+    ? await writerLease.ensure()
+    : { allowed: false, reason: WRITE_BLOCKED_NO_WEB_LOCKS, lockName: null };
+
+  return runV3PassBody({ profileStore, dirHandle, state, deviceId, lease, writerLease });
+}
+
+/**
+ * The mutation-sensitive body, run under the writer lease.
+ *
+ * `lease.allowed === false` means this tab is a READER for this pass: it reads,
+ * merges and adopts exactly as a writer does, but creates no directory,
+ * publishes nothing and cleans nothing.
+ */
+async function runV3PassBody({ profileStore, dirHandle, state, deviceId, lease, writerLease }) {
+  const mayWrite = lease && lease.allowed === true;
+  const blockedReason = mayWrite ? null : (lease && lease.reason) || "no-lease-answer";
 
   let root, devicesDir;
   try {
@@ -103,7 +137,7 @@ export async function runSyncV3Pass({ profileStore, dirHandle, state = {}, mayPu
         status: "ok",
         published: false,
         adopted: false,
-        publishBlocked: eligibility.reason,
+        publishBlocked: blockedReason,
         mergedPeers: 0,
         skippedPeers: [],
         peers: [],
@@ -194,7 +228,7 @@ export async function runSyncV3Pass({ profileStore, dirHandle, state = {}, mayPu
       status: "ok",
       published: false,
       adopted,
-      publishBlocked: eligibility.reason,
+      publishBlocked: blockedReason,
       mergedPeers: validPeers.length,
       skippedPeers,
       peers,
@@ -223,6 +257,26 @@ export async function runSyncV3Pass({ profileStore, dirHandle, state = {}, mayPu
       };
     }
     state.ownSettlingPasses = 0; // bounded escape - fall through and rewrite once
+  }
+
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: re-checked immediately before the only destructive call in the pass.
+  //  The lease is now long-lived, so it CAN be given up mid-pass - dispose(),
+  //  leaving V3 mode, or disconnecting the folder all release it. Publishing
+  //  after that point would write, and then CLEAN UP, a directory this tab no
+  //  longer owns. Cheap check, and it is the last moment at which the answer is
+  //  still true.]
+  if (writerLease && writerLease.held === false) {
+    return {
+      status: "ok",
+      published: false,
+      adopted,
+      publishBlocked: "writer-lease-lost-mid-pass",
+      mergedPeers: validPeers.length,
+      skippedPeers,
+      peers,
+      duplicates: discovery.duplicates,
+    };
   }
 
   // Data files first, device.json last, read-back-and-verify, own-subtree-only

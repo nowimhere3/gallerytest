@@ -12,7 +12,13 @@
 
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { installFakeIndexedDB, createVirtualDirectory, settle, muteConsole } from "./lib/browser-test-env.mjs";
+import {
+  installFakeIndexedDB,
+  createVirtualDirectory,
+  createFakeLockManager,
+  settle,
+  muteConsole,
+} from "./lib/browser-test-env.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const src = (rel) => pathToFileURL(path.join(ROOT, "src", rel)).href;
@@ -111,8 +117,12 @@ async function makeInstallation({ associationStore } = {}) {
   return { env, identity, store };
 }
 
-const ALLOW = async () => ({ allowed: true, reason: null });
-const REFUSE = async () => ({ allowed: false, reason: "test-refusal" });
+// [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+// [WHY: the seam is a tab-lifetime LEASE OBJECT, so the doubles answer ensure()
+//  rather than wrapping a callback. Shaped exactly like createV3WriterLease's
+//  return value so a pass cannot accept these and reject the real one.]
+const ALLOW = { held: true, lockName: "test-lock", ensure: async () => ({ allowed: true, reason: null }), release() {} };
+const REFUSE = { held: false, lockName: null, ensure: async () => ({ allowed: false, reason: "test-refusal" }), release() {} };
 
 /** Publishes a peer device's generation directly through the transport. */
 async function publishPeer(dir, { deviceId, label, replica }) {
@@ -254,7 +264,7 @@ await test("A foreign Profile and association materialize under the V3 pass (req
     profileStore: install.store,
     dirHandle: dir.handle,
     state: {},
-    mayPublish: ALLOW,
+    writerLease: ALLOW,
   });
   await settle();
 
@@ -289,7 +299,7 @@ await test("Peers are observed BEFORE any local stamping (req 7)", async () => {
     },
   });
 
-  await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state: {}, mayPublish: ALLOW });
+  await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state: {}, writerLease: ALLOW });
   await settle();
 
   // Now make a local change and confirm its stamp outranks the peer's.
@@ -311,13 +321,13 @@ await test("Merge/adopt ordering matches V2, and publish-if-changed holds (req 8
   const install = await makeInstallation({ associationStore: Store.V3_ASSOCIATION_STORE });
   const state = {};
 
-  const first = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, mayPublish: ALLOW });
+  const first = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, writerLease: ALLOW });
   await settle();
   assertEqual(first.status, "ok", "first pass ok");
   assertEqual(first.published, true, "the first pass publishes this device's generation");
 
   // Nothing changed - the second pass must NOT republish.
-  const second = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, mayPublish: ALLOW });
+  const second = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, writerLease: ALLOW });
   await settle();
   assertEqual(second.published, false, "an unchanged second pass publishes nothing (req 10)");
   assertEqual(second.adopted, false, "and adopts nothing");
@@ -325,7 +335,7 @@ await test("Merge/adopt ordering matches V2, and publish-if-changed holds (req 8
   // A real local change must publish again.
   install.store.setFavorite("clip.mp4", true);
   await install.store.whenFactsSettled();
-  const third = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, mayPublish: ALLOW });
+  const third = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, writerLease: ALLOW });
   await settle();
   assertEqual(third.published, true, "a genuine local change publishes");
 
@@ -340,7 +350,7 @@ await test("OWN_GENERATION_SETTLE_PASSES behaviour is carried over (req 9)", asy
   const install = await makeInstallation({ associationStore: Store.V3_ASSOCIATION_STORE });
   const state = {};
 
-  const published = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, mayPublish: ALLOW });
+  const published = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, writerLease: ALLOW });
   await settle();
   assertEqual(published.published, true, "a generation is published");
   assert(Boolean(state.lastPublishedCanonical), "the pass remembers what it published");
@@ -350,7 +360,7 @@ await test("OWN_GENERATION_SETTLE_PASSES behaviour is carried over (req 9)", asy
   dir.removeFile(`sync-v3/devices/${own}/device.json`);
 
   const restore = muteConsole();
-  const settling = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, mayPublish: ALLOW });
+  const settling = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, writerLease: ALLOW });
   restore();
   await settle();
 
@@ -361,7 +371,7 @@ await test("OWN_GENERATION_SETTLE_PASSES behaviour is carried over (req 9)", asy
   // Bounded: after the cap it republishes once rather than waiting forever.
   state.ownSettlingPasses = 9;
   const restore2 = muteConsole();
-  const escaped = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, mayPublish: ALLOW });
+  const escaped = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state, writerLease: ALLOW });
   restore2();
   await settle();
   assertEqual(escaped.published, true, "the bounded escape republishes once");
@@ -370,11 +380,23 @@ await test("OWN_GENERATION_SETTLE_PASSES behaviour is carried over (req 9)", asy
 
 // ---- Live-write safety switch (11, 12) -------------------------------------
 
-await test("The shipped write policy refuses (req 11)", async () => {
-  assertEqual(WritePolicy.V3_LIVE_WRITES_ENABLED, false, "live V3 writes are DISABLED in this stage");
-  const decision = await WritePolicy.mayPublishV3({ deviceId: "dev-anything" });
-  assertEqual(decision.allowed, false, "the real policy refuses");
-  assertEqual(decision.reason, WritePolicy.WRITE_BLOCKED_LIVE_WRITES_DISABLED, "with a reason a status surface can render");
+await test("The write seam refuses without a way to coordinate (req 11)", async () => {
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: live writes are ENABLED, so the property worth asserting is no longer
+  //  "the switch is off" but "the seam fails closed when it cannot coordinate".
+  //  Web Locks absent must mean read-only, never an uncoordinated write.]
+  assertEqual(WritePolicy.V3_LIVE_WRITES_ENABLED, true, "live V3 writes are enabled as of Stage 03B");
+
+  const noLocks = WritePolicy.createV3WriterLease({ deviceId: "dev-anything", locks: null });
+  const seen = await noLocks.ensure();
+  assertEqual(seen.allowed, false, "no Web Locks means no lease");
+  assertEqual(seen.reason, WritePolicy.WRITE_BLOCKED_NO_WEB_LOCKS, "with a reason a status surface can render");
+  assertEqual(noLocks.held, false, "and the lease reports itself as not held");
+
+  const noIdentity = WritePolicy.createV3WriterLease({ deviceId: null, locks: createFakeLockManager() });
+  const identityAnswer = await noIdentity.ensure();
+  assertEqual(identityAnswer.allowed, false, "a device with no identity may never write");
+  assertEqual(identityAnswer.reason, WritePolicy.WRITE_BLOCKED_NO_DEVICE_IDENTITY, "and says so");
 });
 
 await test("With writes refused, a pass reads and adopts but writes NOTHING (req 11, 12)", async () => {
@@ -396,7 +418,7 @@ await test("With writes refused, a pass reads and adopts but writes NOTHING (req
     profileStore: install.store,
     dirHandle: dir.handle,
     state: {},
-    mayPublish: REFUSE,
+    writerLease: REFUSE,
   });
   await settle();
 
@@ -419,7 +441,7 @@ await test("With writes refused, an EMPTY V3 folder is not even created (req 11)
     profileStore: install.store,
     dirHandle: dir.handle,
     state: {},
-    mayPublish: REFUSE,
+    writerLease: REFUSE,
   });
   await settle();
 
@@ -429,28 +451,55 @@ await test("With writes refused, an EMPTY V3 folder is not even created (req 11)
   assertEqual(result.publishBlocked, "test-refusal", "and the refusal is reported");
 });
 
-await test("A pass with NO mayPublish supplied defaults to refusing", async () => {
+await test("A pass with NO seam supplied uses the REAL coordinated lease", async () => {
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: the property is that omitting the seam gets you no write at all, and
+  //  that a real lease held by another tab keeps this one read-only across
+  //  repeated passes - not merely during one.]
   const dir = createVirtualDirectory("V3 Sync");
   const install = await makeInstallation({ associationStore: Store.V3_ASSOCIATION_STORE });
+  const deviceId = install.store.getDeviceId();
 
-  // Deliberately omits mayPublish: a caller must not be able to opt OUT of the
-  // seam by forgetting it.
-  const result = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state: {} });
-  await settle();
-
-  assertEqual(result.published, false, "the default is to refuse, never to allow");
-  assertEqual(result.publishBlocked, WritePolicy.WRITE_BLOCKED_LIVE_WRITES_DISABLED, "the real policy answered");
+  const noLease = await runSyncV3Pass({ profileStore: install.store, dirHandle: dir.handle, state: {} });
+  assertEqual(noLease.published, false, "omitting the lease never grants a write");
   assertEqual(JSON.stringify(v3Files(dir)), "[]", "and nothing was written");
+
+  const locks = createFakeLockManager();
+  const otherTab = WritePolicy.createV3WriterLease({ deviceId, locks });
+  const mine = WritePolicy.createV3WriterLease({ deviceId, locks });
+  assertEqual((await otherTab.ensure()).allowed, true, "another tab takes the lease");
+
+  const state = {};
+  for (let round = 1; round <= 3; round++) {
+    const result = await runSyncV3Pass({
+      profileStore: install.store,
+      dirHandle: dir.handle,
+      state,
+      writerLease: mine,
+    });
+    assertEqual(result.published, false, `round ${round}: still read-only`);
+    assertEqual(
+      result.publishBlocked,
+      WritePolicy.WRITE_BLOCKED_LEASE_HELD_ELSEWHERE,
+      `round ${round}: reports the lease as held elsewhere`
+    );
+  }
+  assertEqual(JSON.stringify(v3Files(dir)), "[]", "three read-only passes wrote nothing");
+  otherTab.release();
 });
 
 // ---- Live engine integration (11) ------------------------------------------
 
-await test("Through the live engine: syncNow, polling and Profile edits write nothing (req 11)", async () => {
+await test("Through the live engine: activating V3 repoints the association cache", async () => {
   const v3Dir = createVirtualDirectory("V3 Sync");
   const install = await makeInstallation();
   const sync = new ProfileSync(install.store);
   liveInstances.push(sync);
 
+  // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+  // [WHY: the association gate is closed by ProfileSync's constructor, so it is
+  //  already shut by the time this line runs — which is the point: no click
+  //  could have slipped an association into the V2 row before the mode was known.]
   await sync.connectV3Folder(v3Dir.handle);
   await settle();
   await sync.activateSyncV3();
@@ -462,26 +511,10 @@ await test("Through the live engine: syncNow, polling and Profile edits write no
     "associations-v3",
     "activating V3 repointed the association cache immediately"
   );
+  assertEqual(install.store.isAssociationStorePending(), false, "and the boot gate is open");
+  assertEqual(sync.getStatus().v3LiveWritesEnabled, true, "live V3 writes are enabled as of Stage 03B");
 
-  const before = JSON.stringify(v3Files(v3Dir));
-  assertEqual(before, "[]", "the V3 folder starts empty");
-
-  // Sync Now.
-  await sync.syncNow();
-  await settle();
-  assertEqual(JSON.stringify(v3Files(v3Dir)), "[]", "Sync Now wrote nothing");
-
-  // A Profile edit, waited out past the auto-sync debounce.
-  install.store.setFavorite("clip.mp4", true);
-  await install.store.whenFactsSettled();
-  await new Promise((resolve) => setTimeout(resolve, 3600));
-  await settle();
-  assertEqual(JSON.stringify(v3Files(v3Dir)), "[]", "a Profile edit wrote nothing, even past the debounce");
-
-  // And the scheduler is not armed at all while writes are off.
-  assertEqual(sync.getStatus().v3LiveWritesEnabled, false, "the engine reports live writes as disabled");
-
-  // V2's rows remain untouched throughout.
+  // V2's association row is never created by a V3-mode installation.
   assertEqual(rowFingerprint(install.env, "associations"), "<absent>", "no V2 association row was created by V3 mode");
 });
 

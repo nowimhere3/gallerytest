@@ -381,6 +381,56 @@ export function createVirtualDirectory(name = "Browser Gallery Profiles", hooks 
   };
 }
 
+// ---- Web Locks double ------------------------------------------------------
+//
+// [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+// [WHY: models the ONE property the writer lease depends on - that a name can be
+//  held by at most one holder at a time, per origin, and is released when the
+//  holder's callback settles however it settles. Several managers can be created
+//  over ONE shared namespace, which is what makes two "tabs" in this harness
+//  genuinely contend rather than each quietly winning its own private lock.
+//
+//  Only `ifAvailable: true` is implemented, deliberately: that is the only mode
+//  production uses, and a double that silently supported waiting would let a
+//  future change adopt blocking semantics without any test noticing the tabs had
+//  started serializing.]
+
+/** A lock namespace shared by every manager created over it - i.e. one origin. */
+export function createLockNamespace() {
+  return new Map();
+}
+
+export function createFakeLockManager(namespace = createLockNamespace()) {
+  return {
+    namespace,
+    /** Names currently held. Diagnostics for tests. */
+    heldNames() {
+      return [...namespace.keys()].sort();
+    },
+    async request(name, optionsOrCallback, maybeCallback) {
+      const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
+      const options = typeof optionsOrCallback === "function" ? {} : optionsOrCallback || {};
+
+      if (typeof callback !== "function") throw new TypeError("request() requires a callback");
+      if (!options.ifAvailable) {
+        throw new Error("[test-env] The fake lock manager only implements { ifAvailable: true }.");
+      }
+
+      if (namespace.has(name)) return callback(null);
+
+      const token = { name, mode: "exclusive" };
+      namespace.set(name, token);
+      try {
+        return await callback(token);
+      } finally {
+        // Released whether the callback returned or threw - the property the
+        // production code relies on for "a crashed pass never strands the lock".
+        if (namespace.get(name) === token) namespace.delete(name);
+      }
+    },
+  };
+}
+
 // ---- Misc -----------------------------------------------------------------
 
 /** Lets queued IndexedDB tasks and promise chains settle. */

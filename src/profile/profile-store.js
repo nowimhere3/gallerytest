@@ -208,6 +208,28 @@ export class ProfileStore {
   //  unrepresentable.]
   #associationStore = V2_ASSOCIATION_STORE;
 
+  // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+  // [WHY: closes the boot window Stage 03A left open. This store is constructed
+  //  before anything knows which transport is running, so it defaults to the V2
+  //  cache — which is correct for every V1/V2 installation and WRONG for a V3
+  //  one, for however long mode resolution takes. An association written in that
+  //  window lands in the V2 row on a V3 installation: contamination in exactly
+  //  the direction this whole line of work exists to prevent, and invisible
+  //  because it needs a click during boot to happen at all.
+  //
+  //  The gate makes it structural rather than improbable. While it is pending,
+  //  every association read and write waits, so there is no window to hit — not
+  //  a smaller one. It is only ever pending when something has explicitly said
+  //  "I will resolve the mode" (ProfileSync, from its constructor), so a
+  //  ProfileStore used WITHOUT a ProfileSync keeps working exactly as before
+  //  rather than hanging forever waiting for an answer nobody will give.]
+  #associationStoreGate = Promise.resolve();
+  #openAssociationStoreGate = null;
+  #associationStoreDeferred = false;
+  // Guards against an in-flight load from a superseded store landing on top of
+  // a newer one — see #loadAssociations.
+  #associationLoadGeneration = 0;
+
   constructor({ identity, associationStore } = {}) {
     // Loading is intentionally started by the store itself. Consumers keep
     // using the synchronous ProfileStore API; once saved records arrive, the
@@ -216,6 +238,8 @@ export class ProfileStore {
     // Defaults to the V1/V2 cache: an installation that has never heard of V3 —
     // every installation, until ProfileSync resolves its mode — behaves exactly
     // as it did before this stage.
+    // A caller that names the row up front (tests, and any embedder that already
+    // knows its mode) has nothing to defer — the gate stays open.
     if (associationStore) this.#associationStore = associationStore;
     this.#ready = this.#resolveActiveProfile();
     this.#loadSavedRecords();
@@ -223,11 +247,52 @@ export class ProfileStore {
   }
 
   async #loadAssociations() {
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: the generation guard makes a superseded load discard its own result.
+    //  Without it, the V2 load already in flight when deferAssociationStore() is
+    //  called would land AFTER the correct V3 load and quietly replace it — the
+    //  boot bug wearing a different hat. It also makes two rapid
+    //  setAssociationStore() calls safe, which the mode-switch path can produce.]
+    const generation = ++this.#associationLoadGeneration;
+    await this.#associationStoreGate;
     try {
-      this.#associations = await this.#associationStore.load();
+      const loaded = await this.#associationStore.load();
+      if (generation !== this.#associationLoadGeneration) return;
+      this.#associations = loaded;
     } catch (error) {
       console.warn(`[SYNC] Could not load library associations from "${this.#associationStore.id}".`, error);
     }
+  }
+
+  /**
+   * Holds every association read and write until setAssociationStore() names the
+   * row this installation should be using.
+   *
+   * [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+   * [WHY: SYNCHRONOUS, and called from ProfileSync's constructor — which main.js
+   *  runs in the same synchronous block as `new ProfileStore()`. No user event
+   *  can be dispatched between two synchronous module-scope statements, so the
+   *  gate is closed before any click could reach setLibraryAssociation(). That
+   *  is what turns "a very small race" into "not a race".
+   *
+   *  Idempotent, so a second ProfileSync over the same store cannot strand the
+   *  gate half-open.]
+   */
+  deferAssociationStore() {
+    if (this.#associationStoreDeferred) return;
+    this.#associationStoreDeferred = true;
+    this.#associations = {};
+    this.#associationStoreGate = new Promise((resolve) => {
+      this.#openAssociationStoreGate = resolve;
+    });
+    // Re-armed so the pending read waits behind the gate. The load started in
+    // the constructor is superseded by the generation guard above.
+    this.#associationsReady = this.#loadAssociations();
+  }
+
+  /** True while association access is waiting for its row to be named. Diagnostics and tests. */
+  isAssociationStorePending() {
+    return this.#associationStoreDeferred && this.#openAssociationStoreGate !== null;
   }
 
   /**
@@ -248,6 +313,26 @@ export class ProfileStore {
     if (!store || typeof store.load !== "function" || typeof store.save !== "function") {
       throw new Error("[SYNCV3] setAssociationStore requires an adapter with load() and save().");
     }
+
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: opening the gate is handled BEFORE the "same store, nothing to do"
+    //  short-circuit below. A deferred store whose resolved row happens to be
+    //  the V2 default still has to be released, or a V1/V2 installation would
+    //  wait on a gate that never opens — the deadlock the deferral must not
+    //  introduce. Deliberately does not await #associationsReady first: that
+    //  promise is waiting on the very gate this branch opens.]
+    if (this.#openAssociationStoreGate) {
+      const open = this.#openAssociationStoreGate;
+      this.#openAssociationStoreGate = null;
+      this.#associationStore = store;
+      this.#associations = {};
+      this.#associationsReady = this.#loadAssociations();
+      open();
+      await this.#associationsReady;
+      this.#emit();
+      return store.id;
+    }
+
     await this.#associationsReady;
     if (this.#associationStore && this.#associationStore.id === store.id) return store.id;
 

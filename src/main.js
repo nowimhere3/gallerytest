@@ -8148,11 +8148,39 @@ function renderProfileSync() {
       //  sentence covering both. A pass that merged peers but was refused a
       //  publish is genuinely half-working, and the user is entitled to know
       //  their device is reading but not contributing.]
-      line = `Sync V3 — folder connected: "${status.v3FolderName}".`;
-      if (status.v3PublishBlocked) {
-        line += ` Reading only — publishing is disabled (${status.v3PublishBlocked}).`;
-      } else if (!status.v3LiveWritesEnabled) {
-        line += " Reading only — live V3 writes are not enabled yet.";
+      line = `Sync V3 — "${status.v3FolderName}"`;
+      // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+      // [WHY: a reader tab says WHY it is a reader, in the user's terms. "Another
+      //  tab is writing" is normal and expected with two or three tabs open, and
+      //  reads as reassuring; "this browser cannot coordinate writes" is a real
+      //  limitation the user needs to know about, because that device will never
+      //  contribute its changes. Collapsing both into one vague "read-only"
+      //  would hide the second behind the first.]
+      // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+      // [WHY: driven by v3IsWriter — whether this tab HOLDS the lease — rather
+      //  than by whether the last pass happened to publish. A writer with
+      //  nothing new to publish is still the writer, and reporting it as
+      //  read-only would make the two tabs look identical again, which is the
+      //  symptom that surfaced this bug in the first place.]
+      if (status.v3IsWriter) {
+        line += " · Writing for this device";
+      } else {
+        switch (status.v3PublishBlocked) {
+          case "writer-lease-held-by-another-tab":
+            line += " · Read-only — another Browser Gallery tab is writing for this device.";
+            break;
+          case "web-locks-unavailable":
+            line += " · Read-only — this browser cannot coordinate Drive writes.";
+            break;
+          case "live-writes-disabled":
+            line += " · Read-only — live V3 writes are turned off.";
+            break;
+          case "writer-lease-lost-mid-pass":
+            line += " · Read-only — the writer role moved during this pass.";
+            break;
+          default:
+            line += " · Read-only — waiting for the writer role.";
+        }
       }
       if (status.v3MergedPeers) {
         line += ` · ${status.v3MergedPeers} peer device${status.v3MergedPeers === 1 ? "" : "s"} merged`;
@@ -8229,9 +8257,17 @@ function renderSyncV3Panel(status, isV3) {
   } else {
     line = `Mode: ${isV3 ? "V3 (active)" : status.mode} · Folder "${status.v3FolderName}" — ready.`;
   }
-  // Stated on every render, in every state: this stage connects a folder and
-  // nothing more. If a V3 file ever appears in that folder, the stage overran.
-  line += " No V3 transport yet — nothing is written to this folder.";
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: the Stage 01 line here said "No V3 transport yet — nothing is written
+  //  to this folder", which stopped being true the moment live writes were
+  //  enabled. A status surface that keeps asserting a retired invariant is worse
+  //  than one that says nothing, because it is the line a user checks when
+  //  deciding whether their data is safe to touch.]
+  if (isV3) {
+    line += status.v3IsWriter
+      ? " This tab is the Drive writer for this device."
+      : " This tab is read-only; another tab or browser holds the writer role.";
+  }
   profileSyncV3StatusText.textContent = line;
 }
 

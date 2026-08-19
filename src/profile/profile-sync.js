@@ -67,7 +67,7 @@ import {
 //  live writes turns on the pass and its cadence together and cannot half-enable
 //  either.]
 import { runSyncV3Pass } from "./sync-v3.js";
-import { V3_LIVE_WRITES_ENABLED } from "./sync-v3-write-policy.js";
+import { V3_LIVE_WRITES_ENABLED, createV3WriterLease } from "./sync-v3-write-policy.js";
 import { DEFAULT_PROFILE_NAME } from "./indexeddb.js";
 // [PHASE-6-SYNC-V2]
 // [STAGE-E-LIVE-INTEGRATION]
@@ -442,6 +442,13 @@ export class ProfileSync {
   // generation is still propagating" from "our own generation is wrong".
   #v3PassState = {};
   #lastV3PassInfo = null;
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: ONE lease per engine, living as long as this tab does - not one per
+  //  pass. Held here rather than inside the pass because the whole point of the
+  //  fix is that the role SURVIVES between passes; a lease owned by a pass is a
+  //  lease that is released three seconds later, which is what let both tabs
+  //  write in turn.]
+  #v3WriterLease = null;
   // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
   // [WHY: started in the CONSTRUCTOR and awaited by #reconcileImpl, so no
   //  reconcile can possibly run before this installation's transport is known.
@@ -471,6 +478,16 @@ export class ProfileSync {
 
   constructor(profileStore) {
     this.#profile = profileStore;
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: FIRST, and synchronous. From this line until #loadActivation resolves
+    //  the mode, every association read and write is held — so a V3 installation
+    //  cannot write an association into the V2 row during boot. main.js runs
+    //  `new ProfileStore()` and `new ProfileSync(profile)` in the same
+    //  synchronous block, and no user event can be dispatched between two
+    //  synchronous statements, so there is no window rather than a small one.
+    //  #applyAssociationStoreForMode, at the end of #loadActivation, is what
+    //  releases it — including for V1/V2, where the answer is simply the V2 row.]
+    if (typeof profileStore.deferAssociationStore === "function") profileStore.deferAssociationStore();
     this.#activationReady = this.#loadActivation();
     this.#installEnvironmentTriggers();
     // A single subscription drives every auto-sync trigger: favorites,
@@ -548,6 +565,21 @@ export class ProfileSync {
   //
   //  Tolerant of a store without the method so a test double, or a future
   //  ProfileStore-shaped object, does not have to implement it to be usable.]
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: one place that gives up the writer role, called from every path that
+  //  stops this tab being a V3 writer - dispose, leaving V3 mode, and
+  //  disconnecting the V3 folder. The lease object itself is discarded so the
+  //  next V3 pass builds a fresh one against whatever deviceId is current.]
+  #releaseV3WriterLease() {
+    if (!this.#v3WriterLease) return;
+    try {
+      this.#v3WriterLease.release();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not release the writer lease.", error);
+    }
+    this.#v3WriterLease = null;
+  }
+
   async #applyAssociationStoreForMode() {
     if (!this.#profile || typeof this.#profile.setAssociationStore !== "function") return;
     const store = this.#mode === ACTIVATION_V3 ? V3_ASSOCIATION_STORE : V2_ASSOCIATION_STORE;
@@ -917,6 +949,7 @@ export class ProfileSync {
     this.#v3DirHandle = null;
     this.#v3FolderName = null;
     this.#v3ConnectedAt = null;
+    this.#releaseV3WriterLease();
     await this.#refreshV3Connection();
   }
 
@@ -1011,6 +1044,7 @@ export class ProfileSync {
     }
 
     this.#v3ActivatedAt = null;
+    this.#releaseV3WriterLease();
     this.#status = "checking";
     this.#message = null;
     this.#emit();
@@ -1120,6 +1154,13 @@ export class ProfileSync {
       //  "connected" starts covering for a device that is silently not
       //  contributing.]
       v3LiveWritesEnabled: V3_LIVE_WRITES_ENABLED,
+      // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+      // [WHY: reported from the LEASE rather than inferred from the last pass
+      //  result. "Did my most recent pass publish?" and "am I the writer?" are
+      //  different questions - a writer with nothing to publish answers no to
+      //  the first - and conflating them is what would make the status flicker
+      //  between writer and reader on an idle device.]
+      v3IsWriter: Boolean(this.#v3WriterLease && this.#v3WriterLease.held),
       v3PublishBlocked: this.#lastV3PassInfo ? this.#lastV3PassInfo.publishBlocked : null,
       v3MergedPeers: this.#lastV3PassInfo ? this.#lastV3PassInfo.mergedPeers : null,
       v3SkippedPeers: (this.#lastV3PassInfo ? this.#lastV3PassInfo.skippedPeers : []) || [],
@@ -1161,12 +1202,16 @@ export class ProfileSync {
     //  deliberately rather than inheriting a cadence it never asked for.]
     // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
     // [WHY: V3's cadence is ready and gated on the SAME constant the pass uses to
-    //  authorize a write. Polling a read-only pass every three seconds would burn
-    //  Drive requests to reach a decision that is already known to be "cannot
-    //  publish", and — more to the point — a device that cannot write has nothing
-    //  to converge TOWARDS: it can adopt peers, but it never contributes, so the
-    //  cadence buys nothing until Stage 03B makes writing possible. One constant
-    //  governs both, so they cannot be half-enabled.]
+    //  authorize a write, so the two cannot be half-enabled.]
+    //
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: deliberately NOT gated on holding the writer lease. A non-writer tab
+    //  must keep polling, because polling is how it learns about a peer's
+    //  changes at all — a reader that stopped polling would be a tab frozen at
+    //  whatever it knew when it lost the lease, which is precisely the "only one
+    //  Browser Gallery tab works" outcome this stage exists to avoid. Lease
+    //  ownership is decided per pass, inside the pass; the cadence is the same
+    //  for every tab.]
     if (this.#mode === ACTIVATION_V3) {
       return !this.#disposed && V3_LIVE_WRITES_ENABLED && Boolean(this.#v3DirHandle);
     }
@@ -1229,6 +1274,12 @@ export class ProfileSync {
   /** Releases every timer and listener this instance owns. */
   dispose() {
     this.#disposed = true;
+    // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+    // [WHY: hands the writer role back explicitly. The browser would release it
+    //  when the tab closed anyway, but dispose() also runs on paths where the
+    //  page stays open, and a lease held by a disposed engine would keep the
+    //  whole installation's writer role hostage with nothing left to use it.]
+    this.#releaseV3WriterLease();
     if (this.#pollTimer) {
       clearTimeout(this.#pollTimer);
       this.#pollTimer = null;
@@ -1257,10 +1308,15 @@ export class ProfileSync {
     //  seconds later. Checked before the handle test below because that one is
     //  about the V1/V2 handle, which V3 mode has deliberately released.]
     // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
-    // [WHY: the V3 path is wired and deliberately inert. With live writes off a
-    //  debounced pass could only re-read Drive and decline to publish, so every
-    //  favourite or tag click would queue a pointless round trip three seconds
-    //  later. Gated on the same constant as the scheduler and the pass itself.]
+    // [WHY: gated on the same constant as the scheduler and the pass itself.]
+    //
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: now live, and correct on a non-writer tab without a lease check
+    //  here. A reader's debounced pass reads and adopts and then declines to
+    //  publish — which is the right behaviour, not wasted work: the edit is
+    //  already durable in IndexedDB, and whichever tab holds the lease publishes
+    //  it on its own next pass. Checking the lease here would only move the same
+    //  decision earlier and duplicate the seam.]
     if (this.#mode === ACTIVATION_V3) {
       if (!V3_LIVE_WRITES_ENABLED || !this.#v3DirHandle) return;
       if (this.#debounceTimer) clearTimeout(this.#debounceTimer);
@@ -1363,12 +1419,22 @@ export class ProfileSync {
     await this.#refreshV3Connection();
     if (!this.#v3DirHandle || this.#v3Status !== "ready") return;
 
+    // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+    // [WHY: created lazily, on the first pass, because the deviceId is not known
+    //  at construction time and the lock name must carry the FULL deviceId. Once
+    //  created it is reused for every subsequent pass - that reuse IS the fix.]
+    if (!this.#v3WriterLease) {
+      const deviceId = typeof this.#profile.getDeviceId === "function" ? this.#profile.getDeviceId() : null;
+      if (deviceId) this.#v3WriterLease = createV3WriterLease({ deviceId });
+    }
+
     let result;
     try {
       result = await runSyncV3Pass({
         profileStore: this.#profile,
         dirHandle: this.#v3DirHandle,
         state: this.#v3PassState,
+        writerLease: this.#v3WriterLease,
       });
     } catch (error) {
       console.error("[SYNCV3] Sync pass threw.", error);
@@ -1412,6 +1478,12 @@ export class ProfileSync {
         return;
 
       case "ok":
+        // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+        // [WHY: a pass that read and adopted but held no lease is a SUCCESS, not
+        //  a fault — the tab is doing exactly what a reader should. It is
+        //  reported through publishBlocked rather than through an error status,
+        //  so the UI can say "read-only, another tab is writing" without any
+        //  surface implying something went wrong.]
         this.#status = "v3-ready";
         this.#message = null;
         // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
