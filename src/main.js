@@ -29,6 +29,15 @@ import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-l
 //  time a folder is reorganized before it has been recorded.]
 import { resolveScopeForRoot } from "./storage/media-scope.js";
 import { runSeedingPass } from "./storage/media-seeding.js";
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// [WHY: Stage 02 is the first stage that READS MEDIA-ID back into what the user
+//  sees. It projects Favorite / favoritedAt / Hidden / Tags across
+//  DETERMINISTIC same-device aliases only — T0 (exact key) and T1 (a prefix
+//  proven by FileSystemDirectoryHandle.resolve() or by a version-guarded
+//  re-base). No structural inference, no metadata matching, no hashing. Nothing
+//  here migrates, rewrites, rekeys, copies or restamps a Profile fact: the
+//  facts stay exactly where the user put them and the projection is a read.]
+import { buildAliasIndexForLoad, createMediaIdentityChannel, MEDIA_IDENTITY_MESSAGE_KINDS } from "./storage/media-alias-index.js";
 import {
   loadPreferences,
   savePlaybackPreferences,
@@ -38,6 +47,7 @@ import {
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
+import { createProfileProjectionView } from "./profile/profile-projection-view.js";
 import { ProfileSync } from "./profile/profile-sync.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
@@ -49,6 +59,16 @@ const provider = new LocalFileInputProvider();
 // ever actually loaded into the app at once.
 const fsaProvider = new FsaFileProvider();
 const profile = new ProfileStore();
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// [WHY: constructed immediately beside `profile` and handed to MediaRuntime
+//  below, because the runtime and the render sites in this file MUST read the
+//  same answer. Some code stamps item.isFavorite/isHidden/userTags onto the
+//  MediaItem; other code reads the store live at render time. Routing only one
+//  of those through the projection would make the heart button and the grid
+//  disagree with each other. `profile` itself stays the writer and the owner of
+//  everything that is not per-item curation (profiles, tags vocabulary,
+//  import/export, associations) — this facade deliberately does not wrap those.]
+const profileView = createProfileProjectionView({ profile });
 // [PROFILE-SYNC]
 // WHAT: The Profile Sync engine — watches `profile` for changes and mirrors
 // the full Profile collection into a separately-chosen sync folder.
@@ -61,7 +81,11 @@ const profile = new ProfileStore();
 // interact, that almost certainly means the boundary is being crossed by
 // mistake — re-read profile-sync.js's header first.
 const profileSync = new ProfileSync(profile);
-const runtime = new MediaRuntime({ profile });
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// The runtime uses exactly subscribe/isFavorite/isHidden/toggleFavorite/
+// toggleHidden, all of which the projection view implements, so media-runtime.js
+// is unmodified by this stage.
+const runtime = new MediaRuntime({ profile: profileView });
 
 // [TS-POC] Single adapter instance reused across items — attach() always
 // tears down whatever it was previously doing first, so this is safe to
@@ -3393,74 +3417,360 @@ function syncMobileLoadState() {
 // getVisibleItems() (used by reloadRuntime) might filter down to Favorites
 // Only — otherwise that filter would run against items that don't know
 // their own favorite/hidden status yet.
-// ---- [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING] --------------------------
-//
-// WHAT: after a load has already rendered, records what was observed into
-// MEDIA-ID's own local index — one identity per (media scope, scope-relative
-// path), plus the size/mtime/name of every file, plus which of those paths the
-// active Profile already holds curation for.
-//
-// WHAT IT DOES NOT DO: it reads nothing back. No Favorite, Tag or Hidden lookup
-// consults it; ProfileStore is untouched; no fact is rewritten or rekeyed; no
-// libraryId is minted or linked; no association is created or changed; nothing
-// reaches the sync fact model or the V3 transport. Deleting this function and
-// its two call sites reverts the app to byte-identical behaviour.
-//
-// [WHY: deliberately NOT awaited. Seeding a 20k library is tens of milliseconds
-//  of CPU plus 40 IndexedDB transactions, and none of it has any visible effect
-//  until a later stage — making a user wait on invisible bookkeeping would be
-//  pure cost. It runs after the gallery has rendered, yields between batches,
-//  and abandons itself when a newer load supersedes it.]
-//
-// [WHY: failures are swallowed to a console warning. Every part of this is
-//  additive evidence: if the index cannot be written, the app is exactly the
-//  app it was before MEDIA-ID existed. A load must never fail because
-//  bookkeeping did.]
 let mediaIdSeedToken = 0;
 
-function startMediaIdentitySeeding({ rootId, handle, sourceKind, items, rootName = null }) {
-  if (!rootId || !Array.isArray(items) || !items.length) return;
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// [WHY: THE sequencing correction this stage turns on. Stage 01 resolved the
+//  media scope INSIDE the fire-and-forget seeding pass, which runs after
+//  finishLoadingItems() — so at first render getRoot() could still return null
+//  for a first-ever pick, and, worse, a child-first/MASTER-later load would
+//  render against the PRE-re-base prefixes because resolveScopeForRoot() is the
+//  call that performs the re-base.
+//
+//  So the two halves are now separate, in this order:
+//
+//      resolve / claim / join / re-base   <- AWAITED, structural, cheap
+//              -> build alias index       <- AWAITED
+//                      -> finishLoadingItems()  (first render, already correct)
+//                              -> bulk evidence seeding (fire-and-forget)
+//
+//  The scope is resolved EXACTLY ONCE: the seeding pass now receives the
+//  resolved scope instead of computing its own, so no ancestry probe and no
+//  re-base can run twice. media-scope.js and media-seeding.js needed no change
+//  at all — runSeedingPass already takes scopeId/prefixFromScopeRoot.]
+const PROJECTION_FIRST_RENDER_BUDGET_MS = 1500;
+const PROJECTION_STATUS_AFTER_MS = 250;
 
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// [WHY: MEDIA-ID's own channel, invalidation only. A sibling tab that claims a
+//  root or re-bases a scope moves every stored scope-relative path and every
+//  root prefix, so this tab's cached alias index describes state that no longer
+//  exists. The message carries a scopeId and a timestamp and NOTHING ELSE —
+//  IndexedDB stays the authority and the receiver always re-reads it. Freshness
+//  is PROMPT because of this channel; it is CORRECT because of the re-read, so
+//  a browser without BroadcastChannel simply rebuilds on its next load.]
+let mediaIdentityChannel = null;
+let lastProjectionRequest = null;
+
+function getMediaIdentityChannel() {
+  if (mediaIdentityChannel) return mediaIdentityChannel;
+  try {
+    mediaIdentityChannel = createMediaIdentityChannel({
+      deviceId: typeof profile.getDeviceId === "function" ? profile.getDeviceId() : null,
+      onInvalidate: () => {
+        // Drop the cache and rebuild from storage. Never trust the message.
+        rebuildProjectionFromStorage("a sibling tab changed MEDIA-ID state");
+      },
+    });
+  } catch (error) {
+    console.warn("[MEDIA-ID] Could not open the invalidation channel; projection will refresh on the next load.", error);
+    mediaIdentityChannel = null;
+  }
+  return mediaIdentityChannel;
+}
+
+function announceMediaIdentityChange(kind, scopeId) {
+  const channel = getMediaIdentityChannel();
+  if (channel) channel.announce(kind, { scopeId });
+}
+
+// [MEDIA-ID / STAGE-02 / DIAGNOSTIC]
+// [WHY: a projection that produces nothing has SEVERAL distinct causes and they
+//  need different fixes — no index at all (no scope row, or a single-root scope),
+//  no curated paths to project (the BP-FAIL-01 timing defect), candidates found
+//  but refused because a competing destination is PRESENT (correct duplicate
+//  safety), or refused as UNKNOWN (a root that could not be proven either way).
+//  The original line reported only "N aliased item(s)", which reads identically
+//  for all four — and during BP-FAIL-01 that cost a diagnosis cycle. This
+//  reports the counters only: no path lists, no fact values, no Profile contents.]
+function describeProjection(index) {
+  if (!index) return "no index (no scope row, or a single-root scope — nothing to project)";
+  const d = index.diagnostics || {};
+  const probes = d.probes || {};
+  const existence = d.existence || {};
+  return (
+    `${index.aliases.size} aliased of ${d.observed ?? "?"} observed; ` +
+    `factKeys=${d.factKeys ?? "?"} candidates=${d.candidates ?? 0} admitted=${d.admitted ?? 0} ` +
+    `refused(present=${d.refusedPresent ?? 0}, unknown=${d.refusedUnknown ?? 0}); ` +
+    `roots=${d.roots ?? "?"}(handles=${d.rootsWithHandles ?? "?"}) prefixes=[${(index.rootPrefixes || [])
+      .map((prefix) => JSON.stringify(prefix))
+      .join(", ")}]; ` +
+    `census(observed=${existence.observedHits ?? 0}, durable=${existence.durableHits ?? 0}, ` +
+    `absent=${existence.censusAbsent ?? 0}, probed=${existence.probed ?? 0}, unknown=${existence.unknown ?? 0}) ` +
+    `probes(dir=${probes.directoryProbes ?? 0}, file=${probes.fileProbes ?? 0}` +
+    `${probes.budgetExhausted ? ", BUDGET EXHAUSTED" : ""})`
+  );
+}
+
+async function rebuildProjectionFromStorage(reason) {
+  if (!lastProjectionRequest) return;
+  const request = lastProjectionRequest;
+  try {
+    const index = await buildAliasIndexForLoad(request);
+    if (lastProjectionRequest !== request) return; // superseded by a newer load
+    profileView.setAliasIndex(index);
+    console.info(`[MEDIA-ID] Projection rebuilt (${reason}): ${describeProjection(index)}`);
+  } catch (error) {
+    console.warn("[MEDIA-ID] Could not rebuild the projection. Path-exact behaviour is unaffected.", error);
+  }
+}
+
+/**
+ * Resolves the media scope structurally, then builds this load's alias index.
+ *
+ * Returns { scope, index } or null. Never throws: every failure degrades to
+ * today's exact-path behaviour rather than failing the media load.
+ */
+async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, complete, rootName = null }) {
+  let knownRootHandles = [];
+  if (handle) {
+    try {
+      // Read-only enumeration of other roots this device has persisted, so
+      // ancestry can be PROVEN against them. Unchanged from Stage 01.
+      const libraries = await listLibraries();
+      knownRootHandles = libraries
+        .filter((record) => record && record.handle && record.id !== rootId)
+        .map((record) => ({ rootId: record.id, handle: record.handle }));
+    } catch (error) {
+      console.warn("[MEDIA-ID] Could not enumerate known libraries for ancestry probing.", error);
+    }
+  }
+
+  const scope = await resolveScopeForRoot({ rootId, handle, sourceKind, knownRootHandles });
+
+  // A claim, a join, a mint or a re-base all move state sibling tabs have
+  // cached. Announced here, once, at the moment it becomes durable.
+  if (scope.action !== "existing") {
+    announceMediaIdentityChange(MEDIA_IDENTITY_MESSAGE_KINDS.SCOPE_CHANGED, scope.scopeId);
+  }
+
+  // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
+  // [WHY: `factKeys` is a CALLBACK, not a captured array, and `profileId` is
+  //  read through one too. ProfileStore starts #loadSavedRecords() in its
+  //  constructor and never exposes a promise for it — whenFactsSettled() waits
+  //  on the fact QUEUE, not on that read — so immediately after a page reload
+  //  knownPaths() legitimately returns []. A build that froze the array at that
+  //  instant saw zero curated paths, and because the SAME frozen request was
+  //  replayed by every later rebuild, the projection stayed empty for the rest
+  //  of the session. That is the Browser Preview failure exactly: correct scope,
+  //  correct prefix, 222 paths refreshed, five stamped MASTER facts present, and
+  //  "0 aliased item(s)" on every rebuild.
+  //
+  //  Both sources are the ACTIVE profile's, so Profile isolation is unchanged and
+  //  remains structural: no API on this path can return another Profile's
+  //  curation.]
+  const request = {
+    rootId,
+    profileId: () => profile.getProfileId(),
+    items,
+    factKeys: () => currentFactKeys(),
+    loadComplete: Boolean(complete),
+  };
+  lastProjectionRequest = request;
+  lastProjectionRecordCount = typeof profile.size === "function" ? profile.size() : 0;
+  lastProjectionFactPathCount = typeof profile.getFactPaths === "function" ? profile.getFactPaths().length : 0;
+
+  const index = await buildAliasIndexForLoad(request);
+
+  // [MEDIA-ID / STAGE-02 / DIAGNOSTIC]
+  // The INITIAL build, reported on the same terms as a rebuild. Previously only
+  // rebuilds logged, so the first (and usually only) build was invisible.
+  console.info(
+    `[MEDIA-ID] Projection built for "${rootName || (handle && handle.name) || rootId}" ` +
+      `(scope ${scope.scopeId}, ${scope.action}, prefix ${JSON.stringify(scope.prefixFromScopeRoot)}): ` +
+      `${describeProjection(index)}`
+  );
+
+  return { scope, index };
+}
+
+// [MEDIA-ID / STAGE-02 / BP-FAIL-01]
+// [WHY: the other half of the same defect. Reading the curation live fixes a
+//  rebuild, but nothing was ASKING for a rebuild once ProfileStore's records
+//  finally arrived — the only rebuild triggers were a sibling tab's message and
+//  this tab's own seeding pass. So on a reload the first build correctly saw no
+//  curation and then nothing ever revisited it.
+//
+//  ProfileStore#loadSavedRecords ends with #emit(), and so does every adoption of
+//  a peer's facts, so a subscription here is a sufficient signal without any new
+//  ProfileStore API. It is gated on the CURATED PATH COUNT changing (size() is
+//  O(1)) and then on the new keys being able to produce a candidate at all, so an
+//  ordinary Favorite click on an already-curated item does no work, and a click
+//  that creates a path which cannot alias does no work either. Without that
+//  second gate a 20k library would re-run a ~70ms build on every first-time
+//  favourite.]
+let lastProjectionRecordCount = 0;
+let lastProjectionFactPathCount = 0;
+let projectionRebuildQueued = false;
+
+// [MEDIA-ID / STAGE-02 / BP-FAIL-03]
+// [WHY: alias DISCOVERY reads stamped fact paths, not flattened local records.
+//  ProfileStore#setRecord deletes a record that carries only false/empty values,
+//  so a path holding ONLY an un-favourite, an un-tag or an un-hide has no local
+//  record and never appears in knownPaths() — while its stamped facts are
+//  exactly what must beat the older positive value on a proven alias. Losing
+//  them made removals one-way: MASTER -> child projected, child -> MASTER did
+//  not, forever.
+//
+//  The union is deliberate and is the safe direction: getFactPaths() is the
+//  authority, and knownPaths() only covers the brief window in which a mutation
+//  has updated the local record but its fact has not yet been stamped. A key
+//  with no fact contributes nothing to resolution, and every extra candidate
+//  still goes through the unchanged competing-destination refusal.]
+function currentFactKeys() {
+  const fromFacts = typeof profile.getFactPaths === "function" ? profile.getFactPaths() : [];
+  const fromRecords = typeof profile.knownPaths === "function" ? profile.knownPaths() : [];
+  return [...new Set([...fromFacts, ...fromRecords])];
+}
+
+function couldChangeAliases() {
+  const request = lastProjectionRequest;
+  const index = profileView.getAliasIndex();
+  if (!request || !index) return true; // nothing built yet — let the rebuild decide
+
+  const observed = new Set();
+  for (const item of request.items || []) {
+    if (item && typeof item.relativePath === "string") observed.add(item.relativePath);
+  }
+
+  // A newly curated key matters only if some root prefix maps it onto a path
+  // this load is actually showing. An index that cannot answer that question
+  // falls through to rebuilding — the skip is an optimization, and it must never
+  // be the reason a projection fails to appear.
+  const prefixes = index.rootPrefixes;
+  if (!Array.isArray(prefixes) || !prefixes.length) return true;
+  for (const key of currentFactKeys()) {
+    for (const prefix of prefixes) {
+      if (prefix && !key.startsWith(prefix)) continue;
+      const viewed = key.slice(prefix.length);
+      if (viewed && observed.has(viewed) && !index.aliases.has(viewed)) return true;
+    }
+  }
+  return false;
+}
+
+// [MEDIA-ID / STAGE-02 / BP-FAIL-03]
+// [WHY: gating a rebuild on profile.size() alone was ALSO wrong, for the same
+//  underlying reason. Un-favouriting a projected Favorite on the child writes
+//  {favorite:false}, which isEmptyRecord() discards — so the record count does
+//  not change, and could even DECREASE, while a brand-new stamped fact key
+//  appeared. Measured directly: size stayed at 1 across the child removals.
+//
+//  The stamped fact-key COUNT is an exact signal here rather than a heuristic:
+//  sync-facts.js has no remove-a-key operation ("Every removal is expressed as a
+//  fact whose VALUE says removed") and mergeMaps only ever unions, so within one
+//  Profile the fact-key set is append-only and a count change means new keys.
+//  Both signals are consulted, so neither can suppress the other.]
+function onProfileCurationChanged() {
+  if (!lastProjectionRequest) return;
+  const size = typeof profile.size === "function" ? profile.size() : 0;
+  const factPathCount = typeof profile.getFactPaths === "function" ? profile.getFactPaths().length : 0;
+  if (size === lastProjectionRecordCount && factPathCount === lastProjectionFactPathCount) return;
+  lastProjectionRecordCount = size;
+  lastProjectionFactPathCount = factPathCount;
+  if (projectionRebuildQueued) return;
+
+  projectionRebuildQueued = true;
+  // Coalesced: a burst of adopted facts produces ONE rebuild, not one each.
+  Promise.resolve().then(() => {
+    projectionRebuildQueued = false;
+    if (!couldChangeAliases()) return;
+    rebuildProjectionFromStorage("the active Profile's curated paths changed");
+  });
+}
+
+profile.subscribe(onProfileCurationChanged);
+
+/**
+ * Runs the structural preparation under a soft first-render budget.
+ *
+ * [WHY A BUDGET: everything here is tens of milliseconds except one case — a
+ *  re-base rewrites every banked path row in the scope, which at 20k items is
+ *  seconds. That is rare (once per scope-root promotion, never per load) but it
+ *  must not silently stall the gallery. On overrun the load renders with exact
+ *  path behaviour and the work CONTINUES: the transaction is atomic, so
+ *  abandoning the wait never abandons the write, and the index is applied with a
+ *  single extra emit when it lands.]
+ */
+function beginMediaIdentityForLoad({ rootId, handle, sourceKind, items, rootName = null, complete = true }) {
   mediaIdSeedToken += 1;
   const token = mediaIdSeedToken;
 
-  // Fire-and-forget by design; see the WHY above.
+  // A new load invalidates the previous projection and every pending override.
+  profileView.beginEpoch();
+  profileView.setAliasIndex(null);
+  lastProjectionRequest = null;
+
+  if (!rootId || !Array.isArray(items) || !items.length) return Promise.resolve(null);
+
+  const ready = prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, complete, rootName }).catch((error) => {
+    console.warn("[MEDIA-ID] Could not prepare media identity. Path-exact behaviour is unaffected.", error);
+    return null;
+  });
+
+  // Bulk evidence banking — Stage 01's pass, unchanged in every respect except
+  // that it no longer resolves the scope itself. Still fire-and-forget, still
+  // after render, still superseded by a newer load, still failure-tolerant.
+  ready.then((prepared) => {
+    if (!prepared || !prepared.scope || token !== mediaIdSeedToken) return;
+    startMediaIdentitySeeding({ scope: prepared.scope, rootId, items, rootName, handle, token });
+  });
+
+  return ready;
+}
+
+/**
+ * Awaits the projection for at most the first-render budget, applies it, and
+ * returns. Never rejects.
+ */
+async function applyProjectionWithinBudget(ready) {
+  if (!ready) return;
+
+  let settled = false;
+  let statusTimer = null;
+  const previousStatus = statusText ? statusText.textContent : null;
+
+  if (statusText) {
+    statusTimer = setTimeout(() => {
+      if (!settled) statusText.textContent = "Reconciling library identity…";
+    }, PROJECTION_STATUS_AFTER_MS);
+  }
+
+  const budget = new Promise((resolve) => setTimeout(() => resolve("budget"), PROJECTION_FIRST_RENDER_BUDGET_MS));
+  const outcome = await Promise.race([ready.then((value) => ({ value })), budget]);
+  settled = true;
+  if (statusTimer) clearTimeout(statusTimer);
+  if (statusText && statusText.textContent === "Reconciling library identity…") {
+    statusText.textContent = previousStatus || "";
+  }
+
+  if (outcome === "budget") {
+    console.info("[MEDIA-ID] Structural preparation exceeded the first-render budget; rendering path-exact and applying the projection when it lands.");
+    ready.then((prepared) => {
+      if (prepared && prepared.index) profileView.setAliasIndex(prepared.index);
+    });
+    return;
+  }
+
+  if (outcome.value && outcome.value.index) profileView.setAliasIndex(outcome.value.index);
+}
+
+// ---- [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING] --------------------------
+//
+// The bulk evidence-banking pass. Receives an ALREADY-RESOLVED scope (see
+// beginMediaIdentityForLoad above) so no ancestry probing or re-base happens
+// twice.
+function startMediaIdentitySeeding({ scope, rootId, items, rootName, handle, token }) {
+  // Fire-and-forget by design: a user must never wait on bookkeeping that has
+  // no visible effect until the pass completes.
   (async () => {
     try {
-      // Other roots this device has persisted, so ancestry can be PROVEN
-      // against them. listLibraries() is read-only from this file's point of
-      // view and is already the app's own way of enumerating known folders.
-      // Roots the user removed from Recent Libraries are not enumerated by it,
-      // so a master hidden that way is simply not probed — a missed recovery,
-      // never a wrong one.
-      let knownRootHandles = [];
-      if (handle) {
-        try {
-          const libraries = await listLibraries();
-          knownRootHandles = libraries
-            .filter((record) => record && record.handle && record.id !== rootId)
-            .map((record) => ({ rootId: record.id, handle: record.handle }));
-        } catch (error) {
-          console.warn("[MEDIA-ID] Could not enumerate known libraries for ancestry probing.", error);
-        }
-      }
-
-      if (token !== mediaIdSeedToken) return;
-
-      const scope = await resolveScopeForRoot({ rootId, handle, sourceKind, knownRootHandles });
-      if (token !== mediaIdSeedToken) return;
-
-      // knownPaths() is an EXISTING public ProfileStore method — reading the
-      // active Profile's fact paths needs no change to that class at all, which
-      // is what keeps Stage 01 free of any ProfileStore edit.
-      const factPaths = typeof profile.knownPaths === "function" ? profile.knownPaths() : [];
-
       const stats = await runSeedingPass({
         scopeId: scope.scopeId,
         rootId,
         prefixFromScopeRoot: scope.prefixFromScopeRoot,
         items,
-        factPaths,
+        factPaths: typeof profile.knownPaths === "function" ? profile.knownPaths() : [],
         profileId: profile.getProfileId(),
         shouldContinue: () => token === mediaIdSeedToken,
       });
@@ -3471,6 +3781,13 @@ function startMediaIdentitySeeding({ rootId, handle, sourceKind, items, rootName
           `${stats.batches} batch(es)${stats.superseded ? " (superseded by a newer load)" : ""}. ` +
           `Scope ${scope.scopeId} (${scope.action}).`
       );
+
+      if (!stats.superseded && (stats.created || stats.updated)) {
+        // The durable path census grew, which can only make projection MORE
+        // conservative (more competing destinations become provably PRESENT).
+        announceMediaIdentityChange(MEDIA_IDENTITY_MESSAGE_KINDS.EVIDENCE_CHANGED, scope.scopeId);
+        if (token === mediaIdSeedToken) rebuildProjectionFromStorage("evidence banking completed");
+      }
     } catch (error) {
       console.warn("[MEDIA-ID] Evidence seeding did not complete. No user-visible behaviour is affected.", error);
     }
@@ -3479,10 +3796,10 @@ function startMediaIdentitySeeding({ rootId, handle, sourceKind, items, rootName
 
 function finishLoadingItems(items) {
   items.forEach((item) => {
-    item.isFavorite = profile.isFavorite(item.relativePath);
-    item.isHidden = profile.isHidden(item.relativePath);
-    item.favoritedAt = profile.getFavoritedAt(item.relativePath);
-    item.userTags = profile.getItemTags(item.relativePath);
+    item.isFavorite = profileView.isFavorite(item.relativePath);
+    item.isHidden = profileView.isHidden(item.relativePath);
+    item.favoritedAt = profileView.getFavoritedAt(item.relativePath);
+    item.userTags = profileView.getItemTags(item.relativePath);
   });
 
   allItems = items;
@@ -3663,20 +3980,26 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
         console.warn("[SYNCV3] Could not record this legacy Library load in the shared catalog.", error);
       }
 
-      // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
+      // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
       // [WHY: a legacy pick has no handle, so no ancestry can be proven and this
-      //  root simply gets its own media scope. That is a real limitation, not a
-      //  degraded mode: structure alone never auto-resolves, so a Legacy root is
-      //  never merged into another scope on a guess. Its evidence is still worth
-      //  banking — legacy-library-signature.js is the only place in this app that
-      //  ever retained historical path->size pairs, and capture-now is what gives
-      //  those paths a live signature to be corroborated against later.]
-      startMediaIdentitySeeding({
+      //  root simply gets its own media scope — a single-root scope, for which
+      //  buildAliasIndexForLoad returns null and every read is a plain
+      //  delegation. That is a real limitation, not a degraded mode: structure
+      //  alone never auto-resolves, so a Legacy root is never merged into
+      //  another scope on a guess. Its evidence is still worth banking —
+      //  legacy-library-signature.js is the only place in this app that ever
+      //  retained historical path->size pairs.
+      //
+      //  The projection is not awaited here the way the FSA path awaits it: the
+      //  identity work for a legacy root cannot change what the first render
+      //  shows (no siblings, no proven prefix), so there is nothing to wait for.]
+      beginMediaIdentityForLoad({
         rootId: activeLibraryRecord.id,
         handle: null,
         sourceKind: "legacy",
         items,
         rootName,
+        complete: true,
       });
     }
   } finally {
@@ -3849,6 +4172,30 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       fsaStatusText.textContent = `${recognizedNote}Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
     }
 
+    // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+    // [WHY: BEFORE finishLoadingItems(), not after. finishLoadingItems() stamps
+    //  every item's Favorite/Hidden/Tags and calls reloadRuntime() — it IS the
+    //  first render. Preparing the scope afterwards (as Stage 01 did) meant a
+    //  first-ever pick had no scope row yet, and a child-first/MASTER-later load
+    //  rendered against prefixes the re-base was about to replace.
+    //
+    //  Gated on !result.incomplete exactly as the evidence pass already is: an
+    //  interrupted scan is not this folder's contents, so it can neither be
+    //  banked nor used as the completeness census that proves a competing
+    //  destination ABSENT.]
+    const mediaIdentityReady =
+      activeLibraryRecord && activeLibraryRecord.id && !result.incomplete
+        ? beginMediaIdentityForLoad({
+            rootId: activeLibraryRecord.id,
+            handle: dirHandle,
+            sourceKind: "fsa",
+            items: result.items,
+            rootName: dirHandle.name,
+            complete: true,
+          })
+        : null;
+    await applyProjectionWithinBudget(mediaIdentityReady);
+
     finishLoadingItems(result.items);
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the FSA provider out from under it.
@@ -3903,23 +4250,13 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       await renderRecentLibraries();
     }
 
-    // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
-    // [WHY: gated on !result.incomplete for the same reason recordLibraryLoaded
-    //  is — a scan that stopped early is NOT this folder's contents, and banking
-    //  it would write "these paths are all that exist here" from a partial walk.
-    //  The fact-only population (paths curated but not observed) would then be
-    //  contaminated with files that are simply on the other side of the failure.
-    //  Unlike that call this one needs no libraryId: MEDIA-ID scopes are its own
-    //  local identity, so an un-associated folder participates fully.]
-    if (activeLibraryRecord && activeLibraryRecord.id && !result.incomplete) {
-      startMediaIdentitySeeding({
-        rootId: activeLibraryRecord.id,
-        handle: dirHandle,
-        sourceKind: "fsa",
-        items: result.items,
-        rootName: dirHandle.name,
-      });
-    }
+    // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+    // The evidence pass is started by beginMediaIdentityForLoad() above, off the
+    // same resolved scope, so the ancestry probing and any re-base happen
+    // exactly once per load. Its !result.incomplete gate moved up there with it,
+    // unchanged in meaning: a scan that stopped early is NOT this folder's
+    // contents, and banking it would write "these paths are all that exist here"
+    // from a partial walk.
 
     // [Phase 8.4-2] Single visibility rule, same one loadFiles() uses for
     // the legacy path — see currentLoadIsAssociated() for the id-less
@@ -5846,7 +6183,7 @@ function syncFavoriteButtons(item) {
   // even if something upstream someday forgets to re-stamp an item, and
   // means it's never displaying anything other than what's actually
   // persisted right now.
-  const isFavorite = Boolean(item && profile.isFavorite(item.relativePath));
+  const isFavorite = Boolean(item && profileView.isFavorite(item.relativePath));
 
   favoriteBtn.classList.toggle("hidden", !item);
   favoriteBtn.classList.toggle("is-favorite", isFavorite);
@@ -5973,8 +6310,8 @@ function makePresentationTagButton(tag, appliedTagIds, item) {
   btn.addEventListener("click", () => {
     if (!item) return;
     const state = runtime.getState();
-    const isApplying = !profile.hasItemTag(item.relativePath, tag.id);
-    profile.toggleItemTag(item.relativePath, tag.id);
+    const isApplying = !profileView.hasItemTag(item.relativePath, tag.id);
+    profileView.toggleItemTag(item.relativePath, tag.id);
     if (isApplying) {
       // [8.4] Shuffle context travels WITH the activity record it
       // describes, not as separate global state — a later switch of the
@@ -6008,7 +6345,7 @@ function renderPresentationTagsPanel(item) {
   // Read applied tags directly from ProfileStore rather than
   // item.userTags (a cached stamp) — same reasoning as syncFavoriteButtons:
   // never display anything other than what's actually persisted right now.
-  const appliedTagIds = item ? new Set(profile.getItemTags(item.relativePath)) : new Set();
+  const appliedTagIds = item ? new Set(profileView.getItemTags(item.relativePath)) : new Set();
 
   // First 4 tags share the "⚙ row" (with 👻 + the "Tags" label). Anything
   // beyond that starts a new row underneath, same 4-per-row shape, rather
@@ -7009,7 +7346,7 @@ overlayUndoHideBtn.addEventListener("click", () => {
   // Go straight through ProfileStore rather than toggleHidden — this is
   // always meant as "restore," regardless of the record's current state,
   // not a toggle.
-  profile.setHidden(recentHideUndo.hiddenRelativePath, false);
+  profileView.setHidden(recentHideUndo.hiddenRelativePath, false);
 
   recentHideUndo = null;
   syncUndoHideButton();
@@ -8130,10 +8467,10 @@ profileImportCopyInput.addEventListener("change", async (event) => {
 // Only reloads to pick up whatever just changed.
 profile.subscribe(() => {
   allItems.forEach((item) => {
-    item.isFavorite = profile.isFavorite(item.relativePath);
-    item.isHidden = profile.isHidden(item.relativePath);
-    item.favoritedAt = profile.getFavoritedAt(item.relativePath);
-    item.userTags = profile.getItemTags(item.relativePath);
+    item.isFavorite = profileView.isFavorite(item.relativePath);
+    item.isHidden = profileView.isHidden(item.relativePath);
+    item.favoritedAt = profileView.getFavoritedAt(item.relativePath);
+    item.userTags = profileView.getItemTags(item.relativePath);
   });
 
   // Reload whenever the currently-applied filters could be affected by
@@ -9489,6 +9826,12 @@ window.__bgProfileIdentityAudit = async function (options = {}) {
   const activeProfileName = profile.getProfileName();
   const knownPaths = profile.knownPaths();
 
+  // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+  // [WHY: deliberately NOT routed through profileView. This block reports what
+  //  is STORED, keyed by the literal fact path — the projection reports what is
+  //  SHOWN. Projecting the diagnostic would hide the very divergence between
+  //  those two that a diagnostic exists to reveal, and it would report a path's
+  //  curation under a key that path does not hold.]
   const favoriteKeys = knownPaths.filter((p) => profile.isFavorite(p));
   const hiddenKeys = knownPaths.filter((p) => profile.isHidden(p));
   const taggedKeys = knownPaths.filter((p) => profile.getItemTags(p).length > 0);

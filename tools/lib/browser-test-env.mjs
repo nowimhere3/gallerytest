@@ -63,8 +63,71 @@ function makeConstraintError(store) {
   return error;
 }
 
-function makeStoreProxy(store, ops, observer) {
+// [MEDIA-ID / STAGE-02] Index support.
+// [WHY: media-identity.js's v2 upgrade adds a `scopeId` index on `paths` and
+//  the projection build reads it with index.getAllKeys(), which returns PRIMARY
+//  keys - here the composite [scopeId, scopeRelativePath] - without
+//  deserializing a record. A fixture with no index at all could not exercise
+//  either the upgrade or the read, so the one hot path Stage 02 depends on would
+//  be untested. Counters are exposed so a performance test can assert that the
+//  hot read path performs no full-store getAll().]
+function makeStoreProxy(store, ops, observer, counters) {
+  const bump = (name) => {
+    if (counters) counters[name] = (counters[name] || 0) + 1;
+  };
   return {
+    get indexNames() {
+      return {
+        contains: (name) => store.indexes instanceof Map && store.indexes.has(name),
+      };
+    },
+    createIndex(name, keyPath, { unique = false } = {}) {
+      if (!(store.indexes instanceof Map)) store.indexes = new Map();
+      store.indexes.set(name, { name, keyPath, unique });
+      return { name, keyPath, unique };
+    },
+    index(name) {
+      const definition = store.indexes instanceof Map ? store.indexes.get(name) : null;
+      if (!definition) throw new Error(`No index named "${name}".`);
+      return {
+        getAllKeys(query) {
+          const request = makeRequest();
+          bump("getAllKeys");
+          ops.push(() => {
+            const out = [];
+            for (const row of store.rows.values()) {
+              // [MEDIA-ID / STAGE-02] Compound index keyPaths.
+              // [WHY: media-identity.js's v3 index is on [scopeId, origin] — the
+              //  projection asks for the OBSERVED population of one scope. A
+              //  fixture that only understood scalar keyPaths would silently
+              //  match nothing and hand back [], which reads as "this scope has
+              //  no observed paths" — a false ABSENT that makes the very test
+              //  guarding against it pass for the wrong reason.]
+              if (query !== undefined) {
+                const value = Array.isArray(definition.keyPath)
+                  ? definition.keyPath.map((field) => row[field])
+                  : row[definition.keyPath];
+                const wanted = Array.isArray(definition.keyPath) ? query : [query];
+                const actual = Array.isArray(definition.keyPath) ? value : [value];
+                if (actual.length !== wanted.length) continue;
+                let matches = true;
+                for (let i = 0; i < wanted.length; i++) {
+                  if (actual[i] !== wanted[i]) {
+                    matches = false;
+                    break;
+                  }
+                }
+                if (!matches) continue;
+              }
+              out.push(extractKey(store, row));
+            }
+            request.result = out;
+            if (request.onsuccess) request.onsuccess({ target: request });
+          });
+          return request;
+        },
+      };
+    },
     get(key) {
       const request = makeRequest();
       ops.push(() => {
@@ -113,6 +176,7 @@ function makeStoreProxy(store, ops, observer) {
     },
     getAll() {
       const request = makeRequest();
+      bump("getAll");
       ops.push(() => {
         request.result = [...store.rows.values()].map(cloneValue);
         if (request.onsuccess) request.onsuccess({ target: request });
@@ -164,6 +228,7 @@ function drain(ops, done) {
 export function installFakeIndexedDB() {
   const databases = new Map();
   let observer = null;
+  const counters = { open: 0, getAll: 0, getAllKeys: 0 };
 
   function makeDatabaseHandle(db) {
     return {
@@ -175,9 +240,9 @@ export function installFakeIndexedDB() {
         contains: (name) => db.stores.has(name),
       },
       createObjectStore(name, { keyPath } = {}) {
-        const store = { name, keyPath, rows: new Map() };
+        const store = { name, keyPath, rows: new Map(), indexes: new Map() };
         db.stores.set(name, store);
-        return makeStoreProxy(store, [], observer);
+        return makeStoreProxy(store, [], observer, counters);
       },
       transaction(storeNames, mode = "readonly") {
         const names = Array.isArray(storeNames) ? storeNames : [storeNames];
@@ -192,7 +257,7 @@ export function installFakeIndexedDB() {
             if (!names.includes(name)) throw new Error(`Store "${name}" is not in this transaction's scope.`);
             const store = db.stores.get(name);
             if (!store) throw new Error(`No object store named "${name}".`);
-            return makeStoreProxy(store, ops, observer);
+            return makeStoreProxy(store, ops, observer, counters);
           },
         };
         drain(ops, () => {
@@ -206,6 +271,7 @@ export function installFakeIndexedDB() {
 
   globalThis.indexedDB = {
     open(name, version) {
+      counters.open += 1;
       const request = { onupgradeneeded: null, onsuccess: null, onerror: null, result: null, transaction: null };
 
       setTimeout(() => {
@@ -228,7 +294,7 @@ export function installFakeIndexedDB() {
             objectStore(storeName) {
               const store = db.stores.get(storeName);
               if (!store) throw new Error(`No object store named "${storeName}" during upgrade.`);
-              return makeStoreProxy(store, upgradeOps, observer);
+              return makeStoreProxy(store, upgradeOps, observer, counters);
             },
           };
 
@@ -250,6 +316,12 @@ export function installFakeIndexedDB() {
 
   return {
     databases,
+    counters,
+    resetCounters() {
+      counters.open = 0;
+      counters.getAll = 0;
+      counters.getAllKeys = 0;
+    },
     observe(fn) {
       observer = fn;
     },

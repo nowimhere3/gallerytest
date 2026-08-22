@@ -693,6 +693,68 @@ export class ProfileStore {
   }
 
   /**
+   * Stamped ItemFacts for exactly these paths, for the ACTIVE profile only.
+   *
+   * [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+   * [WHY: the ONE additive seam Stage 02 needed in this class, and it is
+   *  getFacts() with a key filter — nothing more. The projection has to resolve
+   *  a disagreement between two alias paths, and only the STAMPS can do that;
+   *  the flattened #recordsByPath carries no ordering at all. But getFacts()
+   *  deep-clones the entire fact slice, and calling that on every user action in
+   *  a 20k library would be a full structural clone per click. This returns only
+   *  the handful of aliased keys the projection actually holds.
+   *
+   *  Read-only by construction: it reads #facts, calls takeSnapshot (the single
+   *  detachment boundary — see profile-snapshot.js), and touches nothing else.
+   *  No profileId parameter exists, so a foreign Profile is unreachable rather
+   *  than merely discouraged. It never touches #identity, so it cannot read a
+   *  clock or draw a stamp; it never calls a Facts.* builder, so it cannot mint
+   *  one; and it never touches #factQueue/#saveQueue/#persist, so it cannot
+   *  write or schedule a write.]
+   */
+  /**
+   * Every path the ACTIVE profile holds a stamped ItemFacts entry for.
+   *
+   * [MEDIA-ID / STAGE-02 / BP-FAIL-03]
+   * [WHY: knownPaths() cannot answer this and structurally never will.
+   *  #setRecord DELETES a record that isEmptyRecord() considers empty, and
+   *  {favorite:false} / {hidden:false} / {tags:[]} are all empty by that
+   *  definition — so a path carrying ONLY negative curation has no local record
+   *  at all. Its stamped facts are still authoritative: an un-favourite is a
+   *  fact whose stamp is what makes it beat an older favourite on a proven
+   *  alias. Driving alias DISCOVERY off knownPaths() therefore lost exactly the
+   *  removals, and the older positive value on the other alias won forever.
+   *  Proven in the real browser: child un-favourite and un-tag both persisted as
+   *  stamped facts, and MASTER still showed the Favorite after a full reload.
+   *
+   *  DISCOVERY (this) and VALUE RESOLUTION (getItemFactsForPaths) are separate
+   *  jobs, which is why this is a second, narrower accessor rather than a change
+   *  to either existing one. Object.keys() already returns a fresh array of
+   *  immutable strings, so no live reference escapes and no snapshot is needed —
+   *  cloning the whole fact slice just to enumerate its keys would be the cost
+   *  getItemFactsForPaths exists to avoid.
+   *
+   *  Read-only on the same terms as getItemFactsForPaths: active Profile only
+   *  (no profileId parameter exists), no #identity, no clock, no stamp minted,
+   *  no Facts.* builder, no #factQueue/#saveQueue/#persist.]
+   */
+  getFactPaths() {
+    return Object.keys(this.#facts.items || {});
+  }
+
+  getItemFactsForPaths(paths) {
+    const out = {};
+    if (!paths) return out;
+    const items = this.#facts.items || {};
+    for (const path of paths) {
+      if (typeof path !== "string" || !path) continue;
+      const item = items[path];
+      if (item) out[path] = item;
+    }
+    return takeSnapshot(out);
+  }
+
+  /**
    * Every known profile's facts as a Sync V2 replica. The active profile comes
    * from memory (always at least as fresh as IndexedDB); the rest are read from
    * their own rows. Stage D2's transport publishes this.

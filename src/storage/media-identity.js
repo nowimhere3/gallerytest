@@ -39,12 +39,33 @@
 //  composite key protects.]
 
 const DATABASE_NAME = "browser-gallery-media-identity";
-const DATABASE_VERSION = 1;
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// v1: four stores. v2: adds the `scopeId` index on `paths`. v3: adds the
+// compound [scopeId, origin] index — see the upgrade block below.
+const DATABASE_VERSION = 3;
 
 const SCOPES = "scopes";
 const ROOTS = "roots";
 const PATHS = "paths";
 const CURSORS = "cursors";
+
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+export const PATHS_SCOPE_INDEX = "scopeId";
+
+// [MEDIA-ID / STAGE-02 / BP-FAIL-02]
+// [WHY: the `paths` store holds TWO populations and only one of them is
+//  evidence that a file exists. `origin: "observed"` means a file was actually
+//  seen at that scope path. `origin: "fact-only"` means a Profile fact merely
+//  MENTIONED that scope path while some root was loaded - buildSeedEntries
+//  creates exactly such a row for every curated key that was not observed in
+//  that load, prefixed with THAT root's prefix. Loading a child root therefore
+//  banks a doubled-prefix fact-only row for every MASTER-relative curated key,
+//  and those doubled paths are precisely the competing destinations T1 has to
+//  rule out. Treating a mere row as PRESENT refused every candidate. This
+//  compound index is what lets the projection ask for the observed population
+//  alone while still reading keys only.]
+export const PATHS_SCOPE_ORIGIN_INDEX = "scopeOrigin";
+export const ORIGIN_OBSERVED = "observed";
 
 // How many paths share one IndexedDB transaction. One transaction PER ITEM at
 // 20k items would be ruinous; one transaction for ALL of them would hold a
@@ -74,10 +95,39 @@ function openDatabase() {
       if (!database.objectStoreNames.contains(ROOTS)) {
         database.createObjectStore(ROOTS, { keyPath: "rootId" });
       }
+
+      // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+      // [WHY: BOTH branches. A fresh install creates the store here and must
+      //  get the index in the same upgrade; a v1 database already HAS the store
+      //  and can only reach it through the version-change transaction. Handling
+      //  just one of the two is the classic upgrade defect: it works on the
+      //  developer's fresh profile and silently leaves every existing user
+      //  without the index — where the projection build would then have no
+      //  cheap PRESENT source and would quietly refuse more than it should.
+      //
+      //  The index is on `scopeId` and non-unique (many paths per scope). It
+      //  exists so the projection build can read a scope's path keys with
+      //  index.getAllKeys() — primary keys only, no record deserialized —
+      //  instead of materializing the entire store and filtering in JS, which
+      //  is what listPathsInScope() below does and why nothing on Stage 02's
+      //  load path calls it.]
+      let pathStore = null;
       if (!database.objectStoreNames.contains(PATHS)) {
         // The composite key IS the uniqueness guarantee. See the header.
-        database.createObjectStore(PATHS, { keyPath: ["scopeId", "scopeRelativePath"] });
+        pathStore = database.createObjectStore(PATHS, { keyPath: ["scopeId", "scopeRelativePath"] });
+      } else if (request.transaction) {
+        pathStore = request.transaction.objectStore(PATHS);
       }
+      if (pathStore && pathStore.indexNames && !pathStore.indexNames.contains(PATHS_SCOPE_INDEX)) {
+        pathStore.createIndex(PATHS_SCOPE_INDEX, "scopeId", { unique: false });
+      }
+      // [MEDIA-ID / STAGE-02 / BP-FAIL-02] See PATHS_SCOPE_ORIGIN_INDEX above.
+      // Added in the same both-branches shape as the index before it, so a v1,
+      // a v2 and a fresh database all end up with both.
+      if (pathStore && pathStore.indexNames && !pathStore.indexNames.contains(PATHS_SCOPE_ORIGIN_INDEX)) {
+        pathStore.createIndex(PATHS_SCOPE_ORIGIN_INDEX, ["scopeId", "origin"], { unique: false });
+      }
+
       if (!database.objectStoreNames.contains(CURSORS)) {
         database.createObjectStore(CURSORS, { keyPath: "cursorKey" });
       }
@@ -281,6 +331,86 @@ export async function listPathsInScope(scopeId) {
     const records = await requestToPromise(tx.objectStore(PATHS).getAll());
     await completeTransaction(tx);
     return (records || []).filter((record) => record.scopeId === scopeId);
+  });
+}
+
+/**
+ * Every scope-relative path key banked for one scope.
+ *
+ * [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+ * [WHY: getAllKeys() on the scopeId index, NOT getAll() on the store. The
+ *  composite primary key already carries the path, so this returns exactly the
+ *  strings the projection needs without deserializing a single record — the
+ *  difference between reading ~20k short keys and materializing ~20k objects on
+ *  a path the first render waits for. listPathsInScope() and countPaths() are
+ *  deliberately left as they are: nothing on Stage 02's load path calls them.
+ *
+ *  Returns null when the index is missing (a database that somehow never
+ *  upgraded). Null means NO KNOWLEDGE, not "no paths": the caller loses a cheap
+ *  PRESENT source and falls back to proving existence, which refuses when it
+ *  cannot. Returning [] instead would assert that a scope has no banked paths,
+ *  which is a false ABSENT and exactly the failure this whole stage exists to
+ *  prevent.]
+ */
+export async function listScopePathKeys(scopeId) {
+  if (!scopeId) return null;
+  return withDatabase(async (database) => {
+    const tx = database.transaction(PATHS, "readonly");
+    const store = tx.objectStore(PATHS);
+    if (!store.indexNames || !store.indexNames.contains(PATHS_SCOPE_INDEX) || typeof store.index !== "function") {
+      await completeTransaction(tx);
+      return null;
+    }
+    const keys = await requestToPromise(store.index(PATHS_SCOPE_INDEX).getAllKeys(scopeId));
+    await completeTransaction(tx);
+    const paths = [];
+    for (const key of keys || []) {
+      if (Array.isArray(key) && typeof key[1] === "string") paths.push(key[1]);
+    }
+    return paths;
+  });
+}
+
+/**
+ * The scope-relative paths in one scope where a file has actually been OBSERVED.
+ *
+ * [MEDIA-ID / STAGE-02 / BP-FAIL-02]
+ * [WHY: this, not listScopePathKeys, is what may be used as existence evidence.
+ *  A `fact-only` row records that a Profile fact named this scope path during
+ *  some load; it is explicitly NOT a sighting of a file, and media-seeding.js
+ *  says so where it creates them. Using every row as PRESENT made the
+ *  doubled-prefix rows a child load banks for MASTER-relative curated keys look
+ *  like real competing files, which refused every T1 candidate in the real
+ *  browser: candidates=5, durable=5, refusedPresent=5, admitted=0.
+ *
+ *  `origin` is a one-way upgrade in mergeOrigin(), so a path that has ever been
+ *  observed keeps counting - the evidence was real when it was taken.
+ *
+ *  Returns null when the index is missing, meaning NO KNOWLEDGE - never [],
+ *  which would assert a scope has no observed paths and is a false ABSENT.]
+ */
+export async function listObservedScopePathKeys(scopeId) {
+  if (!scopeId) return null;
+  return withDatabase(async (database) => {
+    const tx = database.transaction(PATHS, "readonly");
+    const store = tx.objectStore(PATHS);
+    if (
+      !store.indexNames ||
+      !store.indexNames.contains(PATHS_SCOPE_ORIGIN_INDEX) ||
+      typeof store.index !== "function"
+    ) {
+      await completeTransaction(tx);
+      return null;
+    }
+    const keys = await requestToPromise(
+      store.index(PATHS_SCOPE_ORIGIN_INDEX).getAllKeys([scopeId, ORIGIN_OBSERVED])
+    );
+    await completeTransaction(tx);
+    const paths = [];
+    for (const key of keys || []) {
+      if (Array.isArray(key) && typeof key[1] === "string") paths.push(key[1]);
+    }
+    return paths;
   });
 }
 
