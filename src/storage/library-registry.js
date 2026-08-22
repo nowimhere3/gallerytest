@@ -365,6 +365,32 @@ export async function listKnownLibraryIds() {
 }
 
 /**
+ * Reads one local library row by its LOCAL id, without modifying anything.
+ *
+ * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+ * [WHY: a READ-ONLY sibling of ensureLibraryId. ProfileStore#recordLibraryLoaded
+ *  needs to know whether this row already carries a shared libraryId, and must
+ *  NOT create one if it does not - minting on a folder open is exactly what
+ *  ensureLibraryId's own comment forbids, since it would give every folder
+ *  anyone ever opened a synchronized identity nobody asked for. Reusing
+ *  ensureLibraryId there would have done precisely that, silently.]
+ *
+ * Returns null if the id isn't known.
+ */
+export async function getLibraryById(id) {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(id));
+    await completeTransaction(transaction);
+    return record || null;
+  } finally {
+    database.close();
+  }
+}
+
+/**
  * Finds the local library row (if any) already linked to a given SHARED
  * libraryId. Used to keep a local row's UI-facing `profileId` in step after
  * an association fact for it arrives via sync — see

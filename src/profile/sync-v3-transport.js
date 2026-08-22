@@ -56,9 +56,18 @@ export const DEVICE_FILE_NAME = "device.json";
 //  This becomes readable in the stage that introduces the shared Library record.]
 export const ASSOCIATIONS_FILE_NAME = "associations.json";
 
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: a stable TECHNICAL filename, deliberately, exactly like
+//  associations.json above. A readable per-Library Drive directory is a
+//  different decision with different consequences (what happens when a Library
+//  is renamed? when two share a name?) and belongs to whichever stage builds
+//  the Library UI - not to the stage that first gives a Library a name at all.]
+export const LIBRARIES_FILE_NAME = "libraries.json";
+
 const DEVICE_KIND = "gallery-profile-sync-v3-device";
 const PROFILE_FACTS_KIND = "gallery-profile-sync-v3-facts";
 const ASSOCIATIONS_KIND = "gallery-profile-sync-v3-associations";
+const LIBRARIES_KIND = "gallery-profile-sync-v3-libraries";
 export const SCHEMA_VERSION = 3;
 
 /** Shown for a device whose manifest carries no label. */
@@ -336,6 +345,47 @@ export async function readDeviceDirectory(devicesDir, directoryName) {
     return { status: "invalid", directoryName, reason: "associations-shape" };
   }
 
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: BACKWARD COMPATIBILITY. Every device directory published by Stages 02
+  //  and 03 predates this file and carries no librariesHash. Such a generation
+  //  is COMPLETE AND VALID - it simply has no Library catalog yet - and treating
+  //  it as corrupt would make every existing peer vanish from every pass the
+  //  moment this stage shipped. Absent hash therefore means "no catalog
+  //  published", read as {}. Once the hash IS declared, verification is exactly
+  //  as strict as it is for associations: hash must match, kind must match,
+  //  shape must match, or the WHOLE device directory is rejected.]
+  let libraries = {};
+  if (typeof manifest.librariesHash === "string") {
+    let librariesText;
+    try {
+      const handle = await deviceDir.getFileHandle(LIBRARIES_FILE_NAME);
+      librariesText = await (await handle.getFile()).text();
+    } catch {
+      return { status: "invalid", directoryName, reason: "libraries-missing" };
+    }
+
+    const librariesActualHash = await hashText(librariesText);
+    if (librariesActualHash.value !== manifest.librariesHash) {
+      return {
+        status: "invalid",
+        directoryName,
+        reason: "libraries-hash-mismatch",
+        detail: `bytes=${librariesText.length} declared=${String(manifest.librariesHash).slice(0, 8)} actual=${librariesActualHash.value.slice(0, 8)}`,
+      };
+    }
+
+    let librariesParsed;
+    try {
+      librariesParsed = JSON.parse(librariesText);
+    } catch {
+      return { status: "invalid", directoryName, reason: "libraries-malformed" };
+    }
+    if (!isPlainObject(librariesParsed) || librariesParsed.kind !== LIBRARIES_KIND || !isPlainObject(librariesParsed.libraries)) {
+      return { status: "invalid", directoryName, reason: "libraries-shape" };
+    }
+    libraries = librariesParsed.libraries;
+  }
+
   return {
     status: "valid",
     directoryName,
@@ -343,7 +393,12 @@ export async function readDeviceDirectory(devicesDir, directoryName) {
     deviceId: manifest.deviceId,
     label: typeof manifest.label === "string" && manifest.label ? manifest.label : UNKNOWN_DEVICE_LABEL,
     updatedAt: Number.isFinite(manifest.updatedAt) ? manifest.updatedAt : null,
-    replica: { schemaVersion: SCHEMA_VERSION, profiles, associations: associationsParsed.associations },
+    replica: {
+      schemaVersion: SCHEMA_VERSION,
+      profiles,
+      associations: associationsParsed.associations,
+      libraries,
+    },
   };
 }
 
@@ -545,6 +600,19 @@ async function writeAssociationsFile(deviceDir, associations) {
   return hashText(text);
 }
 
+async function writeLibrariesFile(deviceDir, libraries) {
+  const handle = await deviceDir.getFileHandle(LIBRARIES_FILE_NAME, { create: true });
+  const writable = await handle.createWritable();
+  const text = JSON.stringify(
+    { schemaVersion: SCHEMA_VERSION, kind: LIBRARIES_KIND, libraries: libraries || {} },
+    null,
+    2
+  );
+  await writable.write(text);
+  await writable.close();
+  return hashText(text);
+}
+
 async function writeDeviceManifest(deviceDir, manifest) {
   const handle = await deviceDir.getFileHandle(DEVICE_FILE_NAME, { create: true });
   const writable = await handle.createWritable();
@@ -688,6 +756,23 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
   //  something that is provably not us has claimed it. Our own directory stays
   //  ours whether or not its current contents are valid, which is what lets a
   //  retry land back on the same directory instead of stranding it.]
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: normalized ONCE, then used for both the write and the verification
+  //  comparison. Without this, a caller that omits an empty map writes a file
+  //  containing {} (the `|| {}` fallbacks below have always done that) but then
+  //  compares the read-back replica - which HAS the key - against its own input,
+  //  which does not. The two differ in exactly one empty object and
+  //  replicasEqual reports "changed", so the publish fails verification on every
+  //  single pass, forever, looking exactly like corruption. That is the same
+  //  failure shape the schemaVersion mismatch produced in Stage 03A, and it is
+  //  latent for `associations` too - so both are normalized here rather than
+  //  only the field this stage happens to add.]
+  const normalized = {
+    ...replica,
+    associations: replica.associations || {},
+    libraries: replica.libraries || {},
+  };
+
   const ownership = await scanOwnership(devicesDir);
   const occupied = new Set();
   for (const [directoryName, marker] of ownership) {
@@ -702,9 +787,9 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
   const deviceDir = await devicesDir.getDirectoryHandle(directoryName, { create: true });
   const profilesDir = await deviceDir.getDirectoryHandle(PROFILES_DIR_NAME, { create: true });
 
-  const profileIds = Object.keys(replica.profiles || {}).sort();
+  const profileIds = Object.keys(normalized.profiles || {}).sort();
   const fileNames = assignUniqueReadableNames(
-    profileIds.map((id) => ({ id, human: profileHumanName(replica, id) })),
+    profileIds.map((id) => ({ id, human: profileHumanName(normalized, id) })),
     { fallback: PROFILE_NAME_FALLBACK, extension: ".json" }
   );
 
@@ -715,8 +800,8 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
   for (const profileId of profileIds) {
     const fileName = fileNames.get(profileId);
     assertSafePathSegment(fileName, "profile file name");
-    const humanName = profileHumanName(replica, profileId);
-    const hash = await writeProfileFile(profilesDir, fileName, profileId, humanName, replica.profiles[profileId]);
+    const humanName = profileHumanName(normalized, profileId);
+    const hash = await writeProfileFile(profilesDir, fileName, profileId, humanName, normalized.profiles[profileId]);
     hashAlgo = hash.algo;
     declared.push({
       id: profileId,
@@ -727,8 +812,13 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
     declaredFileNames.add(fileName);
   }
 
-  const associations = await writeAssociationsFile(deviceDir, replica.associations || {});
+  const associations = await writeAssociationsFile(deviceDir, normalized.associations);
   hashAlgo = hashAlgo || associations.algo;
+
+  // Written BEFORE device.json, like every other data file - the manifest is the
+  // commit point and must be last (see the module header).
+  const libraries = await writeLibrariesFile(deviceDir, normalized.libraries);
+  hashAlgo = hashAlgo || libraries.algo;
 
   // Data files are all committed above; device.json is the commit point and must
   // be written last.
@@ -746,6 +836,8 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
     profiles: declared,
     associationsFile: ASSOCIATIONS_FILE_NAME,
     associationsHash: associations.value,
+    librariesFile: LIBRARIES_FILE_NAME,
+    librariesHash: libraries.value,
     updatedAt: Date.now(),
   });
 
@@ -761,7 +853,7 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
   if (readBack.deviceId !== deviceId) {
     return { ok: false, reason: "device-id-changed", directoryName };
   }
-  if (!replicasEqual(readBack.replica, replica)) {
+  if (!replicasEqual(readBack.replica, normalized)) {
     return { ok: false, reason: "changed", directoryName };
   }
 

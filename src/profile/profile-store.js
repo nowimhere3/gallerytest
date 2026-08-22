@@ -54,7 +54,11 @@ import { SyncIdentity } from "./sync-device.js";
 //  stamps, or merge — this is the only place those two vocabularies meet, the
 //  same boundary ProfileStore already keeps between itself and indexeddb.js.]
 import * as LibraryRegistry from "../storage/library-registry.js";
-import { V2_ASSOCIATION_STORE } from "../storage/profile-sync-store.js";
+import {
+  V2_ASSOCIATION_STORE,
+  loadV3LibrariesCache,
+  saveV3LibrariesCache,
+} from "../storage/profile-sync-store.js";
 // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
 // [WHY: same-origin contexts share IndexedDB but not this object. The channel
 //  tells the others that durable state moved; it never carries the state.]
@@ -137,6 +141,16 @@ function isEmptyRecord(record) {
     return false;
   });
 }
+
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: how close together two "loads" have to be before the second is treated
+//  as noise from the first. Generous, because the events being collapsed - a
+//  rescan, a re-render, a permission re-check, a sync pass observing the same
+//  load - all happen within seconds of each other, while a genuine second load
+//  requires a human to navigate away and back. Erring long costs at most a
+//  slightly stale lastLoadedAt for a few seconds; erring short costs a stamp
+//  (and a Drive publish) per redundant event forever.]
+const REDUNDANT_LIBRARY_LOAD_WINDOW_MS = 30_000;
 
 export class ProfileStore {
   #recordsByPath = new Map();
@@ -238,6 +252,22 @@ export class ProfileStore {
   //  matter.]
   #peerContextObserved = false;
 
+  // ---- Shared Library catalog (SyncV3, Stage 04B) ------------------------
+  //
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: { libraryId: LibraryFacts } - the shared answer to "which Libraries
+  //  exist, what are they called, and who last opened one". Held here, beside
+  //  #associations, because it is published in the same replica and adopted by
+  //  the same pass; kept in its OWN durable row because it is a different fact
+  //  about a different thing. A Library survives its association being set to
+  //  null, so the two maps cannot share a lifetime.
+  //
+  //  Loaded unconditionally rather than only under V3. ProfileStore stays
+  //  mode-agnostic by design (Stage 03A), and a V1/V2 installation simply reads
+  //  an absent row as {} forever - nothing writes libraries-v3 there.]
+  #libraries = {};
+  #librariesReady;
+
   // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
   // [WHY: closes the boot window Stage 03A left open. This store is constructed
   //  before anything knows which transport is running, so it defaults to the V2
@@ -287,6 +317,7 @@ export class ProfileStore {
     this.#ready = this.#resolveActiveProfile();
     this.#loadSavedRecords();
     this.#associationsReady = this.#loadAssociations();
+    this.#librariesReady = this.#loadLibraries();
   }
 
   async #loadAssociations() {
@@ -425,6 +456,45 @@ export class ProfileStore {
     await this.#identity.ready;
   }
 
+  async #loadLibraries() {
+    try {
+      this.#libraries = await loadV3LibrariesCache();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not load the shared Library catalog.", error);
+    }
+  }
+
+  async whenLibrariesSettled() {
+    await this.#librariesReady;
+    await this.#identity.ready;
+  }
+
+  /** Every known shared Library fact record, detached — { libraryId: LibraryFacts }. */
+  getLibraries() {
+    return takeSnapshot(this.#libraries);
+  }
+
+  /**
+   * Every known shared Library, projected for display/ranking.
+   *
+   * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+   * [WHY: built from #libraries and #associations TOGETHER, so a Library whose
+   *  association is null still appears - with associatedProfileId: null rather
+   *  than being absent. listAssociations() cannot answer this question: it
+   *  projects only associations that currently point somewhere, which is correct
+   *  for "what is associated" and would silently erase the catalog.]
+   */
+  listLibraries() {
+    return takeSnapshot(
+      Facts.projectLibraries({
+        schemaVersion: Facts.REPLICA_SCHEMA_VERSION,
+        profiles: {},
+        associations: this.#associations,
+        libraries: this.#libraries,
+      })
+    );
+  }
+
   /** Every known association fact, detached — {libraryId: Fact<profileId|null>}. */
   getAssociations() {
     return takeSnapshot(this.#associations);
@@ -487,6 +557,88 @@ export class ProfileStore {
     return row.libraryId;
   }
 
+  /**
+   * Records that a shared Library was meaningfully loaded on THIS device.
+   *
+   * `localLibraryId` is library-registry.js's LOCAL row id. Returns the shared
+   * libraryId on success, or null when this row has no shared identity yet.
+   *
+   * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+   * [WHY: reads the shared libraryId, never mints one. ensureLibraryId() is
+   *  reserved for an explicit association (see setLibraryAssociation) precisely
+   *  so that merely OPENING a folder cannot give it a synchronized identity
+   *  nobody asked for - Stage D3's rule, unchanged. A folder with no shared
+   *  identity yet is simply not catalogued, and returning null says so.
+   *
+   *  Touches ONLY the Library catalog: not associations, not activeProfileId,
+   *  not any Profile's facts. "This Library was opened" and "this Library
+   *  belongs to that Profile" are independent facts and this method is the
+   *  boundary that keeps them so.
+   *
+   *  Writes locally and announces to sibling tabs; it never touches Drive.
+   *  Publishing is the scheduler's job, gated by the writer lease.]
+   */
+  async recordLibraryLoaded(localLibraryId, { name = null, at = undefined } = {}) {
+    await this.#librariesReady;
+    await this.#identity.ready;
+
+    let row;
+    try {
+      row = await LibraryRegistry.getLibraryById(localLibraryId);
+    } catch (error) {
+      console.warn(`[SYNCV3] Could not read local library "${localLibraryId}" to catalog it.`, error);
+      return null;
+    }
+    if (!row || !row.libraryId) return null;
+
+    const displayName = typeof name === "string" && name ? name : row.name || "";
+    const loadedAt = Number.isFinite(at) ? at : Date.now();
+
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: the repeated-stamping guard. lastLoadedAt must mean "a meaningful
+    //  load happened", so a rescan, a re-render, a permission re-check or a sync
+    //  pass that all describe the SAME load must produce one fact, not four.
+    //  Suppressed when nothing this device would publish has actually changed:
+    //  the name is the same, this device is already the recorded source, and the
+    //  recorded load time is within a short window. Compared against what is
+    //  already HELD rather than against a separate "last call" timestamp, so the
+    //  guard survives a reload and cannot drift out of step with the facts.]
+    const current = this.#libraries[row.libraryId];
+    if (current && this.#isRedundantLibraryLoad(current, displayName, loadedAt)) return row.libraryId;
+
+    const stamp = this.#identity.tick();
+    const next = Facts.recordLibraryLoaded(
+      { schemaVersion: Facts.REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: this.#libraries },
+      row.libraryId,
+      { name: displayName, sourceDeviceId: this.#identity.deviceId, at: loadedAt },
+      stamp
+    );
+    this.#libraries = next.libraries;
+
+    try {
+      await this.#saveLibrariesAndAnnounce();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not persist the shared Library catalog.", error);
+    }
+
+    this.#emit();
+    return row.libraryId;
+  }
+
+  // See recordLibraryLoaded's WHY. A load is redundant when every field it would
+  // stamp already says the same thing, allowing for a short window on the clock.
+  #isRedundantLibraryLoad(current, displayName, loadedAt) {
+    const heldName = current.name && typeof current.name.v === "string" ? current.name.v : null;
+    const heldSource =
+      current.sourceDeviceId && typeof current.sourceDeviceId.v === "string" ? current.sourceDeviceId.v : null;
+    const heldAt = current.lastLoadedAt && Number.isFinite(current.lastLoadedAt.v) ? current.lastLoadedAt.v : null;
+
+    if (heldName !== displayName) return false;
+    if (heldSource !== this.#identity.deviceId) return false;
+    if (heldAt === null) return false;
+    return loadedAt - heldAt < REDUNDANT_LIBRARY_LOAD_WINDOW_MS;
+  }
+
   /** The active profile's fact slice, detached. */
   getFacts() {
     return takeSnapshot(this.#facts);
@@ -509,9 +661,31 @@ export class ProfileStore {
   async getFullReplica() {
     await this.whenFactsSettled();
     await this.whenAssociationsSettled();
+    await this.whenLibrariesSettled();
 
     const replica = Facts.emptyReplica();
     replica.associations = this.#associations;
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: present only when it carries something, and this is a CORRECTION to
+    //  the Stage 04A audit rather than a style choice. That audit reasoned that
+    //  an always-present `libraries: {}` was harmless to V2 because V2's
+    //  transport declares the fields it publishes explicitly. True for the WRITE
+    //  - and irrelevant, because publishDeviceReplicaVerified finishes by
+    //  comparing the whole read-back replica against the whole object it was
+    //  given. V2's transport reconstructs only { schemaVersion, profiles,
+    //  associations }, so the read-back lacked a key the input had, the two
+    //  canonical forms differed by exactly one empty object, and EVERY V2 publish
+    //  failed verification - permanently, looking exactly like corruption. Three
+    //  V2 suites caught it immediately.
+    //
+    //  Omitting an empty map is the minimal fix that touches neither the V2
+    //  transport nor the V2 pass: stableStringify skips undefined keys, so a
+    //  V1/V2 installation - which never catalogues a Library, because nothing
+    //  writes libraries-v3 there - serializes byte-for-byte as it always has.
+    //  ProfileStore still asks nothing about which transport is running; it only
+    //  declines to publish a map with nothing in it.]
+    if (Object.keys(this.#libraries).length > 0) replica.libraries = this.#libraries;
+    else delete replica.libraries;
     let knownIds;
     try {
       knownIds = new Set(await listAllProfileIds());
@@ -649,6 +823,34 @@ export class ProfileStore {
     }
 
     await this.#adoptMergedAssociations(mergedReplica.associations);
+    await this.#adoptMergedLibraries(mergedReplica.libraries);
+  }
+
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: merged, never assigned - the same discipline every other adoption in
+  //  this class follows. A libraryId this device has never seen is simply added;
+  //  one it already knows is resolved per FIELD by mergeLibraryFacts, so a peer
+  //  whose only news is a newer lastLoadedAt cannot roll back a name this device
+  //  holds more recently.
+  //
+  //  Deliberately does NOT touch library-registry.js. #adoptMergedAssociations
+  //  reconciles local rows because the local row carries a UI-facing profileId
+  //  copy that predates sync; the shared Library name has no such local mirror,
+  //  and creating one now would invent a second source of truth for a display
+  //  string. It also never touches activeProfileId: a Library record arriving
+  //  from another device says nothing about which Profile this device is on.]
+  async #adoptMergedLibraries(incoming) {
+    await this.#librariesReady;
+    const merged = MergeEngine.mergeMaps(this.#libraries, incoming || {}, MergeEngine.mergeLibraryFacts);
+    if (MergeEngine.stableStringify(merged) === MergeEngine.stableStringify(this.#libraries)) return;
+
+    this.#libraries = merged;
+    try {
+      await this.#saveLibrariesAndAnnounce();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not persist the merged shared Library catalog.", error);
+    }
+    this.#emit();
   }
 
   // [PHASE-6-SYNC-V2]
@@ -1634,6 +1836,7 @@ export class ProfileStore {
         break;
       case LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.ASSOCIATIONS_CHANGED:
+      case LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED:
         break;
       default:
         return;
@@ -1728,6 +1931,26 @@ export class ProfileStore {
       console.warn("[SYNCV3] Could not re-read library associations.", error);
     }
 
+    // ---- shared Library catalog ----
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: merged, not assigned, for the same reason every block above is - a
+    //  refresh must never discard a Library fact this context stamped but has not
+    //  yet written. This block is also what makes reload-before-publish carry
+    //  Libraries: sync-v3.js calls refreshFromStorage() generically before
+    //  deriving the replica, so a writer tab picks up a sibling tab's load here
+    //  with no change to the pass itself.]
+    try {
+      await this.#librariesReady;
+      const stored = await loadV3LibrariesCache();
+      const merged = MergeEngine.mergeMaps(this.#libraries, stored || {}, MergeEngine.mergeLibraryFacts);
+      if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#libraries)) {
+        this.#libraries = merged;
+        registryChanged = true;
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not re-read the shared Library catalog.", error);
+    }
+
     if (registryChanged) this.#emit();
   }
 
@@ -1739,6 +1962,15 @@ export class ProfileStore {
   async #saveRegistryAndAnnounce(payload) {
     await saveRegistry(payload);
     this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED);
+  }
+
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: announces only AFTER the durable write resolves, matching every other
+  //  announcer here. A sibling told to re-read before the row lands would read
+  //  the old catalog, conclude it was current, and never hear again.]
+  async #saveLibrariesAndAnnounce() {
+    await saveV3LibrariesCache(this.#libraries);
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED);
   }
 
   async #saveAssociationsAndAnnounce() {

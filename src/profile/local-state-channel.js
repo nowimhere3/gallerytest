@@ -27,6 +27,13 @@ export const LOCAL_STATE_MESSAGE_KINDS = Object.freeze({
   PROFILE_FACTS_CHANGED: "profile-facts-changed",
   PROFILE_REGISTRY_CHANGED: "profile-registry-changed",
   ASSOCIATIONS_CHANGED: "associations-changed",
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: its own kind rather than reusing ASSOCIATIONS_CHANGED. The two are
+  //  separate durable rows with separate meanings, and a receiver that could not
+  //  tell them apart would re-read both every time either moved - which is
+  //  merely wasteful today, and becomes wrong the moment a future stage wants to
+  //  react to one and not the other.]
+  LIBRARIES_CHANGED: "libraries-changed",
   // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
   // [WHY: presence, announced on open and answered once. The stale-row guard in
   //  ProfileStore#persist costs a read per save, so it should not run when there

@@ -200,6 +200,26 @@ export function mergeTagFacts(a, b) {
   };
 }
 
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: name, sourceDeviceId and lastLoadedAt merge INDEPENDENTLY, each at its
+//  own stamp. The alternative - one Fact<{name, sourceDeviceId, lastLoadedAt}>
+//  merged by a single stamp - would make the later of two concurrent edits win
+//  the WHOLE record, so Device A renaming a Library would silently erase Device
+//  B's newer lastLoadedAt (or the reverse). That is the same defect this file
+//  already avoids for Profiles: items and tags are per-key facts precisely so a
+//  favourite and a tag assignment made at the same moment do not fight.
+//
+//  Structured exactly like mergeProfileFacts/mergeTagFacts above, so it inherits
+//  their commutativity, associativity and idempotence from mergeFact rather than
+//  introducing any new algebra to prove.]
+export function mergeLibraryFacts(a, b) {
+  return {
+    name: mergeFact(a.name, b.name),
+    sourceDeviceId: mergeFact(a.sourceDeviceId, b.sourceDeviceId),
+    lastLoadedAt: mergeFact(a.lastLoadedAt, b.lastLoadedAt),
+  };
+}
+
 export function mergeProfileFacts(a, b) {
   return {
     name: mergeFact(a.name, b.name),
@@ -225,6 +245,15 @@ export function mergeReplicas(a, b) {
     schemaVersion: Math.max(a.schemaVersion || 0, b.schemaVersion || 0),
     profiles: mergeMaps(a.profiles, b.profiles, mergeProfileFacts),
     associations: mergeMaps(a.associations, b.associations, mergeFact),
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: a THIRD independent top-level map, not a field inside associations
+    //  and not a field inside profiles. "This Library exists, and is called
+    //  this" is a fact about the Library itself - it survives the Library being
+    //  disassociated (associations[id].v === null) and it belongs to no Profile.
+    //  mergeMaps already takes a key present on only one side as-is, so a
+    //  libraryId this device has never heard of materializes with no
+    //  special-casing at all.]
+    libraries: mergeMaps(a.libraries, b.libraries, mergeLibraryFacts),
   };
 }
 

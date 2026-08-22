@@ -34,7 +34,11 @@ export const REPLICA_SCHEMA_VERSION = 2;
 //   schemaVersion: 2
 //   profiles: { [profileId]: ProfileFacts }
 //   associations: { [libraryId]: Fact<profileId | null> }
+//   libraries: { [libraryId]: LibraryFacts }
 // }
+//
+// LibraryFacts { name: Fact<string>, sourceDeviceId: Fact<string>,
+//                lastLoadedAt: Fact<number> }
 //
 // ProfileFacts { name: Fact<string>, deleted: Fact<boolean>,
 //                items: { [relativePath]: ItemFacts },
@@ -49,7 +53,7 @@ export const REPLICA_SCHEMA_VERSION = 2;
 // Fact<V>   { v: V, t: number, d: deviceId }
 
 export function emptyReplica() {
-  return { schemaVersion: REPLICA_SCHEMA_VERSION, profiles: {}, associations: {} };
+  return { schemaVersion: REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: {} };
 }
 
 function emptyProfileFacts() {
@@ -208,6 +212,42 @@ export function setLibraryAssociation(replica, libraryId, profileId, stamp) {
   };
 }
 
+// ---- Shared Library catalog ----------------------------------------------
+
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: the shared catalog answers "which Libraries exist, what are they
+//  called, and who last actually opened one" - and it answers that
+//  INDEPENDENTLY of association, of whether any device has a physical folder
+//  for it, and of whether it is loaded right now. Those are four separate
+//  concepts and collapsing any pair of them is how a disassociated Library
+//  silently disappears from the catalog.
+//
+//  All three fields are stamped together here because one meaningful load is
+//  ONE semantic event, but they are stored as three separate facts so a later
+//  rename on another device cannot roll back this device's load time (see
+//  mergeLibraryFacts in sync-merge.js).
+//
+//  The physical folder - handle, signature, device-local folder name, local
+//  lastOpenedAt - has no representation here, exactly as it has none in
+//  setLibraryAssociation above. `name` is the human name the LOADING device
+//  knew; it is descriptive state, never identity.]
+export function recordLibraryLoaded(replica, libraryId, { name, sourceDeviceId, at }, stamp) {
+  const current = replica.libraries[libraryId] || {};
+  const loadedAt = Number.isFinite(at) ? at : stamp.t;
+  return {
+    ...replica,
+    libraries: {
+      ...replica.libraries,
+      [libraryId]: {
+        ...current,
+        name: put(current.name, String(name == null ? "" : name), stamp),
+        sourceDeviceId: put(current.sourceDeviceId, String(sourceDeviceId == null ? "" : sourceDeviceId), stamp),
+        lastLoadedAt: put(current.lastLoadedAt, loadedAt, stamp),
+      },
+    },
+  };
+}
+
 // ---- Projection ----------------------------------------------------------
 //
 // [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
@@ -303,6 +343,65 @@ export function projectAssociations(replica) {
   return out;
 }
 
+/**
+ * One shared Library as a UI would render it, or null if unknown.
+ *
+ * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+ * [WHY: `associatedProfileId` is read from the ASSOCIATIONS map, not from the
+ *  Library record, and is reported as null when there is no association rather
+ *  than making the Library vanish. Existence and association are separate
+ *  questions and this is the boundary where a caller could most easily conflate
+ *  them - projectAssociations above deliberately DROPS null-valued entries,
+ *  which is correct for "what is associated" and would be catastrophic for
+ *  "what exists".
+ *
+ *  Every stamp a future picker needs for ranking is carried out here rather
+ *  than being recomputed from raw facts by each caller: lastLoadedAt for
+ *  "recently loaded", associationChangedAt for "recently associated", and
+ *  changedAt as the max over everything for "recently touched at all". No
+ *  extra persisted field is required for any of them.]
+ */
+export function projectLibrary(replica, libraryId) {
+  const library = replica.libraries[libraryId];
+  if (!library) return null;
+
+  const associationFact = (replica.associations || {})[libraryId];
+  const stampOf = (fact) => (fact && Number.isFinite(fact.t) ? fact.t : 0);
+
+  return {
+    id: libraryId,
+    name: library.name && typeof library.name.v === "string" ? library.name.v : "",
+    sourceDeviceId:
+      library.sourceDeviceId && typeof library.sourceDeviceId.v === "string" ? library.sourceDeviceId.v : null,
+    lastLoadedAt: library.lastLoadedAt && Number.isFinite(library.lastLoadedAt.v) ? library.lastLoadedAt.v : null,
+    associatedProfileId: associationFact && associationFact.v ? associationFact.v : null,
+    associationChangedAt: stampOf(associationFact),
+    changedAt: Math.max(
+      stampOf(library.name),
+      stampOf(library.sourceDeviceId),
+      stampOf(library.lastLoadedAt),
+      stampOf(associationFact)
+    ),
+  };
+}
+
+/**
+ * Every known shared Library, sorted by libraryId for determinism.
+ *
+ * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+ * [WHY: enumerates replica.libraries, NEVER the associations map. A Library
+ *  whose association is explicitly null is still a Library - Drive keeps it
+ *  all - and deriving the catalog from associations would delete exactly the
+ *  history a user needs to re-associate it. Sorted by ID, not by name: names
+ *  are mutable descriptive state and two Libraries may legitimately share one.]
+ */
+export function projectLibraries(replica) {
+  return Object.keys(replica.libraries || {})
+    .sort()
+    .map((libraryId) => projectLibrary(replica, libraryId))
+    .filter(Boolean);
+}
+
 function isTrue(fact) {
   return Boolean(fact && fact.v === true);
 }
@@ -317,11 +416,20 @@ function isTrue(fact) {
 //  known session fields, because a block-list only ever catches the leaks
 //  somebody already thought of. Anything unrecognized is reported.]
 
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: `libraries` joins the replica allow-list and gains its own key set in
+//  the SAME edit. These two lines cannot be split across changes: adding the
+//  top-level key without the shape below would let any object at all through
+//  under `libraries`, and adding the shape without the top-level key would make
+//  every replica in the system - V1 and V2 included - fail the guard the moment
+//  anything published a Library. The allow-list stays an ALLOW-list: nothing is
+//  relaxed elsewhere to make Libraries pass.]
 const ALLOWED = {
-  replica: new Set(["schemaVersion", "profiles", "associations"]),
+  replica: new Set(["schemaVersion", "profiles", "associations", "libraries"]),
   profile: new Set(["name", "deleted", "items", "tags"]),
   item: new Set(["favorite", "hidden", "tags"]),
   tag: new Set(["name", "deleted"]),
+  library: new Set(["name", "sourceDeviceId", "lastLoadedAt"]),
 };
 
 /**
@@ -375,6 +483,48 @@ export function findSessionStateLeaks(replica) {
 
   for (const [libraryId, fact] of Object.entries(replica.associations || {})) {
     checkFact(fact, `associations[${libraryId}]`);
+  }
+
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: checks the same three things for a Library that the Profile/item/tag
+  //  loops below check for their own shapes - that the container is an object,
+  //  that every key is one this model defines, and that every value present is a
+  //  well-formed Fact. The VALUE types are checked too (string/string/finite
+  //  number), which the older loops do not do, because a Library record is the
+  //  first shape whose fields are read straight into a UI: a name that is
+  //  secretly an object, or a lastLoadedAt that is a string, would render or
+  //  sort as nonsense rather than failing loudly anywhere.
+  //
+  //  Fields are individually optional - a record mid-way through its first
+  //  publish legitimately has fewer than three - but anything PRESENT must be
+  //  correct.]
+  for (const [libraryId, library] of Object.entries(replica.libraries || {})) {
+    const libraryBase = `libraries[${libraryId}]`;
+    if (!library || typeof library !== "object" || Array.isArray(library)) {
+      leaks.push(`${libraryBase} (not an object)`);
+      continue;
+    }
+    for (const key of Object.keys(library)) {
+      if (!ALLOWED.library.has(key)) leaks.push(`${libraryBase}.${key}`);
+    }
+    if (library.name !== undefined) {
+      checkFact(library.name, `${libraryBase}.name`);
+      if (isFact(library.name) && typeof library.name.v !== "string") {
+        leaks.push(`${libraryBase}.name (value is not a string)`);
+      }
+    }
+    if (library.sourceDeviceId !== undefined) {
+      checkFact(library.sourceDeviceId, `${libraryBase}.sourceDeviceId`);
+      if (isFact(library.sourceDeviceId) && typeof library.sourceDeviceId.v !== "string") {
+        leaks.push(`${libraryBase}.sourceDeviceId (value is not a string)`);
+      }
+    }
+    if (library.lastLoadedAt !== undefined) {
+      checkFact(library.lastLoadedAt, `${libraryBase}.lastLoadedAt`);
+      if (isFact(library.lastLoadedAt) && !Number.isFinite(library.lastLoadedAt.v)) {
+        leaks.push(`${libraryBase}.lastLoadedAt (value is not a finite number)`);
+      }
+    }
   }
 
   for (const [profileId, profile] of Object.entries(replica.profiles || {})) {

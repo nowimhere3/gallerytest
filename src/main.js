@@ -3544,6 +3544,24 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     if (recognizedProfileName) {
       fsaStatusText.textContent = `✓ Recognized this library — Profile: ${recognizedProfileName}.`;
     }
+
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: the legacy picker's equivalent of the FSA hook — same rule, same
+    //  moment: the items are loaded and finishLoadingItems() has run. A legacy
+    //  Library DOES have stable shared identity once it has been explicitly
+    //  associated (matchLegacySignature restores the row, libraryId and all), so
+    //  it participates on exactly the same terms as FSA rather than being
+    //  excluded. A legacy folder that was never associated, or that the matcher
+    //  declined to recognize, simply has no shared libraryId and
+    //  recordLibraryLoaded returns null — no identity is invented from a
+    //  signature or a folder name.]
+    if (activeLibraryRecord && activeLibraryRecord.id) {
+      try {
+        await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: activeLibraryRecord.name || rootName });
+      } catch (error) {
+        console.warn("[SYNCV3] Could not record this legacy Library load in the shared catalog.", error);
+      }
+    }
   } finally {
     isLoadingFiles = false;
     setLoadingState(false);
@@ -3742,6 +3760,29 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
         // means the registry's remembered count/timestamp is stale.
         console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
       }
+
+      // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+      // [WHY: THE meaningful-load moment, and deliberately the same one
+      //  touchLibrary already uses — the scan finished and this device knows
+      //  which local Library it produced. Gated on `!result.incomplete` because
+      //  a scan that stopped early is exactly what the provider reports as NOT a
+      //  complete load; publishing "last loaded" for it would tell other devices
+      //  this Library was opened successfully when it was not.
+      //
+      //  recordLibraryLoaded reads the shared libraryId and never mints one, so
+      //  a folder that has never been explicitly associated is simply not
+      //  catalogued (returns null) rather than acquiring a synchronized identity
+      //  from being opened — Stage D3's rule, preserved. It writes locally and
+      //  announces to sibling tabs; Drive is the scheduler's job, not this
+      //  call's.]
+      if (!result.incomplete) {
+        try {
+          await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: dirHandle.name });
+        } catch (error) {
+          console.warn("[SYNCV3] Could not record this Library load in the shared catalog.", error);
+        }
+      }
+
       await renderRecentLibraries();
     }
 

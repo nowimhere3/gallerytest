@@ -79,8 +79,14 @@ function profileFacts(name, { favorites = [] } = {}) {
   return { name: fact(name), items, tags: {} };
 }
 
-function replicaOf(profiles, associations = {}) {
-  return { schemaVersion: 3, profiles, associations };
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: the fixture now builds the CURRENT replica shape, including the
+//  libraries map. Assertions are unchanged - this is a fixture that had gone
+//  stale, not a weakened check. A test comparing a read-back replica against a
+//  hand-built one that omits a field the model now defines is testing the
+//  fixture's age, not the transport.]
+function replicaOf(profiles, associations = {}, libraries = {}) {
+  return { schemaVersion: 3, profiles, associations, libraries };
 }
 
 async function devicesDirOf(dir) {

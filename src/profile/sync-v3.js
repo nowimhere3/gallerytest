@@ -55,7 +55,31 @@ const OWN_GENERATION_SETTLE_PASSES = 10;
 //  its transport speaks, and neither sync-facts.js nor the transport's strict
 //  byte comparison has to be weakened to accommodate the other.]
 function asV3Replica(replica) {
-  return { ...replica, schemaVersion: Transport.SCHEMA_VERSION };
+  return {
+    ...replica,
+    schemaVersion: Transport.SCHEMA_VERSION,
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: a CORRECTION to the Stage 04A audit, which concluded this file would
+    //  need no change. The reasoning held for the spread - a new replica key does
+    //  flow through untouched - but missed the publish-skip comparison below.
+    //
+    //  ProfileStore omits an empty Library catalog entirely (it must: publishing
+    //  `libraries: {}` breaks V2's own read-back comparison - see
+    //  getFullReplica's WHY). The V3 transport, by contrast, always WRITES a
+    //  libraries.json and therefore always reads one back. So `toPublish` lacked
+    //  a key `ownPrevious.replica` had, alreadyPublished was false on every pass,
+    //  and this device republished its identical generation every three seconds
+    //  forever - restarting Drive propagation each time, which is the exact
+    //  churn OWN_GENERATION_SETTLE_PASSES exists to prevent.
+    //
+    //  Normalizing here is the minimal fix and is squarely this function's
+    //  existing job: it is the boundary that reconciles what ProfileStore
+    //  produces with what THIS transport speaks, which is why schemaVersion is
+    //  already normalized on the line above. Each transport now shapes the
+    //  replica to its own schema, and neither has to know about the other's.]
+    associations: replica.associations || {},
+    libraries: replica.libraries || {},
+  };
 }
 
 /**

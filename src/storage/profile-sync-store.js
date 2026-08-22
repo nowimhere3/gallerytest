@@ -107,6 +107,17 @@ const V3_ACTIVATION_RECORD_ID = "activation-v3";
 //  made this stage a swap rather than a migration.]
 const V3_ASSOCIATIONS_RECORD_ID = "associations-v3";
 
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: ONE row, and deliberately no V2/V3 adapter pair. The association cache
+//  needed V2_ASSOCIATION_STORE/V3_ASSOCIATION_STORE and a boot-time gate
+//  precisely BECAUSE a V2 predecessor row already existed and had to stay
+//  untouched while V3 got its own - the hazard being a write landing in the
+//  wrong one of two rows depending on when the mode resolved. The shared
+//  Library catalog is new in V3 and has no V2 counterpart, so there is no wrong
+//  row to land in and none of that machinery applies. Copying it here would be
+//  cargo-culting a fix for a problem this row cannot have.]
+const V3_LIBRARIES_RECORD_ID = "libraries-v3";
+
 /** The transport mode SyncV3 activation records. Lives only in V3's own row. */
 export const ACTIVATION_V3 = "v3";
 
@@ -549,6 +560,43 @@ export async function saveV3AssociationsCache(associations) {
 
   try {
     const record = { id: V3_ASSOCIATIONS_RECORD_ID, associations: associations || {} };
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).put(record);
+    await completeTransaction(transaction);
+    return record;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * The full `{ libraryId: LibraryFacts }` catalog, or `{}` if never saved.
+ *
+ * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+ * [WHY: absent reads as an empty catalog, never as an error. Every V1/V2
+ *  installation, and every V3 installation predating this stage, legitimately
+ *  has no such row - and "no Libraries published yet" is an ordinary state, not
+ *  a fault.]
+ */
+export async function loadV3LibrariesCache() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(V3_LIBRARIES_RECORD_ID));
+    await completeTransaction(transaction);
+    return record && record.libraries && typeof record.libraries === "object" ? record.libraries : {};
+  } finally {
+    database.close();
+  }
+}
+
+/** Replaces the whole Library catalog — callers always pass the full, already-merged map. */
+export async function saveV3LibrariesCache(libraries) {
+  const database = await openDatabase();
+
+  try {
+    const record = { id: V3_LIBRARIES_RECORD_ID, libraries: libraries || {} };
     const transaction = database.transaction(STORE_NAME, "readwrite");
     transaction.objectStore(STORE_NAME).put(record);
     await completeTransaction(transaction);
