@@ -260,6 +260,15 @@ export async function loadDeviceRecord() {
       deviceId: record.deviceId,
       lastIssuedT: Number.isFinite(record.lastIssuedT) ? record.lastIssuedT : 0,
       createdAt: record.createdAt || null,
+      // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+      // [WHY: the OPTIONAL custom name rides on the row that already owns device
+      //  identity, rather than getting a row of its own. A second row would be a
+      //  second thing to keep in step with deviceId's lifetime - it survives
+      //  "Disconnect Sync", it must never be re-minted - and a name that outlived
+      //  its deviceId, or vanished while the id survived, would be a bug nobody
+      //  would think to look for. Null means "never named"; that is a distinct
+      //  state from "named empty", which is why it is not defaulted here.]
+      deviceName: typeof record.deviceName === "string" && record.deviceName ? record.deviceName : null,
     };
   } finally {
     database.close();
@@ -348,6 +357,40 @@ export async function saveAssociationsCache(associations) {
     transaction.objectStore(STORE_NAME).put(record);
     await completeTransaction(transaction);
     return record;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Sets (or, with null, clears) this installation's custom Device Name.
+ *
+ * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+ * [WHY: a read-modify-write, never a whole-row put. saveDeviceRecord() replaces
+ *  the row outright and re-stamps createdAt - correct for minting a brand-new
+ *  identity, catastrophic here: renaming a device would reset its clock floor to
+ *  0, and freshly issued stamps could then land BELOW facts this device had
+ *  already published, silently losing the user's next click. Same reasoning
+ *  persistLastIssuedT already applies below.
+ *
+ *  No-op if the device record does not exist yet: a name for an installation
+ *  with no identity has nothing to belong to.]
+ */
+export async function persistDeviceName(deviceName) {
+  const database = await openDatabase();
+
+  try {
+    const readTx = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(readTx.objectStore(STORE_NAME).get(DEVICE_RECORD_ID));
+    await completeTransaction(readTx);
+    if (!record) return null;
+
+    const next = typeof deviceName === "string" && deviceName ? deviceName : null;
+    const updated = { ...record, deviceName: next };
+    const writeTx = database.transaction(STORE_NAME, "readwrite");
+    writeTx.objectStore(STORE_NAME).put(updated);
+    await completeTransaction(writeTx);
+    return updated;
   } finally {
     database.close();
   }

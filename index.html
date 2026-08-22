@@ -1364,6 +1364,30 @@
           <div id="profile-sync-v3-panel" class="profile-sync-activate-panel">
             <h4 class="profile-sync-heading">Sync V3 (development)</h4>
             <p id="profile-sync-v3-status-text" class="hint" role="status">Sync V3: not connected</p>
+            <!-- [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+                 WHAT: A minimal, TEMPORARY control for naming this Browser
+                 Gallery installation.
+                 [WHY: deliberately unstyled and unpolished. The Profile & Sync
+                  Settings redesign is the next stage and will own where this
+                  really belongs; building the finished control now would mean
+                  designing it twice. This is a functional bridge so the naming
+                  behaviour can be exercised end to end.]
+                 FUTURE / DO-NOT-BREAK: the name here is descriptive only. It
+                 never becomes identity — the full deviceId does that. -->
+            <div class="control-stack">
+              <label for="profile-sync-v3-device-name" class="hint">Device Name</label>
+              <input
+                id="profile-sync-v3-device-name"
+                type="text"
+                maxlength="120"
+                placeholder="e.g. Chromebook Pro"
+                aria-describedby="profile-sync-v3-device-name-status"
+              />
+              <button id="profile-sync-v3-device-name-save-btn" class="secondary" type="button">Save Device Name</button>
+              <button id="profile-sync-v3-device-name-reset-btn" class="secondary" type="button">Reset to Detected</button>
+            </div>
+            <p id="profile-sync-v3-device-name-status" class="hint" role="status"></p>
+
             <div class="control-stack">
               <button id="profile-sync-v3-choose-btn" class="secondary" type="button">Choose V3 Sync Folder</button>
               <button id="profile-sync-v3-reconnect-btn" class="secondary hidden" type="button">Reconnect V3 Folder</button>

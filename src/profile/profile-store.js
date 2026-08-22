@@ -439,6 +439,54 @@ export class ProfileStore {
     return this.#identity.deviceId;
   }
 
+  // ---- Device Name (SyncV3, Stage 05) -----------------------------------
+
+  /**
+   * What a human should see for this installation.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: a SEPARATE method from getDeviceLabel() above rather than a change to
+   *  it. getDeviceLabel() is what the V2 pass publishes, and V2's device.json
+   *  format must not change - so the custom name reaches V3's transport (which
+   *  asks for this one) and stops there. Two methods with different jobs, not
+   *  one method that quietly means different things to different transports.]
+   */
+  getDeviceDisplayName() {
+    // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+    // [WHY: degrades to the detected label for any identity-shaped object that
+    //  predates Stage 05 - an injected test double, or a future alternative
+    //  SyncIdentity. Without this the caller receives undefined and the
+    //  transport falls back to its generic "Device" placeholder, so an
+    //  installation that HAS a perfectly good detected label would publish
+    //  itself as "Device -- a31f2c4e". Silent, cosmetic, and exactly the kind of
+    //  degradation nobody notices until they are looking at their Drive.]
+    const display = this.#identity.displayName;
+    if (typeof display === "string" && display) return display;
+    return this.#identity.label;
+  }
+
+  /** The custom Device Name, or null when the user has never set one. */
+  getDeviceName() {
+    return this.#identity.deviceName;
+  }
+
+  /**
+   * Sets or clears this installation's Device Name.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: persists, tells sibling tabs, and notifies local subscribers - and
+   *  does nothing else. It does not touch deviceId, the Profile registry, the
+   *  active Profile, associations, or the Library catalog, and it never writes
+   *  Drive: the renamed directory appears when the scheduler next publishes
+   *  under the writer lease, which is the only thing allowed to write.]
+   */
+  async setDeviceName(name) {
+    const saved = await this.#identity.setDeviceName(name);
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.DEVICE_NAME_CHANGED);
+    this.#emit();
+    return saved;
+  }
+
   /**
    * Resolves once every mutation issued so far has been stamped and recorded.
    * Fact recording is queued behind the clock being ready (see #recordFact), so
@@ -1837,6 +1885,7 @@ export class ProfileStore {
       case LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.ASSOCIATIONS_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED:
+      case LOCAL_STATE_MESSAGE_KINDS.DEVICE_NAME_CHANGED:
         break;
       default:
         return;
@@ -1949,6 +1998,23 @@ export class ProfileStore {
       }
     } catch (error) {
       console.warn("[SYNCV3] Could not re-read the shared Library catalog.", error);
+    }
+
+    // ---- Device Name ----
+    // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+    // [WHY: re-reads the persisted name so a sibling tab's rename becomes
+    //  visible here without a reload, and so the WRITER tab picks it up before
+    //  its next publish - reload-before-publish already calls this method, so
+    //  the renamed directory follows with no change to the pass. Reads only;
+    //  it can neither mint an identity nor write Drive.]
+    try {
+      if (typeof this.#identity.refreshDeviceName === "function") {
+        const before = this.#identity.displayName;
+        await this.#identity.refreshDeviceName();
+        if (this.#identity.displayName !== before) registryChanged = true;
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not re-read the Device Name.", error);
     }
 
     if (registryChanged) this.#emit();

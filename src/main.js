@@ -165,6 +165,12 @@ const profileSyncActivateBtn = document.getElementById("profile-sync-activate-bt
 // the panel's own comment in index.html for why this surface is scaffolding.
 const profileSyncV3Panel = document.getElementById("profile-sync-v3-panel");
 const profileSyncV3StatusText = document.getElementById("profile-sync-v3-status-text");
+// [SYNCV3 / STAGE-05 / DEVICE-NAMING] Temporary bridge control — see the panel
+// comment in index.html for why this is deliberately minimal.
+const profileSyncV3DeviceNameInput = document.getElementById("profile-sync-v3-device-name");
+const profileSyncV3DeviceNameSaveBtn = document.getElementById("profile-sync-v3-device-name-save-btn");
+const profileSyncV3DeviceNameResetBtn = document.getElementById("profile-sync-v3-device-name-reset-btn");
+const profileSyncV3DeviceNameStatus = document.getElementById("profile-sync-v3-device-name-status");
 const profileSyncV3ChooseBtn = document.getElementById("profile-sync-v3-choose-btn");
 const profileSyncV3ReconnectBtn = document.getElementById("profile-sync-v3-reconnect-btn");
 const profileSyncV3ActivateBtn = document.getElementById("profile-sync-v3-activate-btn");
@@ -8280,6 +8286,22 @@ function renderProfileSync() {
 // FUTURE: this whole function is expected to be deleted by the Profile & Sync
 // Settings redesign stage. Do not grow it into that page.
 function renderSyncV3Panel(status, isV3) {
+  // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+  // [WHY: the input shows the CUSTOM name only, never the detected fallback, so
+  //  an empty field honestly means "you have not named this device". Pre-filling
+  //  it with "Chromebook" would make a Save look like a no-op while actually
+  //  freezing a detected value as a custom one. The status line underneath is
+  //  where the effective name and the id suffix are shown together — that is the
+  //  answer to "which machine am I looking at", and it needs both halves.]
+  if (document.activeElement !== profileSyncV3DeviceNameInput) {
+    profileSyncV3DeviceNameInput.value = status.deviceName || "";
+  }
+  const shortId = status.deviceId ? String(status.deviceId).replace(/^dev-/, "").replace(/[^0-9a-zA-Z]/g, "").slice(0, 8) : "";
+  profileSyncV3DeviceNameStatus.textContent = status.deviceDisplayName
+    ? `This device: ${status.deviceDisplayName}${shortId ? ` · ${shortId}` : ""}${status.deviceName ? "" : " (detected)"}`
+    : "This device: unknown";
+  profileSyncV3DeviceNameResetBtn.disabled = !status.deviceName;
+
   const connected = Boolean(status.v3Configured);
 
   profileSyncV3ChooseBtn.textContent = connected ? "Change V3 Sync Folder" : "Choose V3 Sync Folder";
@@ -8496,6 +8518,39 @@ async function runV3FolderPicker() {
 
   await profileSync.connectV3Folder(dirHandle);
 }
+
+// [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+// [WHY: saving persists locally and notifies sibling tabs, and that is ALL it
+//  does. It never touches Drive: the renamed directory appears when the
+//  scheduler next publishes under the writer lease. renderProfileSync() runs off
+//  ProfileStore's own subscription, so the new name is on screen immediately
+//  without a reload.]
+async function saveSyncV3DeviceName(rawValue) {
+  profileSyncV3DeviceNameSaveBtn.disabled = true;
+  profileSyncV3DeviceNameResetBtn.disabled = true;
+  try {
+    await profile.setDeviceName(rawValue);
+  } catch (error) {
+    console.warn("[SYNCV3] Could not save the Device Name.", error);
+    profileSyncV3DeviceNameStatus.textContent = "Could not save the Device Name.";
+  } finally {
+    profileSyncV3DeviceNameSaveBtn.disabled = false;
+    renderProfileSync();
+  }
+}
+
+profileSyncV3DeviceNameSaveBtn.addEventListener("click", () =>
+  saveSyncV3DeviceName(profileSyncV3DeviceNameInput.value)
+);
+// Blank or whitespace-only means "reset to the detected default" — the same rule
+// setDeviceName applies, so Save-on-empty and Reset cannot disagree.
+profileSyncV3DeviceNameResetBtn.addEventListener("click", () => saveSyncV3DeviceName(""));
+profileSyncV3DeviceNameInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    saveSyncV3DeviceName(profileSyncV3DeviceNameInput.value);
+  }
+});
 
 profileSyncV3ChooseBtn.addEventListener("click", runV3FolderPicker);
 profileSyncV3ReconnectBtn.addEventListener("click", () => profileSync.reconnectV3());

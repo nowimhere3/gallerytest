@@ -165,6 +165,19 @@ export async function runSyncV3Pass({ profileStore, dirHandle, state = {}, write
  */
 async function runV3PassBody({ profileStore, dirHandle, state, deviceId, lease, writerLease }) {
   const mayWrite = lease && lease.allowed === true;
+
+  // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+  // [WHY: the EFFECTIVE display name, resolved once per pass and used both for
+  //  the publish-skip comparison below and for the publish itself - so the value
+  //  that decides "do I need to write?" is provably the same one that gets
+  //  written. Falls back to getDeviceLabel() for any ProfileStore-shaped object
+  //  predating Stage 05.]
+  const deviceLabel =
+    typeof profileStore.getDeviceDisplayName === "function"
+      ? profileStore.getDeviceDisplayName()
+      : typeof profileStore.getDeviceLabel === "function"
+        ? profileStore.getDeviceLabel()
+        : null;
   const blockedReason = mayWrite ? null : (lease && lease.reason) || "no-lease-answer";
 
   let root, devicesDir;
@@ -242,7 +255,28 @@ async function runV3PassBody({ profileStore, dirHandle, state, deviceId, lease, 
   // folder itself rather than from a separately-persisted baseline - the folder
   // is already the source of truth for what was published.
   const ownPrevious = discovery.own;
-  const alreadyPublished = Boolean(ownPrevious) && Transport.replicasEqual(ownPrevious.replica, toPublish);
+
+  // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+  // [WHY: a Device Name change must republish, and nothing else in this pass
+  //  would notice it. The name is NOT part of the replica - it is presentation
+  //  metadata carried in device.json alongside it - so replicasEqual() is
+  //  identical before and after a rename and the pass would skip, leaving the
+  //  user's new name unpublished until some unrelated curation change happened
+  //  to force a write. V2 documents exactly that trade-off and accepts it,
+  //  correctly, because there the label is a recomputed diagnostic string nobody
+  //  chose. Here it is a name the user just typed and is watching Drive for, so
+  //  the trade-off goes the other way.
+  //
+  //  Compared against the label READ BACK from the published device.json, not
+  //  against a remembered local value, so it is self-correcting: whatever is
+  //  actually on Drive is what decides. A device whose old generation predates
+  //  labels reads as UNKNOWN_DEVICE_LABEL and simply republishes once.]
+  const publishedLabel = ownPrevious ? ownPrevious.label : null;
+  const labelChanged =
+    Boolean(ownPrevious) && typeof deviceLabel === "string" && deviceLabel !== publishedLabel;
+
+  const alreadyPublished =
+    Boolean(ownPrevious) && !labelChanged && Transport.replicasEqual(ownPrevious.replica, toPublish);
 
   if (alreadyPublished) {
     state.lastPublishedCanonical = canonicalToPublish;
@@ -326,7 +360,11 @@ async function runV3PassBody({ profileStore, dirHandle, state, deviceId, lease, 
   // cleanup on success - see Transport.publishOwnReplicaVerified.
   const publishResult = await Transport.publishOwnReplicaVerified(devicesDir, {
     deviceId,
-    label: typeof profileStore.getDeviceLabel === "function" ? profileStore.getDeviceLabel() : null,
+    // The same value the publish-skip decision above was made from - see its WHY.
+    // The transport treats `label` as presentation and derives the readable
+    // directory name from it, so this one line carries a user's chosen name all
+    // the way to Drive.
+    label: deviceLabel,
     replica: toPublish,
   });
 

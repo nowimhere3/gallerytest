@@ -34,6 +34,12 @@ export const LOCAL_STATE_MESSAGE_KINDS = Object.freeze({
   //  merely wasteful today, and becomes wrong the moment a future stage wants to
   //  react to one and not the other.]
   LIBRARIES_CHANGED: "libraries-changed",
+  // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+  // [WHY: the Device Name lives on the device record, which no other message
+  //  kind causes a sibling to re-read. Without its own kind a rename in one tab
+  //  would be invisible everywhere else until a reload - and, worse, the WRITER
+  //  tab would keep publishing the old name.]
+  DEVICE_NAME_CHANGED: "device-name-changed",
   // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
   // [WHY: presence, announced on open and answered once. The stale-row guard in
   //  ProfileStore#persist costs a read per save, so it should not run when there

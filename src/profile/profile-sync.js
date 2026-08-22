@@ -91,6 +91,17 @@ import {
 
 const AUTO_SYNC_DEBOUNCE_MS = 3000;
 
+// [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+// [WHY: the last-resort display form for a device whose metadata this
+//  installation has never read. Deliberately NOT sync-v3-names.js's
+//  shortDisplayId - that one is for building paths, and importing it here would
+//  put a path helper on a UI code path where a future change to path formatting
+//  would silently change what users read.]
+function shortDeviceIdForDisplay(deviceId) {
+  const compact = String(deviceId).replace(/^dev-/, "").replace(/[^0-9a-zA-Z]/g, "");
+  return compact ? compact.slice(0, 8) : String(deviceId);
+}
+
 // [PHASE-6-SYNC-V2]
 // [STAGE-E-CONVERGENCE-SCHEDULER]
 // [WHY: every active client must merge shared truth approximately every 3
@@ -1161,6 +1172,14 @@ export class ProfileSync {
       //  the first - and conflating them is what would make the status flicker
       //  between writer and reader on an idle device.]
       v3IsWriter: Boolean(this.#v3WriterLease && this.#v3WriterLease.held),
+      // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+      // [WHY: the effective name and the FULL deviceId are exposed together, so
+      //  a surface can render one while still having the other to hand. Deriving
+      //  either from the published directory name would be reading presentation
+      //  as data - see resolveDeviceName below.]
+      deviceName: typeof this.#profile.getDeviceName === "function" ? this.#profile.getDeviceName() : null,
+      deviceDisplayName:
+        typeof this.#profile.getDeviceDisplayName === "function" ? this.#profile.getDeviceDisplayName() : null,
       v3PublishBlocked: this.#lastV3PassInfo ? this.#lastV3PassInfo.publishBlocked : null,
       v3MergedPeers: this.#lastV3PassInfo ? this.#lastV3PassInfo.mergedPeers : null,
       v3SkippedPeers: (this.#lastV3PassInfo ? this.#lastV3PassInfo.skippedPeers : []) || [],
@@ -1169,6 +1188,39 @@ export class ProfileSync {
       associationStoreId:
         typeof this.#profile.getAssociationStoreId === "function" ? this.#profile.getAssociationStoreId() : null,
     };
+  }
+
+  /**
+   * Resolves a full deviceId to a human name, using validated peer metadata.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: THE seam a later Library picker uses to turn
+   *  LibraryFacts.sourceDeviceId into "Device: Chromebook Pro". It exists now,
+   *  before that UI does, so nothing is ever tempted to split
+   *  "Chromebook Pro -- c5ee4e83" on " -- " to get a name: that string is a
+   *  filesystem path, it is attacker- and accident-controlled, and Stage 02 built
+   *  content-addressed discovery precisely so no code has to trust it.
+   *
+   *  Names come from device.json via discoverDevices, which has already verified
+   *  the whole directory's hashes before this sees any of it. An unknown device -
+   *  a peer that has not published recently, or one this device has never met -
+   *  falls back to a shortened id rather than inventing a name or throwing.]
+   */
+  resolveDeviceName(deviceId) {
+    if (typeof deviceId !== "string" || !deviceId) return null;
+
+    const ownId = typeof this.#profile.getDeviceId === "function" ? this.#profile.getDeviceId() : null;
+    if (ownId && deviceId === ownId) {
+      return typeof this.#profile.getDeviceDisplayName === "function" ? this.#profile.getDeviceDisplayName() : null;
+    }
+
+    const peers = (this.#lastV3PassInfo && this.#lastV3PassInfo.peers) || [];
+    const peer = peers.find((entry) => entry && entry.deviceId === deviceId);
+    if (peer && typeof peer.label === "string" && peer.label) return peer.label;
+
+    // Never seen, or seen without a usable name: show something short and
+    // honest rather than a bare UUID or a guess.
+    return shortDeviceIdForDisplay(deviceId);
   }
 
   subscribe(listener) {
