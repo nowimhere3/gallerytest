@@ -18,6 +18,17 @@ import {
   linkLocalLibraryToSharedId,
 } from "./storage/library-registry.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
+// [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
+// [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
+//  observed and reads nothing back into anything the user sees. Nothing it does
+//  can change how this file behaves, which is exactly why it is safe to land
+//  before the Stage 01B shared-signature audit decides what Stage 02 may
+//  project. It is also why it should land NOW rather than with Stage 02: the
+//  evidence it banks is the intersection of Profile facts and files still
+//  reachable at their historical paths, and that intersection shrinks every
+//  time a folder is reorganized before it has been recorded.]
+import { resolveScopeForRoot } from "./storage/media-scope.js";
+import { runSeedingPass } from "./storage/media-seeding.js";
 import {
   loadPreferences,
   savePlaybackPreferences,
@@ -3382,6 +3393,90 @@ function syncMobileLoadState() {
 // getVisibleItems() (used by reloadRuntime) might filter down to Favorites
 // Only — otherwise that filter would run against items that don't know
 // their own favorite/hidden status yet.
+// ---- [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING] --------------------------
+//
+// WHAT: after a load has already rendered, records what was observed into
+// MEDIA-ID's own local index — one identity per (media scope, scope-relative
+// path), plus the size/mtime/name of every file, plus which of those paths the
+// active Profile already holds curation for.
+//
+// WHAT IT DOES NOT DO: it reads nothing back. No Favorite, Tag or Hidden lookup
+// consults it; ProfileStore is untouched; no fact is rewritten or rekeyed; no
+// libraryId is minted or linked; no association is created or changed; nothing
+// reaches the sync fact model or the V3 transport. Deleting this function and
+// its two call sites reverts the app to byte-identical behaviour.
+//
+// [WHY: deliberately NOT awaited. Seeding a 20k library is tens of milliseconds
+//  of CPU plus 40 IndexedDB transactions, and none of it has any visible effect
+//  until a later stage — making a user wait on invisible bookkeeping would be
+//  pure cost. It runs after the gallery has rendered, yields between batches,
+//  and abandons itself when a newer load supersedes it.]
+//
+// [WHY: failures are swallowed to a console warning. Every part of this is
+//  additive evidence: if the index cannot be written, the app is exactly the
+//  app it was before MEDIA-ID existed. A load must never fail because
+//  bookkeeping did.]
+let mediaIdSeedToken = 0;
+
+function startMediaIdentitySeeding({ rootId, handle, sourceKind, items, rootName = null }) {
+  if (!rootId || !Array.isArray(items) || !items.length) return;
+
+  mediaIdSeedToken += 1;
+  const token = mediaIdSeedToken;
+
+  // Fire-and-forget by design; see the WHY above.
+  (async () => {
+    try {
+      // Other roots this device has persisted, so ancestry can be PROVEN
+      // against them. listLibraries() is read-only from this file's point of
+      // view and is already the app's own way of enumerating known folders.
+      // Roots the user removed from Recent Libraries are not enumerated by it,
+      // so a master hidden that way is simply not probed — a missed recovery,
+      // never a wrong one.
+      let knownRootHandles = [];
+      if (handle) {
+        try {
+          const libraries = await listLibraries();
+          knownRootHandles = libraries
+            .filter((record) => record && record.handle && record.id !== rootId)
+            .map((record) => ({ rootId: record.id, handle: record.handle }));
+        } catch (error) {
+          console.warn("[MEDIA-ID] Could not enumerate known libraries for ancestry probing.", error);
+        }
+      }
+
+      if (token !== mediaIdSeedToken) return;
+
+      const scope = await resolveScopeForRoot({ rootId, handle, sourceKind, knownRootHandles });
+      if (token !== mediaIdSeedToken) return;
+
+      // knownPaths() is an EXISTING public ProfileStore method — reading the
+      // active Profile's fact paths needs no change to that class at all, which
+      // is what keeps Stage 01 free of any ProfileStore edit.
+      const factPaths = typeof profile.knownPaths === "function" ? profile.knownPaths() : [];
+
+      const stats = await runSeedingPass({
+        scopeId: scope.scopeId,
+        rootId,
+        prefixFromScopeRoot: scope.prefixFromScopeRoot,
+        items,
+        factPaths,
+        profileId: profile.getProfileId(),
+        shouldContinue: () => token === mediaIdSeedToken,
+      });
+
+      console.info(
+        `[MEDIA-ID] Banked evidence for "${rootName || (handle && handle.name) || rootId}": ` +
+          `${stats.created} new, ${stats.updated} refreshed, ${stats.adopted} adopted, ` +
+          `${stats.batches} batch(es)${stats.superseded ? " (superseded by a newer load)" : ""}. ` +
+          `Scope ${scope.scopeId} (${scope.action}).`
+      );
+    } catch (error) {
+      console.warn("[MEDIA-ID] Evidence seeding did not complete. No user-visible behaviour is affected.", error);
+    }
+  })();
+}
+
 function finishLoadingItems(items) {
   items.forEach((item) => {
     item.isFavorite = profile.isFavorite(item.relativePath);
@@ -3567,6 +3662,22 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
       } catch (error) {
         console.warn("[SYNCV3] Could not record this legacy Library load in the shared catalog.", error);
       }
+
+      // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
+      // [WHY: a legacy pick has no handle, so no ancestry can be proven and this
+      //  root simply gets its own media scope. That is a real limitation, not a
+      //  degraded mode: structure alone never auto-resolves, so a Legacy root is
+      //  never merged into another scope on a guess. Its evidence is still worth
+      //  banking — legacy-library-signature.js is the only place in this app that
+      //  ever retained historical path->size pairs, and capture-now is what gives
+      //  those paths a live signature to be corroborated against later.]
+      startMediaIdentitySeeding({
+        rootId: activeLibraryRecord.id,
+        handle: null,
+        sourceKind: "legacy",
+        items,
+        rootName,
+      });
     }
   } finally {
     isLoadingFiles = false;
@@ -3790,6 +3901,24 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       }
 
       await renderRecentLibraries();
+    }
+
+    // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
+    // [WHY: gated on !result.incomplete for the same reason recordLibraryLoaded
+    //  is — a scan that stopped early is NOT this folder's contents, and banking
+    //  it would write "these paths are all that exist here" from a partial walk.
+    //  The fact-only population (paths curated but not observed) would then be
+    //  contaminated with files that are simply on the other side of the failure.
+    //  Unlike that call this one needs no libraryId: MEDIA-ID scopes are its own
+    //  local identity, so an un-associated folder participates fully.]
+    if (activeLibraryRecord && activeLibraryRecord.id && !result.incomplete) {
+      startMediaIdentitySeeding({
+        rootId: activeLibraryRecord.id,
+        handle: dirHandle,
+        sourceKind: "fsa",
+        items: result.items,
+        rootName: dirHandle.name,
+      });
     }
 
     // [Phase 8.4-2] Single visibility rule, same one loadFiles() uses for

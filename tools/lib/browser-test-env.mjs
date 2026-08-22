@@ -40,13 +40,73 @@ function makeRequest() {
   return { onsuccess: null, onerror: null, result: undefined, error: null };
 }
 
+// [MEDIA-ID / STAGE-01] Array keyPath support.
+// [WHY: media-identity.js keys its `paths` store on the COMPOSITE
+//  [scopeId, scopeRelativePath], because that composite key is what makes one
+//  media identity per path an invariant the database enforces rather than one
+//  the code remembers. A fixture that only understood scalar keys could not
+//  exercise that guarantee at all. Map cannot compare arrays by value, so a
+//  composite key is serialized for storage while the caller keeps passing real
+//  arrays, exactly as with the real API.]
+function toMapKey(key) {
+  return Array.isArray(key) ? `\u0000arr:${JSON.stringify(key)}` : key;
+}
+
+function extractKey(store, value) {
+  if (Array.isArray(store.keyPath)) return store.keyPath.map((field) => value[field]);
+  return value[store.keyPath];
+}
+
+function makeConstraintError(store) {
+  const error = new Error(`Key already exists in "${store.name}".`);
+  error.name = "ConstraintError";
+  return error;
+}
+
 function makeStoreProxy(store, ops, observer) {
   return {
     get(key) {
       const request = makeRequest();
       ops.push(() => {
-        const row = store.rows.get(key);
+        const row = store.rows.get(toMapKey(key));
         request.result = row === undefined ? undefined : cloneValue(row);
+        if (request.onsuccess) request.onsuccess({ target: request });
+      });
+      return request;
+    },
+    // [MEDIA-ID / STAGE-01] add() — the concurrency primitive.
+    // [WHY: unlike put(), add() FAILS when the key already exists. That failure
+    //  is what makes get-or-create atomic across tabs: two writers race, exactly
+    //  one add() succeeds, and the loser adopts the winner's row instead of
+    //  clobbering it. Faithful in the detail that matters — the error event
+    //  carries a preventDefault() the caller must invoke, because in real
+    //  IndexedDB an unhandled request error aborts the ENTIRE transaction,
+    //  taking every batched sibling write with it.]
+    add(value) {
+      const request = makeRequest();
+      const stored = cloneValue(value);
+      ops.push(() => {
+        const key = toMapKey(extractKey(store, stored));
+        if (store.rows.has(key)) {
+          request.error = makeConstraintError(store);
+          let defaultPrevented = false;
+          const event = {
+            target: request,
+            preventDefault() {
+              defaultPrevented = true;
+            },
+            stopPropagation() {},
+            get defaultPrevented() {
+              return defaultPrevented;
+            },
+          };
+          if (request.onerror) request.onerror(event);
+          if (!defaultPrevented && store.onUnhandledError) store.onUnhandledError(request.error);
+          return;
+        }
+        store.rows.set(key, stored);
+        if (observer) observer({ store: store.name, type: "add", value: cloneValue(stored) });
+        request.result = extractKey(store, stored);
         if (request.onsuccess) request.onsuccess({ target: request });
       });
       return request;
@@ -64,9 +124,10 @@ function makeStoreProxy(store, ops, observer) {
       // Cloned at CALL time, exactly as a real put() snapshots its argument.
       const stored = cloneValue(value);
       ops.push(() => {
-        store.rows.set(stored[store.keyPath], stored);
+        const key = extractKey(store, stored);
+        store.rows.set(toMapKey(key), stored);
         if (observer) observer({ store: store.name, type: "put", value: cloneValue(stored) });
-        request.result = stored[store.keyPath];
+        request.result = key;
         if (request.onsuccess) request.onsuccess({ target: request });
       });
       return request;
@@ -74,7 +135,7 @@ function makeStoreProxy(store, ops, observer) {
     delete(key) {
       const request = makeRequest();
       ops.push(() => {
-        store.rows.delete(key);
+        store.rows.delete(toMapKey(key));
         if (observer) observer({ store: store.name, type: "delete", key });
         if (request.onsuccess) request.onsuccess({ target: request });
       });
@@ -237,10 +298,51 @@ export function createVirtualDirectory(name = "Browser Gallery Profiles", hooks 
   const root = makeDirNode(name);
   const log = [];
 
+  // [MEDIA-ID / STAGE-01] Ancestry support for the virtual directory.
+  // [WHY: wrapDirectory() mints a NEW handle object on every call, so two
+  //  handles for the same folder are never reference-equal — exactly like the
+  //  real API, where isSameEntry() exists precisely because object identity
+  //  proves nothing. Comparison therefore goes through the underlying node.]
+  function findDescendantSegments(fromNode, targetNode) {
+    if (fromNode === targetNode) return [];
+    const queue = [[fromNode, []]];
+    while (queue.length) {
+      const [node, segments] = queue.shift();
+      for (const [childName, childNode] of node.dirs) {
+        const childSegments = [...segments, childName];
+        if (childNode === targetNode) return childSegments;
+        queue.push([childNode, childSegments]);
+      }
+    }
+    return null;
+  }
+
   function wrapDirectory(node, path) {
     const handle = {
       kind: "directory",
       name: node.name,
+      // Test-double seam only; the real API exposes nothing like this.
+      __node: node,
+
+      async isSameEntry(other) {
+        return Boolean(other && other.__node === node);
+      },
+
+      // Mirrors the behaviour Stage 00B's real-browser probe confirmed:
+      // [] for self, the segment array for a descendant, null for anything
+      // else. `hooks.resolveBehavior` lets a test force the outcomes the probe
+      // could NOT prove — notably a throw, which must read as "no information"
+      // rather than as a negative result.
+      async resolve(other) {
+        if (hooks.resolveBehavior === "throw") {
+          const error = new Error("resolve() denied");
+          error.name = "NotAllowedError";
+          throw error;
+        }
+        if (hooks.resolveBehavior === "absent") throw new Error("resolve is not a function");
+        if (!other || !other.__node) return null;
+        return findDescendantSegments(node, other.__node);
+      },
 
       async queryPermission() {
         return hooks.permission || "granted";
