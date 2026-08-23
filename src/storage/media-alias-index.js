@@ -44,8 +44,10 @@
 
 import { getRoot, listRoots, listObservedScopePathKeys } from "./media-identity.js";
 import { getLibraryById } from "./library-registry.js";
-import { createExistenceProber, EXISTENCE } from "./fsa-existence.js";
+import { createExistenceProber, EXISTENCE, EXISTENCE_REASON } from "./fsa-existence.js";
 import { buildAliasMap, toScopePath } from "../profile/media-identity-projection.js";
+// [MEDIA-ID / STAGE-02B / TELEMETRY]
+import { createRefusalLedger } from "../profile/media-identity-telemetry.js";
 import { createLocalStateChannel } from "../profile/local-state-channel.js";
 
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
@@ -157,41 +159,83 @@ export function createStatusResolver({
   const decided = new Map();
   const stats = { observedHits: 0, durableHits: 0, censusAbsent: 0, probed: 0, unknown: 0 };
 
+  /**
+   * [MEDIA-ID / STAGE-02B / REASON-MODEL]
+   *
+   * Returns { status, reason, detail } instead of a bare status. The cascade
+   * below is UNCHANGED — same order, same conditions, same short-circuits, same
+   * `break` on the first deterministic probe answer. Every branch already knew
+   * why it was answering what it answered; Stage 02B stops discarding it.
+   *
+   * [WHY THE MEMO STILL HOLDS THE WHOLE ANSWER: one destination decided once,
+   *  reused by every candidate that names it. That is what keeps a doubled
+   *  prefix at one probe rather than several hundred, and the reason has to
+   *  travel with the cached status or every reuse would report as unattributed.]
+   */
   async function resolve(scopePath) {
     const cached = decided.get(scopePath);
     if (cached) return cached;
 
-    let status;
+    let answer;
     if (observedScopePaths.has(scopePath)) {
       stats.observedHits += 1;
-      status = EXISTENCE.PRESENT;
+      answer = { status: EXISTENCE.PRESENT, reason: EXISTENCE_REASON.OBSERVED_CURRENT, detail: null };
     } else if (durableScopePaths && durableScopePaths.has(scopePath)) {
+      // [MEDIA-ID / STAGE-02 / BP-FAIL-02] `durableScopePaths` is built from
+      // listObservedScopePathKeys(), so a fact-only row can never land here.
       stats.durableHits += 1;
-      status = EXISTENCE.PRESENT;
+      answer = { status: EXISTENCE.PRESENT, reason: EXISTENCE_REASON.OBSERVED_DURABLE, detail: null };
     } else if (loadComplete && scopePath.startsWith(loadedPrefix)) {
       // The census. See the module header for why this is proof, not assumption.
       stats.censusAbsent += 1;
-      status = EXISTENCE.ABSENT;
+      answer = { status: EXISTENCE.ABSENT, reason: EXISTENCE_REASON.CENSUS, detail: null };
     } else {
-      status = EXISTENCE.UNKNOWN;
+      answer = { status: EXISTENCE.UNKNOWN, reason: null, detail: null };
+      // [MEDIA-ID / STAGE-02B / REASON-MODEL]
+      // [WHY THESE TWO FLAGS: a destination no root can even NAME and a
+      //  destination a root names but cannot open are the same UNKNOWN to the
+      //  admission rule and completely different problems to fix. The first is
+      //  structural (the scope's roots do not cover this path); the second is a
+      //  lapsed or missing handle, which is the case Stage 03 shared evidence
+      //  could plausibly help with. Collapsing them would erase the distinction
+      //  this whole stage exists to measure.]
+      let firstProbeReason = null;
+      let firstProbeDetail = null;
+      let sawCoveringRootWithoutHandle = false;
       for (const root of roots) {
         const prefix = root.prefixFromScopeRoot || "";
         if (prefix && !scopePath.startsWith(prefix)) continue;
-        if (!root.handle) continue;
+        if (!root.handle) {
+          sawCoveringRootWithoutHandle = true;
+          continue;
+        }
         stats.probed += 1;
-        const answer = await prober.probe(root.rootId, root.handle, scopePath.slice(prefix.length));
+        const probed = await prober.probeDetailed(root.rootId, root.handle, scopePath.slice(prefix.length));
         // A file either exists at a scope location or it does not, so the first
         // DETERMINISTIC answer settles it — no need to ask a second root.
-        if (answer === EXISTENCE.PRESENT || answer === EXISTENCE.ABSENT) {
-          status = answer;
+        if (probed.status === EXISTENCE.PRESENT || probed.status === EXISTENCE.ABSENT) {
+          answer = { status: probed.status, reason: probed.reason, detail: probed.detail };
           break;
         }
+        // Shallowest covering root first (see readScopeRoots' sort), so the
+        // first UNKNOWN is the most representative one to report.
+        if (!firstProbeReason) {
+          firstProbeReason = probed.reason;
+          firstProbeDetail = probed.detail;
+        }
       }
-      if (status === EXISTENCE.UNKNOWN) stats.unknown += 1;
+      if (answer.status === EXISTENCE.UNKNOWN) {
+        stats.unknown += 1;
+        // An attempted probe explains more than a skip, so it wins.
+        answer.reason =
+          firstProbeReason ||
+          (sawCoveringRootWithoutHandle ? EXISTENCE_REASON.NO_HANDLE : EXISTENCE_REASON.NO_COVERING_ROOT);
+        answer.detail = firstProbeReason ? firstProbeDetail : null;
+      }
     }
 
-    decided.set(scopePath, status);
-    return status;
+    decided.set(scopePath, answer);
+    return answer;
   }
 
   return { resolve, stats, size: () => decided.size };
@@ -278,12 +322,20 @@ export async function buildAliasIndexForLoad({
   //  MASTER facts present — and 0 aliased items on every single rebuild.]
   const resolvedFactKeys = typeof factKeys === "function" ? factKeys() : factKeys;
 
+  // [MEDIA-ID / STAGE-02B / TELEMETRY]
+  // One ledger per build. It is fed by the SAME pass that makes the decisions —
+  // there is no second walk, no second probe and no extra read anywhere in this
+  // stage. See tools/test-media-projection-telemetry.mjs, which asserts the
+  // probe and IndexedDB counters are identical with and without it.
+  const ledger = createRefusalLedger();
+
   const { aliases, diagnostics } = await buildAliasMap({
     prefixFromScopeRoot: prefix,
     roots,
     observed: items || [],
     factKeys: resolvedFactKeys || [],
     statusOf: status.resolve,
+    ledger,
   });
 
   return {

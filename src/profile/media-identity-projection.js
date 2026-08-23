@@ -55,6 +55,8 @@
 import { compareStamps } from "./sync-merge.js";
 import { LOCAL_SEED_T } from "./sync-translate.js";
 import { EXISTENCE } from "../storage/fsa-existence.js";
+// [MEDIA-ID / STAGE-02B / TELEMETRY]
+import { createRefusalLedger, normalizeExistence } from "./media-identity-telemetry.js";
 
 export const REFUSAL = Object.freeze({
   COMPETITOR_PRESENT: "competitor-present",
@@ -113,8 +115,16 @@ export async function admitCandidate({ key, scopePath, roots, statusOf }) {
   const checked = [];
 
   for (const destination of competing) {
-    const status = await statusOf(destination);
-    checked.push({ destination, status });
+    // [MEDIA-ID / STAGE-02B / TELEMETRY]
+    // [WHY: `statusOf` may answer with a bare EXISTENCE string (Stage 02's
+    //  contract, still honoured) or with { status, reason, detail }. The STATUS
+    //  is compared below exactly as before; the reason rides along untouched so
+    //  the ledger can attribute the refusal without re-asking anything. If this
+    //  normalization ever changed a status, the admission rule would change with
+    //  it — so it may only ever widen the SHAPE, never the values.]
+    const answer = normalizeExistence(await statusOf(destination));
+    const status = answer.status;
+    checked.push({ destination, status, reason: answer.reason, detail: answer.detail });
     if (status === EXISTENCE.PRESENT) {
       return { admitted: false, reason: REFUSAL.COMPETITOR_PRESENT, checked };
     }
@@ -142,6 +152,11 @@ export async function buildAliasMap({
   observed = [],
   factKeys = [],
   statusOf,
+  // [MEDIA-ID / STAGE-02B / TELEMETRY]
+  // Injected so a caller can own the ledger, and so a test can prove the ledger
+  // is fed by the same pass that makes the decisions rather than by a second
+  // walk of its own.
+  ledger = createRefusalLedger(),
 }) {
   const aliases = new Map();
   const factKeySet = factKeys instanceof Set ? factKeys : new Set(factKeys);
@@ -153,6 +168,7 @@ export async function buildAliasMap({
     refusedPresent: 0,
     refusedUnknown: 0,
     aliasedItems: 0,
+    telemetry: ledger.snapshot(),
   };
 
   // A single-root scope can produce no candidate other than the T0 key, so the
@@ -171,6 +187,13 @@ export async function buildAliasMap({
     for (const candidate of candidates) {
       diagnostics.candidates += 1;
       const verdict = await admitCandidate({ key: candidate.key, scopePath, roots, statusOf });
+      // [MEDIA-ID / STAGE-02B / TELEMETRY] Observes the verdict. Cannot change it.
+      ledger.recordCandidate({
+        scopePath,
+        key: candidate.key,
+        viaRootId: candidate.viaRootId,
+        verdict,
+      });
       if (verdict.admitted) {
         diagnostics.admitted += 1;
         admittedKeys.push(candidate.key);
@@ -181,6 +204,8 @@ export async function buildAliasMap({
       }
     }
 
+    ledger.recordItem({ candidateCount: candidates.length, admittedCount: admittedKeys.length });
+
     if (admittedKeys.length) {
       diagnostics.aliasedItems += 1;
       // T0 first: it is the status quo and the tiebreak of last resort below.
@@ -188,6 +213,7 @@ export async function buildAliasMap({
     }
   }
 
+  diagnostics.telemetry = ledger.snapshot();
   return { aliases, diagnostics };
 }
 

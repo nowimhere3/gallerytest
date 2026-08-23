@@ -47,6 +47,68 @@ export const EXISTENCE = Object.freeze({
   UNKNOWN: "unknown",
 });
 
+// [MEDIA-ID / STAGE-02B / REASON-MODEL]
+//
+// The closed vocabulary for WHY an existence question got the answer it got.
+// One frozen object, owned by the module that owns EXISTENCE itself, so a
+// reviewer can see the entire surface at a glance and so no caller has to
+// invent a string.
+//
+// [WHY IT LIVES HERE AND NOT IN THE TELEMETRY MODULE: every code below names a
+//  source of existence knowledge, which is this module's subject. Putting the
+//  vocabulary in the aggregator would invert the dependency — the thing that
+//  MAKES the decisions would have to import the thing that merely COUNTS them,
+//  and fsa-existence.js would stop being a leaf.
+//
+//  Three codes are produced elsewhere (media-alias-index.js's resolver answers
+//  from the census before any probe happens) and three are "unattributed" —
+//  emitted when an injected oracle returns a bare status string with no reason,
+//  which every Stage 02 test fixture legitimately does. They are named here
+//  anyway so the vocabulary is ONE closed set and aggregation can never grow a
+//  key nobody declared.
+//
+//  There is deliberately NO separate `security` code. The implementation cannot
+//  reliably tell a SecurityError apart from any other exotic throw except by
+//  reading error.name, which is carried as the bounded `detail` alongside
+//  FILESYSTEM_ERROR. Inventing a distinction the code cannot make would be a
+//  lie in a diagnostic whose whole job is to be trusted.]
+export const EXISTENCE_REASON = Object.freeze({
+  // ---- PRESENT ----------------------------------------------------------
+  // Seen by the provider during THIS load's walk. Zero I/O.
+  OBSERVED_CURRENT: "present/observed-current",
+  // A durable MEDIA-ID row with origin="observed". Zero I/O.
+  // [MEDIA-ID / STAGE-02 / BP-FAIL-02] fact-only rows can never reach this.
+  OBSERVED_DURABLE: "present/observed-durable",
+  // getFileHandle() resolved.
+  PROBE_FOUND: "present/fsa-probe",
+  UNATTRIBUTED_PRESENT: "present/unattributed",
+
+  // ---- ABSENT -----------------------------------------------------------
+  // Inside a COMPLETED walk's subtree and not in it. A census result.
+  CENSUS: "absent/census",
+  PROBE_NOT_FOUND: "absent/fsa-not-found",
+  PROBE_TYPE_MISMATCH: "absent/fsa-type-mismatch",
+  UNATTRIBUTED_ABSENT: "absent/unattributed",
+
+  // ---- UNKNOWN (every one of these REFUSES) -----------------------------
+  // No root in the scope has a prefix that covers this destination at all.
+  NO_COVERING_ROOT: "unknown/no-covering-root",
+  // A covering root exists but has no handle, or a handle without the FSA
+  // lookup methods.
+  NO_HANDLE: "unknown/no-handle",
+  // The module kill switch is off.
+  PROBING_DISABLED: "unknown/probing-disabled",
+  // queryPermission() is not "granted". detail carries the state.
+  PERMISSION: "unknown/permission",
+  // A per-load ceiling was hit. detail is "file-probes" or "time".
+  BUDGET: "unknown/budget",
+  // Any throw that is not a deterministic negative. detail carries error.name.
+  FILESYSTEM_ERROR: "unknown/filesystem-error",
+  // Nothing to look up — the destination equals a root prefix exactly.
+  EMPTY_PATH: "unknown/empty-path",
+  UNATTRIBUTED_UNKNOWN: "unknown/unattributed",
+});
+
 /**
  * Per-load ceilings. Directory lookups are memoized and effectively free, so
  * the count budget applies to FILE lookups; the time budget applies to both.
@@ -82,6 +144,25 @@ export function isExistenceProbingAvailable(handle = null) {
 function isDeterministicAbsence(error) {
   const name = error && error.name ? error.name : "";
   return name === "NotFoundError" || name === "TypeMismatchError";
+}
+
+// [MEDIA-ID / STAGE-02B / REASON-MODEL]
+// Classifies one thrown lookup. The STATUS half is byte-for-byte the Stage 02
+// rule (isDeterministicAbsence and nothing else reaches ABSENT); only the
+// reason half is new.
+function classifyLookupError(error) {
+  const name = error && error.name ? error.name : "";
+  if (name === "NotFoundError") {
+    return { status: EXISTENCE.ABSENT, reason: EXISTENCE_REASON.PROBE_NOT_FOUND, detail: null };
+  }
+  if (name === "TypeMismatchError") {
+    return { status: EXISTENCE.ABSENT, reason: EXISTENCE_REASON.PROBE_TYPE_MISMATCH, detail: null };
+  }
+  return {
+    status: EXISTENCE.UNKNOWN,
+    reason: EXISTENCE_REASON.FILESYSTEM_ERROR,
+    detail: name || "unknown",
+  };
 }
 
 function splitPath(relativePath) {
@@ -151,8 +232,14 @@ export function createExistenceProber({
 
   /**
    * Resolves one directory chain, memoized per segment. Returns
-   * { status, handle }. An ABSENT ancestor short-circuits every descendant
-   * without further I/O.
+   * { status, handle, reason, detail }. An ABSENT ancestor short-circuits every
+   * descendant without further I/O.
+   *
+   * [MEDIA-ID / STAGE-02B / REASON-MODEL]
+   * [WHY THE REASON IS CACHED TOO: the memo is what makes a doubled prefix cost
+   *  one probe instead of several hundred, and a cached answer that lost its
+   *  reason would report every one of those descendants as unattributed. The
+   *  reason is produced at the same instant as the status and costs one field.]
    */
   async function directoryAt(rootId, rootHandle, segments) {
     let handle = rootHandle;
@@ -164,65 +251,112 @@ export function createExistenceProber({
       const cached = directories.get(cacheKey);
       if (cached) {
         stats.cacheHits += 1;
-        if (cached.status !== EXISTENCE.PRESENT) return { status: cached.status, handle: null };
+        if (cached.status !== EXISTENCE.PRESENT) {
+          return { status: cached.status, handle: null, reason: cached.reason, detail: cached.detail };
+        }
         handle = cached.handle;
         continue;
       }
 
       if (outOfTime()) {
-        directories.set(cacheKey, { status: EXISTENCE.UNKNOWN, handle: null });
-        return { status: EXISTENCE.UNKNOWN, handle: null };
+        const timedOut = {
+          status: EXISTENCE.UNKNOWN,
+          handle: null,
+          reason: EXISTENCE_REASON.BUDGET,
+          detail: "time",
+        };
+        directories.set(cacheKey, timedOut);
+        return { ...timedOut };
       }
 
       let next = null;
       let status = EXISTENCE.UNKNOWN;
+      let reason = null;
+      let detail = null;
       stats.directoryProbes += 1;
       try {
         next = await handle.getDirectoryHandle(segment);
         status = EXISTENCE.PRESENT;
       } catch (error) {
-        status = isDeterministicAbsence(error) ? EXISTENCE.ABSENT : EXISTENCE.UNKNOWN;
+        const classified = classifyLookupError(error);
+        status = classified.status;
+        reason = classified.reason;
+        detail = classified.detail;
       }
 
-      directories.set(cacheKey, { status, handle: status === EXISTENCE.PRESENT ? next : null });
-      if (status !== EXISTENCE.PRESENT) return { status, handle: null };
+      directories.set(cacheKey, {
+        status,
+        handle: status === EXISTENCE.PRESENT ? next : null,
+        reason,
+        detail,
+      });
+      if (status !== EXISTENCE.PRESENT) return { status, handle: null, reason, detail };
       handle = next;
     }
 
-    return { status: EXISTENCE.PRESENT, handle };
+    return { status: EXISTENCE.PRESENT, handle, reason: null, detail: null };
   }
 
-  async function probe(rootId, rootHandle, relativePath) {
-    if (!existenceEnabled) return EXISTENCE.UNKNOWN;
-    if (!rootId || !isExistenceProbingAvailable(rootHandle)) return EXISTENCE.UNKNOWN;
+  // [MEDIA-ID / STAGE-02B / REASON-MODEL]
+  //
+  // The full-fidelity probe: { status, reason, detail }. Every early return
+  // below is one of Stage 02's existing refusal paths — not one has been added,
+  // removed or reordered, and the STATUS this returns is identical to what
+  // Stage 02 returned at the same point. Only the reason is new.
+  //
+  // [WHY A SECOND ENTRY POINT RATHER THAN A WIDER `probe`: probe() is called by
+  //  the resolver and asserted by fifty existence assertions that compare it to
+  //  a bare EXISTENCE string. Changing its return type to answer a telemetry
+  //  question would make every one of those tests prove something weaker than
+  //  it proves today. probe() is now a projection of probeDetailed(), so the two
+  //  cannot drift.]
+  async function probeDetailed(rootId, rootHandle, relativePath) {
+    if (!existenceEnabled) {
+      return { status: EXISTENCE.UNKNOWN, reason: EXISTENCE_REASON.PROBING_DISABLED, detail: null };
+    }
+    if (!rootId || !isExistenceProbingAvailable(rootHandle)) {
+      return { status: EXISTENCE.UNKNOWN, reason: EXISTENCE_REASON.NO_HANDLE, detail: null };
+    }
 
     const segments = splitPath(relativePath);
-    if (!segments.length) return EXISTENCE.UNKNOWN;
+    if (!segments.length) {
+      return { status: EXISTENCE.UNKNOWN, reason: EXISTENCE_REASON.EMPTY_PATH, detail: null };
+    }
 
     const permission = await permissionFor(rootId, rootHandle);
     // Not "granted" is NOT absence. It is no information, and it refuses.
-    if (permission !== "granted") return EXISTENCE.UNKNOWN;
+    if (permission !== "granted") {
+      return { status: EXISTENCE.UNKNOWN, reason: EXISTENCE_REASON.PERMISSION, detail: permission };
+    }
 
     const fileName = segments[segments.length - 1];
     const parent = await directoryAt(rootId, rootHandle, segments.slice(0, -1));
-    if (parent.status !== EXISTENCE.PRESENT) return parent.status;
+    if (parent.status !== EXISTENCE.PRESENT) {
+      return { status: parent.status, reason: parent.reason, detail: parent.detail };
+    }
 
     if (stats.fileProbes >= fileProbeBudget) {
       stats.budgetExhausted = true;
-      return EXISTENCE.UNKNOWN;
+      return { status: EXISTENCE.UNKNOWN, reason: EXISTENCE_REASON.BUDGET, detail: "file-probes" };
     }
-    if (outOfTime()) return EXISTENCE.UNKNOWN;
+    if (outOfTime()) {
+      return { status: EXISTENCE.UNKNOWN, reason: EXISTENCE_REASON.BUDGET, detail: "time" };
+    }
 
     stats.fileProbes += 1;
     try {
       await parent.handle.getFileHandle(fileName);
-      return EXISTENCE.PRESENT;
+      return { status: EXISTENCE.PRESENT, reason: EXISTENCE_REASON.PROBE_FOUND, detail: null };
     } catch (error) {
-      return isDeterministicAbsence(error) ? EXISTENCE.ABSENT : EXISTENCE.UNKNOWN;
+      return classifyLookupError(error);
     }
   }
 
-  return { probe, stats };
+  async function probe(rootId, rootHandle, relativePath) {
+    return (await probeDetailed(rootId, rootHandle, relativePath)).status;
+  }
+
+  return { probe, probeDetailed, stats };
 }
 
-export const __TEST__ = { isDeterministicAbsence, splitPath };
+export const __TEST__ = { isDeterministicAbsence, classifyLookupError, splitPath };

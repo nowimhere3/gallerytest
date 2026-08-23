@@ -38,6 +38,8 @@ import { runSeedingPass } from "./storage/media-seeding.js";
 //  here migrates, rewrites, rekeys, copies or restamps a Profile fact: the
 //  facts stay exactly where the user put them and the projection is a read.]
 import { buildAliasIndexForLoad, createMediaIdentityChannel, MEDIA_IDENTITY_MESSAGE_KINDS } from "./storage/media-alias-index.js";
+// [MEDIA-ID / STAGE-02B / TELEMETRY]
+import { createSessionHistory, formatTelemetry, TELEMETRY_LIMITS } from "./profile/media-identity-telemetry.js";
 import {
   loadPreferences,
   savePlaybackPreferences,
@@ -3498,8 +3500,45 @@ function describeProjection(index) {
     `census(observed=${existence.observedHits ?? 0}, durable=${existence.durableHits ?? 0}, ` +
     `absent=${existence.censusAbsent ?? 0}, probed=${existence.probed ?? 0}, unknown=${existence.unknown ?? 0}) ` +
     `probes(dir=${probes.directoryProbes ?? 0}, file=${probes.fileProbes ?? 0}` +
-    `${probes.budgetExhausted ? ", BUDGET EXHAUSTED" : ""})`
+    `${probes.budgetExhausted ? ", BUDGET EXHAUSTED" : ""})` +
+    // [MEDIA-ID / STAGE-02B / TELEMETRY]
+    // [WHY: the Stage 02 line above says HOW MANY were refused; this says WHY,
+    //  which is the whole question Stage 02B exists to answer. It stays on the
+    //  same single line and keeps the same discipline — aggregate counters keyed
+    //  by a CLOSED vocabulary, so its width is fixed whether the library holds
+    //  twelve files or two hundred thousand. No path, filename or fact value is
+    //  ever emitted here; the bounded exemplars that do carry paths are reachable
+    //  only through window.__bgMediaIdTelemetry().]
+    `; ${formatTelemetry(d.telemetry)}`
   );
+}
+
+// [MEDIA-ID / STAGE-02B / TELEMETRY]
+// [WHY SESSION-LOCAL AND IN MEMORY: one load produces several builds (the
+//  initial one, the one after evidence banking lands, one per sibling-tab
+//  invalidation), and each console line overwrites the last in a developer's
+//  attention. A fixed-length ring lets the whole sitting be read back at once —
+//  MASTER-first against child-first — which is exactly the comparison that
+//  decides whether Stage 03 is warranted.
+//
+//  It is deliberately NOT durable. A persistent store would need a schema, a
+//  version, an eviction policy and a multi-tab convergence story, all to answer
+//  a question one session already answers, and it would amount to a durable
+//  record of which media this user curates. MULTI-TAB SEMANTICS ARE THEREFORE
+//  NONE: nothing here is broadcast, nothing is read by another tab, and no tab
+//  can see or corrupt another's counters. It dies with the tab.]
+const mediaIdTelemetryHistory = createSessionHistory(TELEMETRY_LIMITS.SESSION_BUILDS);
+
+function recordProjectionTelemetry(reason, index, extra = {}) {
+  mediaIdTelemetryHistory.push({
+    at: Date.now(),
+    reason,
+    aliasedItems: index ? index.aliases.size : 0,
+    scopeId: index ? index.scopeId : null,
+    rootPrefixes: index ? [...(index.rootPrefixes || [])] : [],
+    diagnostics: index ? index.diagnostics || null : null,
+    ...extra,
+  });
 }
 
 async function rebuildProjectionFromStorage(reason) {
@@ -3509,6 +3548,8 @@ async function rebuildProjectionFromStorage(reason) {
     const index = await buildAliasIndexForLoad(request);
     if (lastProjectionRequest !== request) return; // superseded by a newer load
     profileView.setAliasIndex(index);
+    // [MEDIA-ID / STAGE-02B / TELEMETRY]
+    recordProjectionTelemetry(`rebuild: ${reason}`, index);
     console.info(`[MEDIA-ID] Projection rebuilt (${reason}): ${describeProjection(index)}`);
   } catch (error) {
     console.warn("[MEDIA-ID] Could not rebuild the projection. Path-exact behaviour is unaffected.", error);
@@ -3571,6 +3612,13 @@ async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, 
   lastProjectionFactPathCount = typeof profile.getFactPaths === "function" ? profile.getFactPaths().length : 0;
 
   const index = await buildAliasIndexForLoad(request);
+
+  // [MEDIA-ID / STAGE-02B / TELEMETRY]
+  recordProjectionTelemetry("initial build", index, {
+    rootName: rootName || (handle && handle.name) || rootId,
+    scopeAction: scope.action,
+    prefixFromScopeRoot: scope.prefixFromScopeRoot,
+  });
 
   // [MEDIA-ID / STAGE-02 / DIAGNOSTIC]
   // The INITIAL build, reported on the same terms as a rebuild. Previously only
@@ -9767,6 +9815,126 @@ async function __iaSyncFolderShape() {
 //  that test is measuring — no sync pass, no write, no IndexedDB or Drive
 //  access, no UI state change. Peer data is whatever the LAST pass observed;
 //  if that reads as stale, run Sync Now deliberately and call this again.]
+// [MEDIA-ID / STAGE-02B / TELEMETRY]
+// window.__bgMediaIdTelemetry(options)
+//
+// The debug-only read-back of this SESSION's alias-index builds. Strictly
+// read-only: it prints what the builds already recorded and runs no build, no
+// probe, no IndexedDB read and no filesystem access, so typing it during a live
+// two-root test cannot change what that test is measuring.
+//
+// [WHY EXEMPLAR PATHS ARE OPT-IN: the aggregate report answers every Stage 02B
+//  question on its own and names no media. The bounded per-reason exemplars are
+//  the only place a real path is retained, they exist so a developer can go and
+//  LOOK at the file a refusal was about, and they are printed only when asked
+//  for by name — never in normal operation and never in the console line the app
+//  emits on every load.]
+window.__bgMediaIdTelemetry = function (options = {}) {
+  const { paths = false, all = false } = options;
+  const builds = mediaIdTelemetryHistory.entries();
+  const lines = [];
+
+  lines.push("=== MEDIA-ID PROJECTION TELEMETRY (this session, in memory only) ===");
+  lines.push(
+    `${builds.length} build(s) retained` +
+      `${mediaIdTelemetryHistory.dropped ? `, ${mediaIdTelemetryHistory.dropped} older build(s) dropped` : ""}` +
+      ` (cap ${TELEMETRY_LIMITS.SESSION_BUILDS}). Nothing here is persisted or shared between tabs.`
+  );
+
+  if (!builds.length) {
+    lines.push("");
+    lines.push("(no projection has been built yet — load a folder, then call this again)");
+    console.log(lines.join("\n"));
+    return undefined;
+  }
+
+  const shown = all ? builds : builds.slice(-5);
+  if (shown.length !== builds.length) {
+    lines.push(`(showing the last ${shown.length}; pass { all: true } for every retained build)`);
+  }
+
+  for (const build of shown) {
+    const d = build.diagnostics || {};
+    const t = d.telemetry || null;
+    lines.push("");
+    lines.push(`--- ${new Date(build.at).toLocaleTimeString()}  ${build.reason} ---`);
+    if (build.rootName) {
+      lines.push(
+        `Root: ${build.rootName}${build.scopeAction ? ` (${build.scopeAction})` : ""}` +
+          `${build.prefixFromScopeRoot !== undefined ? ` prefix ${JSON.stringify(build.prefixFromScopeRoot)}` : ""}`
+      );
+    }
+    if (!d || !t) {
+      lines.push("No index (no scope row, or a single-root scope — nothing to project).");
+      continue;
+    }
+    lines.push(
+      `Observed ${d.observed ?? "?"} item(s); ${d.factKeys ?? "?"} curated fact key(s); ` +
+        `${build.aliasedItems} item(s) aliased.`
+    );
+    lines.push(
+      `Candidates ${t.candidates.total}: admitted ${t.candidates.admitted}, ` +
+        `refused PRESENT ${t.candidates.refusedPresent}, refused UNKNOWN ${t.candidates.refusedUnknown}.`
+    );
+    lines.push(
+      `Items with candidates ${t.items.withCandidates}: aliased ${t.items.aliased}, ` +
+        `fully refused ${t.items.refused}, contested (>1 candidate key) ${t.items.contested}, ` +
+        `multi-alias (>1 admitted) ${t.items.multiAlias}.`
+    );
+
+    const bucketLines = (title, buckets) => {
+      const entries = Object.entries(buckets || {}).filter(([, count]) => count);
+      if (!entries.length) return;
+      lines.push(`${title}:`);
+      entries.sort((a, b) => b[1] - a[1]);
+      for (const [reason, count] of entries) {
+        const detail = t.details && t.details[reason];
+        const detailText = detail
+          ? ` [${Object.entries(detail)
+              .map(([value, n]) => `${value}×${n}`)
+              .join(", ")}]`
+          : "";
+        lines.push(`  ${count.toString().padStart(6)}  ${reason}${detailText}`);
+      }
+    };
+    bucketLines("Refused because a competitor was PRESENT, proven by", t.presentBy);
+    bucketLines("Refused because existence was UNKNOWN, because", t.unknownBy);
+    bucketLines("Competitors proven ABSENT by", t.absentBy);
+
+    const probes = d.probes || {};
+    lines.push(
+      `Cost: ${probes.directoryProbes ?? 0} directory probe(s), ${probes.fileProbes ?? 0} file probe(s)` +
+        `${probes.budgetExhausted ? "  *** PROBE BUDGET EXHAUSTED ***" : ""}.`
+    );
+    if (t.truncated && (t.truncated.details || t.truncated.exemplars)) {
+      lines.push(
+        `(bounded: ${t.truncated.details} detail value(s) and ${t.truncated.exemplars} exemplar(s) not retained)`
+      );
+    }
+
+    if (paths) {
+      const reasons = Object.keys(t.exemplars || {});
+      if (!reasons.length) lines.push("Exemplars: (none)");
+      for (const reason of reasons) {
+        lines.push(`Exemplars for ${reason} (max ${TELEMETRY_LIMITS.EXEMPLARS_PER_REASON}):`);
+        for (const sample of t.exemplars[reason]) {
+          lines.push(`  viewed ${JSON.stringify(sample.scopePath)}`);
+          lines.push(`    candidate key   ${JSON.stringify(sample.key)}`);
+          lines.push(`    deciding target ${JSON.stringify(sample.destination)}`);
+        }
+      }
+    }
+  }
+
+  if (!paths) {
+    lines.push("");
+    lines.push("(call __bgMediaIdTelemetry({ paths: true }) for the bounded per-reason path exemplars)");
+  }
+
+  console.log(lines.join("\n"));
+  return undefined; // a human report; nothing to act on programmatically
+};
+
 window.__bgSyncDevices = function () {
   const status = profileSync.getStatus();
   const lines = [];
