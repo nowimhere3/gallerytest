@@ -3,6 +3,7 @@
   --panel: #121933;
   --panel-2: #182243;
   --border: #2b396d;
+  --field-bg: #0d1530;
   --text: #eef2ff;
   --muted: #a8b3d1;
   --accent: #6ea8fe;
@@ -238,6 +239,24 @@ input {
 }
 
 .profile-section[open] summary {
+  margin-bottom: 16px;
+}
+
+/* [SYNCV3 / STAGE-06 / ADVANCED-SETTINGS] */
+.advanced-settings-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.advanced-settings-section summary {
+  cursor: pointer;
+  font-size: 1.5em;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.advanced-settings-section[open] summary {
   margin-bottom: 16px;
 }
 
@@ -545,6 +564,26 @@ a:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* [SYNCV3 / STAGE-06 / FORM-CONTROL-CONTRACT] */
+.field-control {
+  min-width: 0;
+  min-height: 44px;
+  background: var(--field-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.field-control::placeholder {
+  color: var(--muted);
+}
+
+.field-control:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .media-picker-row {
@@ -872,6 +911,75 @@ button:not(:disabled):hover,
   max-width: 620px;
 }
 
+/* [SYNCV3 / STAGE-06 / PROFILE-SYNC-IA] */
+.profile-settings-group {
+  margin-top: 20px;
+}
+
+.profile-group-heading {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.profile-settings-group > .hint {
+  margin: 8px 0 0;
+}
+
+.product-status {
+  margin: 0 0 12px;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.product-status-muted {
+  color: var(--muted);
+}
+
+.product-status-active {
+  color: var(--accent);
+}
+
+.product-status-success {
+  color: #86efac;
+}
+
+.product-status-warning {
+  color: #facc15;
+}
+
+.product-status-danger {
+  color: #ffb4bc;
+}
+
+.profile-device-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 760px;
+}
+
+.profile-device-row .field-control {
+  flex: 1 1 220px;
+}
+
+.profile-device-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.profile-settings-group > .control-stack {
+  max-width: 620px;
+}
+
+.profile-delete-group {
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
 .profile-current-row {
   display: flex;
   align-items: center;
@@ -887,13 +995,6 @@ button:not(:disabled):hover,
 
 .profile-current-row select {
   flex: 1 1 auto;
-  min-width: 0;
-  min-height: 44px;
-  background: #0d1530;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text);
-  padding: 10px 12px;
 }
 
 .profile-delete-btn {
@@ -910,13 +1011,6 @@ button:not(:disabled):hover,
 
 .profile-create-row input[type="text"] {
   flex: 1 1 140px;
-  min-width: 0;
-  min-height: 44px;
-  background: #0d1530;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text);
-  padding: 10px 12px;
 }
 
 .profile-create-row button {
@@ -4785,6 +4879,7 @@ hr {
   }
 
   .profile-current-row,
+  .profile-device-row,
   .tag-create-row {
     flex-wrap: wrap;
   }

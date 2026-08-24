@@ -51,6 +51,7 @@ import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-fi
 import { ProfileStore } from "./profile/profile-store.js";
 import { createProfileProjectionView } from "./profile/profile-projection-view.js";
 import { ProfileSync } from "./profile/profile-sync.js";
+import { mapSyncStatusCopy } from "./profile/sync-status-copy.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
@@ -171,6 +172,7 @@ const profileSectionDetails = document.querySelector(".profile-section");
 // [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN] [PROFILE-TAGS-DISCLOSURE]
 const tagsAdminSectionDetails = document.querySelector(".tags-admin-section");
 const profileAssociateBtn = document.getElementById("profile-associate-btn");
+const profileLibraryAssociationText = document.getElementById("profile-library-association-text");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
@@ -198,9 +200,8 @@ const profileSyncChangeBtn = document.getElementById("profile-sync-change-btn");
 const profileSyncDisconnectBtn = document.getElementById("profile-sync-disconnect-btn");
 const profileSyncActivatePanel = document.getElementById("profile-sync-activate-panel");
 const profileSyncActivateBtn = document.getElementById("profile-sync-activate-btn");
-// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION] Temporary development controls — see
-// the panel's own comment in index.html for why this surface is scaffolding.
-const profileSyncV3Panel = document.getElementById("profile-sync-v3-panel");
+// [SYNCV3 / STAGE-06 / SCAFFOLDING-CLEANUP] Advanced diagnostic output and
+// mode-generation controls retained separately from the product Sync surface.
 const profileSyncV3StatusText = document.getElementById("profile-sync-v3-status-text");
 // [SYNCV3 / STAGE-05 / DEVICE-NAMING] Temporary bridge control — see the panel
 // comment in index.html for why this is deliberately minimal.
@@ -213,6 +214,7 @@ const profileSyncV3ReconnectBtn = document.getElementById("profile-sync-v3-recon
 const profileSyncV3ActivateBtn = document.getElementById("profile-sync-v3-activate-btn");
 const profileSyncV3LeaveBtn = document.getElementById("profile-sync-v3-leave-btn");
 const profileSyncV3DisconnectBtn = document.getElementById("profile-sync-v3-disconnect-btn");
+const profileSyncProductStatus = document.getElementById("profile-sync-product-status");
 const profileSyncLinkPanel = document.getElementById("profile-sync-link-panel");
 const profileSyncLinkSelect = document.getElementById("profile-sync-link-select");
 const profileSyncLinkBtn = document.getElementById("profile-sync-link-btn");
@@ -655,6 +657,11 @@ let isLoadingFiles = false;
 // second source of truth for the association itself, which — for FSA —
 // always lives in IndexedDB via library-registry.js.
 let activeLibraryRecord = null;
+// [SYNCV3 / STAGE-06 / ASSOCIATION-SUMMARY]
+// Presentation-only name for a loaded legacy folder that does not have a
+// registry record yet. Association truth remains entirely in the record/state
+// consumed by currentLoadIsAssociated() and updateAssociatedStatusRow().
+let activeLibraryDisplayName = null;
 
 // [Phase 8.4-2] Which picker produced the currently loaded media, if any.
 // This — not "FSA vs legacy" scattered across call sites — is the one
@@ -788,33 +795,49 @@ function getProfileNameById(profileId) {
 // that function) rather than adding separate call sites — they must never
 // drift out of sync with each other.
 function updateAssociatedStatusRow() {
+  let productLine;
+
   if (currentSourceKind === "none") {
     associatedText.textContent = "—";
-    return;
+    productLine = "No folder loaded.";
+  } else {
+    const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded folder";
+    const usesDurableRecord =
+      currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
+    const associatedProfileId = usesDurableRecord && activeLibraryRecord ? activeLibraryRecord.profileId : null;
+    const associatedProfileName = associatedProfileId ? getProfileNameById(associatedProfileId) : null;
+
+    if (associatedProfileId && !associatedProfileName) {
+      associatedText.textContent = "Not associated";
+      productLine = `${folderName} — linked Profile is unavailable`;
+    } else if (!currentLoadIsAssociated()) {
+      associatedText.textContent = "Not associated";
+      productLine = `${folderName} — not linked to a Profile yet`;
+    } else if (usesDurableRecord) {
+      // Deliberately NO fallback to profile.getProfileName() here: if
+      // activeLibraryRecord.profileId doesn't resolve to a real profile
+      // (deleted since — see profileDeleteBtn's stale-clearing below), that
+      // MUST read "Not associated", never the currently-active profile's
+      // name — this is exactly the "do not display the globally active
+      // Profile" rule from section 1.
+      associatedText.textContent = associatedProfileName || "Not associated";
+      productLine = `${folderName} — remembered with ${associatedProfileName}`;
+      if (associatedProfileId !== profile.getProfileId()) productLine += " (not your active Profile)";
+    } else {
+      // Ephemeral ("Choose Files") association has no stored profileId to look
+      // up at all — it only ever means "the profile that was active at the
+      // moment Associate was clicked", i.e. whatever profile is active now.
+      const activeProfileName = profile.getProfileName();
+      associatedText.textContent = activeProfileName || "Not associated";
+      productLine = activeProfileName
+        ? `${folderName} — remembered with ${activeProfileName}`
+        : `${folderName} — not linked to a Profile yet`;
+    }
   }
 
-  if (!currentLoadIsAssociated()) {
-    associatedText.textContent = "Not associated";
-    return;
-  }
-
-  const usesDurableRecord = currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
-  if (usesDurableRecord) {
-    // Deliberately NO fallback to profile.getProfileName() here: if
-    // activeLibraryRecord.profileId doesn't resolve to a real profile
-    // (deleted since — see profileDeleteBtn's stale-clearing below), that
-    // MUST read "Not associated", never the currently-active profile's
-    // name — this is exactly the "do not display the globally active
-    // Profile" rule from section 1.
-    const name = activeLibraryRecord ? getProfileNameById(activeLibraryRecord.profileId) : null;
-    associatedText.textContent = name || "Not associated";
-    return;
-  }
-
-  // Ephemeral ("Choose Files") association has no stored profileId to look
-  // up at all — it only ever means "the profile that was active at the
-  // moment Associate was clicked", i.e. whatever profile is active now.
-  associatedText.textContent = profile.getProfileName() || "Not associated";
+  // [WHY: this is the third render target of this function's existing single
+  // association computation; it never reads registry or Profile state itself.]
+  profileLibraryAssociationText.textContent = productLine;
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -3887,6 +3910,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
   activeLibraryRecord = null;
+  activeLibraryDisplayName = rootName || (isFolderPick ? "Loaded folder" : "Selected files");
   currentSourceKind = "legacy";
   // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
   // fingerprint) participates in durable identity — "Choose Files" keeps
@@ -4112,6 +4136,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // at all requires either the FSA folder-picker round trip or a Recent
   // Libraries click, both far slower than one IndexedDB open.
   activeLibraryRecord = libraryRecord || null;
+  activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded folder";
   currentSourceKind = "fsa";
   // [LIBRARY-PROFILE-UX / Phase 8.5] Same reset as loadFiles() — a new
   // load starting means any pending Associate/Change-Profile navigation
@@ -7303,6 +7328,7 @@ clearBtn.addEventListener("click", () => {
   // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
+  activeLibraryDisplayName = null;
   currentSourceKind = "none";
   legacySessionAssociated = false;
   legacyHasDurableIdentity = false;
@@ -8613,6 +8639,20 @@ profile.subscribe(() => {
 function renderProfileSync() {
   const status = profileSync.getStatus();
 
+  // [SYNCV3 / STAGE-06 / SYNC-STATUS-RENDER]
+  // [WHY: product and Advanced diagnostic copy consume this same snapshot;
+  // neither renderer performs another getStatus() read or subscription.]
+  const productStatus = mapSyncStatusCopy(status);
+  profileSyncProductStatus.textContent = productStatus.line;
+  profileSyncProductStatus.classList.remove(
+    "product-status-muted",
+    "product-status-active",
+    "product-status-success",
+    "product-status-warning",
+    "product-status-danger"
+  );
+  profileSyncProductStatus.classList.add(`product-status-${productStatus.tone}`);
+
   // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
   // [WHY: every V1/V2 control below is additionally gated on `!isV3`. Under V3
   //  the engine has deliberately released the V1/V2 handle in memory while
@@ -8653,7 +8693,7 @@ function renderProfileSync() {
     profileSyncManagePanel.classList.add("hidden");
   }
 
-  renderSyncV3Panel(status, isV3);
+  renderSyncV3State(status, isV3);
 
   let line;
   switch (status.status) {
@@ -8790,16 +8830,14 @@ function renderProfileSync() {
   profileSyncStatusText.textContent = line;
 }
 
-// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
-// WHAT: Renders the temporary Sync V3 development panel from the SAME status
-// snapshot renderProfileSync() already read.
+// [SYNCV3 / STAGE-06 / SCAFFOLDING-CLEANUP]
+// WHAT: Renders the normal V3 actions and retained Advanced diagnostics from
+// the SAME status snapshot renderProfileSync() already read.
 // [WHY: takes `status` as an argument rather than calling getStatus() again.
 //  Two reads of a live engine can straddle a state change, which is how one
 //  panel ends up describing a connection the other has already released — the
 //  same single-snapshot discipline the rest of this render function follows.]
-// FUTURE: this whole function is expected to be deleted by the Profile & Sync
-// Settings redesign stage. Do not grow it into that page.
-function renderSyncV3Panel(status, isV3) {
+function renderSyncV3State(status, isV3) {
   // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
   // [WHY: the input shows the CUSTOM name only, never the detected fallback, so
   //  an empty field honestly means "you have not named this device". Pre-filling
@@ -8818,7 +8856,7 @@ function renderSyncV3Panel(status, isV3) {
 
   const connected = Boolean(status.v3Configured);
 
-  profileSyncV3ChooseBtn.textContent = connected ? "Change V3 Sync Folder" : "Choose V3 Sync Folder";
+  profileSyncV3ChooseBtn.textContent = connected ? "Change Sync Folder" : "Choose Sync Folder";
   profileSyncV3ReconnectBtn.classList.toggle("hidden", !connected || status.v3Status !== "permission-needed");
   profileSyncV3DisconnectBtn.classList.toggle("hidden", !connected);
   profileSyncV3ActivateBtn.classList.toggle("hidden", isV3);
