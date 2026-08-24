@@ -44,9 +44,15 @@ import {
   loadPreferences,
   savePlaybackPreferences,
   savePresentationPreferences,
+  saveMicroArcadePreferences,
   DEFAULT_GHOST_OPACITY_PERCENT,
 } from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
+import {
+  DEFAULT_ARCADE_ANIMATION_ORDER,
+  renderArcadeAnimationOrderHelper,
+  selectArcadeScene,
+} from "./runtime/micro-arcade-selector.js";
 import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { createProfileProjectionView } from "./profile/profile-projection-view.js";
@@ -133,7 +139,8 @@ const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
 const shuffleInput = document.getElementById("shuffle-input");
-const shuffleModeSelect = document.getElementById("shuffle-mode-select");
+const arcadeAnimationOrderSelect = document.getElementById("arcade-animation-order-select");
+const arcadeAnimationOrderHelper = document.getElementById("arcade-animation-order-helper");
 const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
@@ -3631,26 +3638,22 @@ let arcadeLastRender = 0;
 // loop wrap can ever re-pick.
 let arcadeCurrentScene = null;
 let arcadePreviousScene = null;
+// Safe startup default while IndexedDB preferences load asynchronously.
+let arcadeAnimationOrder = DEFAULT_ARCADE_ANIMATION_ORDER;
+let arcadeShuffleLoopVisitedScenes = [];
 
-// [V2-POLISH / MICRO-ARCADE-TEST-SEQUENTIAL]
-// TESTING SWITCH — flip to "random" to restore production behavior.
-// "random"     — ship behavior: uniform pick excluding the previous scene.
-// "sequential" — walks the pool in ARCADE_SCENES order, one step per load
-//                session, so every scene can be reviewed without reloading
-//                until chance offers it.
-// This is the ONLY thing that differs between the two modes. Both funnel
-// through the same pickArcadeScene() call site, so the lifecycle, the
-// same-scene looping and the rAF ownership are untouched by the choice.
-const MICRO_ARCADE_SELECTION_MODE = "sequential";
-const MICRO_ARCADE_TEST_INDEX_KEY = "bg-micro-arcade-test-index";
+// [PLAYBACK / MICRO-ARCADE / ANIMATION-ORDER]
+// Keep the existing key so sequential review resumes at the same scene across
+// preference and app upgrades.
+const MICRO_ARCADE_INDEX_KEY = "bg-micro-arcade-test-index";
 
 // sessionStorage, deliberately: it is scoped to the tab, dies with it, and
 // needs no schema, migration or cleanup. Wrapped because storage access
-// throws outright in some privacy modes and sandboxed frames, and a testing
-// aid must never be able to break a real load.
+// throws outright in some privacy modes and sandboxed frames, and preference
+// storage must never be able to break a real load.
 function readArcadeTestIndex() {
   try {
-    const raw = window.sessionStorage.getItem(MICRO_ARCADE_TEST_INDEX_KEY);
+    const raw = window.sessionStorage.getItem(MICRO_ARCADE_INDEX_KEY);
     const parsed = Number.parseInt(raw, 10);
     return Number.isInteger(parsed) && parsed >= 0 ? parsed % ARCADE_SCENES.length : 0;
   } catch (err) {
@@ -3660,28 +3663,23 @@ function readArcadeTestIndex() {
 
 function writeArcadeTestIndex(index) {
   try {
-    window.sessionStorage.setItem(MICRO_ARCADE_TEST_INDEX_KEY, String(index));
+    window.sessionStorage.setItem(MICRO_ARCADE_INDEX_KEY, String(index));
   } catch (err) {
-    /* testing aid only — a storage failure must not affect the load */
+    /* a storage failure must not affect the load */
   }
 }
 
-// The production selector, kept intact and reachable.
-function pickArcadeSceneRandom() {
-  const candidates =
-    ARCADE_SCENES.length > 1 ? ARCADE_SCENES.filter((scene) => scene !== arcadePreviousScene) : ARCADE_SCENES;
-  return candidates[Math.floor(Math.random() * candidates.length)];
-}
-
-function pickArcadeSceneSequential() {
-  const index = readArcadeTestIndex();
-  writeArcadeTestIndex((index + 1) % ARCADE_SCENES.length);
-  return ARCADE_SCENES[index];
-}
-
 function pickArcadeScene() {
-  const chosen =
-    MICRO_ARCADE_SELECTION_MODE === "sequential" ? pickArcadeSceneSequential() : pickArcadeSceneRandom();
+  const selection = selectArcadeScene({
+    scenes: ARCADE_SCENES,
+    order: arcadeAnimationOrder,
+    previousScene: arcadePreviousScene,
+    visitedScenes: arcadeShuffleLoopVisitedScenes,
+    readIndex: readArcadeTestIndex,
+    writeIndex: writeArcadeTestIndex,
+  });
+  const chosen = selection.scene;
+  arcadeShuffleLoopVisitedScenes = selection.visitedScenes;
   arcadeCurrentScene = chosen;
   arcadePreviousScene = chosen;
   return chosen;
@@ -7380,9 +7378,15 @@ shuffleInput.addEventListener("change", () => {
   savePlaybackPreferences({ shuffle: shuffleInput.checked });
 });
 
-shuffleModeSelect.addEventListener("change", () => {
-  runtime.setShuffleMode(shuffleModeSelect.value);
-  savePlaybackPreferences({ shuffleMode: shuffleModeSelect.value });
+function updateArcadeAnimationOrderHelper() {
+  renderArcadeAnimationOrderHelper(arcadeAnimationOrderHelper, arcadeAnimationOrderSelect.value);
+}
+
+arcadeAnimationOrderSelect.addEventListener("change", () => {
+  arcadeAnimationOrder = arcadeAnimationOrderSelect.value;
+  arcadeShuffleLoopVisitedScenes = [];
+  updateArcadeAnimationOrderHelper();
+  saveMicroArcadePreferences({ animationOrder: arcadeAnimationOrder });
 });
 
 skipDuplicatesInput.addEventListener("change", () => {
@@ -9710,11 +9714,13 @@ renderSharedLibraryOptions().catch(() => undefined);
 // before the user unchecked "Remember this value", and unchecked launches
 // must always show the built-in fallback, not that old number.
 function applyLoadedPreferences(preferences) {
-  const { playback, presentation } = preferences;
+  const { playback, presentation, microArcade } = preferences;
 
   intervalInput.value = String(playback.intervalSeconds);
   shuffleInput.checked = playback.shuffle;
-  shuffleModeSelect.value = playback.shuffleMode;
+  arcadeAnimationOrderSelect.value = microArcade.animationOrder;
+  arcadeAnimationOrder = microArcade.animationOrder;
+  updateArcadeAnimationOrderHelper();
   skipDuplicatesInput.checked = playback.skipDuplicates;
   skipDuplicates = playback.skipDuplicates;
   loopInput.checked = playback.loopPlaylist;
@@ -9731,7 +9737,7 @@ function applyLoadedPreferences(preferences) {
   ghostOpacityInput.value = String(ghostPercent);
 
   runtime.setShuffle(shuffleInput.checked);
-  runtime.setShuffleMode(shuffleModeSelect.value);
+  runtime.setShuffleMode(playback.shuffleMode);
   runtime.setLoop(loopInput.checked);
   runtime.setIntervalMs(Number(intervalInput.value) * 1000);
   applyGhostOpacity(Number(ghostOpacityInput.value));

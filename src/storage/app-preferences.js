@@ -1,5 +1,5 @@
 // [APP-PREFERENCES] Global application preferences — Playback (interval,
-// shuffle, skip duplicates, loop playlist, fill panel) and Presentation's
+// shuffle, skip duplicates, loop playlist, fill panel), Micro-Arcade, and Presentation's
 // Ghost Opacity "remember" state/value. These are NOT Profile curation
 // data: they stay constant across Profile switches, are never part of
 // Profile export/import/merge/replace, and deliberately live in their own
@@ -46,6 +46,11 @@ const DEFAULT_PLAYBACK = {
 const DEFAULT_PRESENTATION = {
   rememberGhostOpacity: true,
   ghostOpacityPercent: 15,
+};
+
+const DEFAULT_MICRO_ARCADE = {
+  // [PLAYBACK / MICRO-ARCADE / ANIMATION-ORDER]
+  animationOrder: "true-random",
 };
 
 // Exposed so main.js can apply the same built-in fallback when
@@ -110,6 +115,16 @@ function shuffleMode(value) {
   return value === "true-random" ? "true-random" : "shuffle-loop";
 }
 
+function arcadeAnimationOrder(value, temporaryShuffleValue) {
+  if (value === "sequential" || value === "true-random" || value === "shuffle-loop") return value;
+  // Minimal compatibility for the temporary boolean used by the preceding
+  // development pass. The obsolete key is omitted from normalized output.
+  if (value === undefined && typeof temporaryShuffleValue === "boolean") {
+    return temporaryShuffleValue ? "true-random" : "sequential";
+  }
+  return DEFAULT_MICRO_ARCADE.animationOrder;
+}
+
 // Missing/malformed/out-of-range fields fall back to defaults individually
 // (rather than discarding the whole record) so a single corrupt field can
 // never break startup or silently reset unrelated preferences. Also the
@@ -119,6 +134,7 @@ function normalizeRecord(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const playbackSource = source.playback && typeof source.playback === "object" ? source.playback : {};
   const presentationSource = source.presentation && typeof source.presentation === "object" ? source.presentation : {};
+  const microArcadeSource = source.microArcade && typeof source.microArcade === "object" ? source.microArcade : {};
 
   return {
     id: RECORD_ID,
@@ -138,6 +154,9 @@ function normalizeRecord(raw) {
     presentation: {
       rememberGhostOpacity: bool(presentationSource.rememberGhostOpacity, DEFAULT_PRESENTATION.rememberGhostOpacity),
       ghostOpacityPercent: clampOpacity(presentationSource.ghostOpacityPercent ?? DEFAULT_PRESENTATION.ghostOpacityPercent),
+    },
+    microArcade: {
+      animationOrder: arcadeAnimationOrder(microArcadeSource.animationOrder, microArcadeSource.shuffle),
     },
   };
 }
@@ -199,8 +218,8 @@ async function writeRecord(database, record) {
   await completeTransaction(transaction);
 }
 
-// Read-modify-write against a single named section (`playback` or
-// `presentation`) so saving one preference can never erase a sibling
+// Read-modify-write against a single named section (`playback`, `presentation`,
+// or `microArcade`) so saving one preference can never erase a sibling
 // preference (in the same section or the other one) that this call didn't
 // touch.
 function savePartial(section, partial) {
@@ -231,4 +250,8 @@ export function savePlaybackPreferences(partial) {
 
 export function savePresentationPreferences(partial) {
   return savePartial("presentation", partial);
+}
+
+export function saveMicroArcadePreferences(partial) {
+  return savePartial("microArcade", partial);
 }
