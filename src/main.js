@@ -5,10 +5,10 @@ import {
   addOrUpdateLibrary,
   touchLibrary,
   removeFromRecents,
-  setLibraryProfile,
   listLegacyLibraries,
   addLegacyLibrary,
   updateLegacyLibrarySignature,
+  getLibraryById,
   // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
   // [WHY: linkLocalLibraryToSharedId is the ONLY way a second device attaches
   //  its own physical folder to an already-shared library, and it is reachable
@@ -58,6 +58,7 @@ import { ProfileStore } from "./profile/profile-store.js";
 import { createProfileProjectionView } from "./profile/profile-projection-view.js";
 import { ProfileSync } from "./profile/profile-sync.js";
 import { mapSyncStatusCopy } from "./profile/sync-status-copy.js";
+import { mapAssociationCopy } from "./profile/association-copy.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
@@ -181,6 +182,11 @@ const profileSectionDetails = document.querySelector(".profile-section");
 const tagsAdminSectionDetails = document.querySelector(".tags-admin-section");
 const profileAssociateBtn = document.getElementById("profile-associate-btn");
 const profileLibraryAssociationText = document.getElementById("profile-library-association-text");
+const profileAssociationRow = document.getElementById("profile-association-row");
+const profileAssociationSelect = document.getElementById("profile-association-select");
+const profileAssociationSaveBtn = document.getElementById("profile-association-save-btn");
+const profileAssociationCancelBtn = document.getElementById("profile-association-cancel-btn");
+const profileAssociationResult = document.getElementById("profile-association-result");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
@@ -668,13 +674,13 @@ let activeLibraryRecord = null;
 // [SYNCV3 / STAGE-06 / ASSOCIATION-SUMMARY]
 // Presentation-only name for a loaded legacy folder that does not have a
 // registry record yet. Association truth remains entirely in the record/state
-// consumed by currentLoadIsAssociated() and updateAssociatedStatusRow().
+// consumed by the Stage 07 association-state adapter.
 let activeLibraryDisplayName = null;
 
 // [Phase 8.4-2] Which picker produced the currently loaded media, if any.
 // This — not "FSA vs legacy" scattered across call sites — is the one
 // thing association-button visibility is computed from. See
-// currentLoadIsAssociated()/syncAssociateButtonVisibility() below.
+// syncAssociateButtonVisibility() below.
 let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
 
 // [P1-DIAGNOSTIC / TEMPORARY] See the DevTools-callable probe block at the
@@ -725,7 +731,7 @@ let legacySessionAssociated = false;
 // webkitdirectory FOLDER picker (has a root folder context to fingerprint)
 // — as opposed to the plain multi-file "Choose Files" input, which has no
 // meaningful folder identity to build a durable association from (see
-// loadFiles()). When true, currentLoadIsAssociated() and the Associate
+// loadFiles()). When true, the association-state adapter and Associate
 // click handler use activeLibraryRecord + the persisted legacy registry
 // instead of the ephemeral legacySessionAssociated flag above.
 let legacyHasDurableIdentity = false;
@@ -752,38 +758,6 @@ let pendingLibraryAssociationIntent = false;
 // considered associated — drives both the Associate/Change button's LABEL
 // (see syncAssociateButtonVisibility) and the green "Associated:" status
 // row (see updateAssociatedStatusRow), never a separately-tracked boolean.
-function currentLoadIsAssociated() {
-  if (currentSourceKind === "fsa") {
-    // No persisted library.id (e.g. addOrUpdateLibrary() failed to save
-    // this folder — see fsaChooseFolderBtn's catch) means there is
-    // nothing a click could actually persist an association against;
-    // treat that as "can't participate" rather than dangling a button
-    // that would silently no-op when clicked.
-    if (!activeLibraryRecord || !activeLibraryRecord.id) return true;
-    // [Phase 8.5] Checked against REAL known profiles, not just
-    // truthiness — a profileId can go stale in-memory the moment its
-    // Profile is deleted, without waiting for a reload (see
-    // profileDeleteBtn's stale-clearing below). Must agree with
-    // updateAssociatedStatusRow()'s own "Not associated" fallback.
-    return Boolean(activeLibraryRecord.profileId && getProfileNameById(activeLibraryRecord.profileId));
-  }
-  if (currentSourceKind === "legacy") {
-    // [Phase 8.4-3] A folder pick with durable identity behaves exactly
-    // like FSA here — same activeLibraryRecord.profileId check — it's
-    // just persisted via a signature instead of a handle. Only the
-    // handle-less "Choose Files" case falls back to the ephemeral flag.
-    if (legacyHasDurableIdentity) {
-      return Boolean(
-        activeLibraryRecord && activeLibraryRecord.profileId && getProfileNameById(activeLibraryRecord.profileId)
-      );
-    }
-    return legacySessionAssociated;
-  }
-  return true; // "none" — nothing loaded; not a real association state,
-  // but this makes updateAssociatedStatusRow's "—" case share the same
-  // underlying check rather than needing its own separate one.
-}
-
 // Looks up the DISPLAY NAME for a profileId that may or may not be the
 // currently active profile — the green status row must reflect the
 // LOADED LIBRARY's association, not whatever profile the user happens to
@@ -792,6 +766,29 @@ function getProfileNameById(profileId) {
   if (!profileId) return null;
   const entry = profile.listProfiles().find((candidate) => candidate.id === profileId);
   return entry ? entry.name : null;
+}
+
+// [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+// The only adapter from live app state into the pure S0-S5 mapper.
+function getCurrentAssociationUiState() {
+  const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded folder";
+  const usesDurableRecord =
+    currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
+  const associatedProfileId = usesDurableRecord && activeLibraryRecord ? activeLibraryRecord.profileId : null;
+  return mapAssociationCopy({
+    sourceKind: currentSourceKind,
+    legacyHasDurableIdentity,
+    folderName,
+    associatedProfileId,
+    associatedProfileName: getProfileNameById(associatedProfileId),
+    activeProfileId: profile.getProfileId(),
+    activeProfileName: profile.getProfileName(),
+    legacySessionAssociated,
+    canWriteAssociation:
+      currentSourceKind === "fsa"
+        ? Boolean(activeLibraryRecord && activeLibraryRecord.id)
+        : Boolean(activeLibraryRecord && activeLibraryRecord.id) || Boolean(pendingLegacySignature),
+  });
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -803,49 +800,13 @@ function getProfileNameById(profileId) {
 // that function) rather than adding separate call sites — they must never
 // drift out of sync with each other.
 function updateAssociatedStatusRow() {
-  let productLine;
-
-  if (currentSourceKind === "none") {
-    associatedText.textContent = "—";
-    productLine = "No folder loaded.";
-  } else {
-    const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded folder";
-    const usesDurableRecord =
-      currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
-    const associatedProfileId = usesDurableRecord && activeLibraryRecord ? activeLibraryRecord.profileId : null;
-    const associatedProfileName = associatedProfileId ? getProfileNameById(associatedProfileId) : null;
-
-    if (associatedProfileId && !associatedProfileName) {
-      associatedText.textContent = "Not associated";
-      productLine = `${folderName} — linked Profile is unavailable`;
-    } else if (!currentLoadIsAssociated()) {
-      associatedText.textContent = "Not associated";
-      productLine = `${folderName} — not linked to a Profile yet`;
-    } else if (usesDurableRecord) {
-      // Deliberately NO fallback to profile.getProfileName() here: if
-      // activeLibraryRecord.profileId doesn't resolve to a real profile
-      // (deleted since — see profileDeleteBtn's stale-clearing below), that
-      // MUST read "Not associated", never the currently-active profile's
-      // name — this is exactly the "do not display the globally active
-      // Profile" rule from section 1.
-      associatedText.textContent = associatedProfileName || "Not associated";
-      productLine = `${folderName} — remembered with ${associatedProfileName}`;
-      if (associatedProfileId !== profile.getProfileId()) productLine += " (not your active Profile)";
-    } else {
-      // Ephemeral ("Choose Files") association has no stored profileId to look
-      // up at all — it only ever means "the profile that was active at the
-      // moment Associate was clicked", i.e. whatever profile is active now.
-      const activeProfileName = profile.getProfileName();
-      associatedText.textContent = activeProfileName || "Not associated";
-      productLine = activeProfileName
-        ? `${folderName} — remembered with ${activeProfileName}`
-        : `${folderName} — not linked to a Profile yet`;
-    }
-  }
+  const associationUi = getCurrentAssociationUiState();
+  associatedText.textContent = associationUi.associatedText;
 
   // [WHY: this is the third render target of this function's existing single
   // association computation; it never reads registry or Profile state itself.]
-  profileLibraryAssociationText.textContent = productLine;
+  profileLibraryAssociationText.textContent = associationUi.productLine;
+  return associationUi;
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -858,19 +819,23 @@ function updateAssociatedStatusRow() {
 // WHY: Consolidates every place that used to independently decide
 // "hidden or not" into one call, so the button and the status row can
 // never disagree with each other.
-// FUTURE: If a new source kind is ever added, this + currentLoadIsAssociated()
-// are the only two functions that need to learn about it.
+// FUTURE: New source kinds belong in the single Stage 07 mapper adapter above.
 function syncAssociateButtonVisibility() {
-  const shouldShow = currentSourceKind !== "none";
-  const associated = currentLoadIsAssociated();
+  const associationUi = updateAssociatedStatusRow();
+  const shouldShow = associationUi.showAction;
   fsaAssociateBtn.classList.toggle("hidden", !shouldShow);
   fsaAssociateBtn.disabled = !shouldShow;
   profileAssociateBtn.classList.toggle("hidden", !shouldShow);
   profileAssociateBtn.disabled = !shouldShow;
   if (shouldShow) {
-    fsaAssociateBtnLabel.textContent = associated ? "Change Profile" : "Associate with Profile";
+    fsaAssociateBtnLabel.textContent = ["S2", "S3"].includes(associationUi.state)
+      ? "Change Profile"
+      : "Associate with Profile";
+    profileAssociateBtn.textContent = associationUi.actionLabel;
+  } else if (!profileAssociationRow.classList.contains("hidden")) {
+    profileAssociationRow.classList.add("hidden");
+    profileAssociateBtn.setAttribute("aria-expanded", "false");
   }
-  updateAssociatedStatusRow();
   // [UI-REDESIGN / Stage 6] Ordered after updateAssociatedStatusRow() on
   // purpose — the compact header mirrors that function's output, so it must
   // read the row only once the row is current.
@@ -897,7 +862,7 @@ function expandAndScrollToProfileSection() {
   syncAssociateButtonVisibility();
   if (pendingLibraryAssociationIntent) {
     pendingLibraryAssociationIntent = false;
-    profileAssociateBtn?.focus();
+    openAssociationEditor();
   } else {
     profileSelect?.focus();
   }
@@ -4376,7 +4341,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
   // fingerprint) participates in durable identity — "Choose Files" keeps
   // the old ephemeral, ununrecognizable-on-reload behavior unchanged (see
-  // currentLoadIsAssociated()). Recomputed on every load rather than
+  // association-state adapter). Recomputed on every load rather than
   // trusted from a previous one.
   legacyHasDurableIdentity = Boolean(isFolderPick && rootName);
   legacySessionAssociated = false;
@@ -4438,17 +4403,11 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
               recognizedProfileName = profile.getProfileName();
               logLegacyIdentity("associated profile id", { profileId: activeLibraryRecord.profileId });
             } else {
-              // [Phase 8.4-3] Same stale-association handling as the FSA
-              // path: the profile this library pointed at no longer
-              // exists (deleted since). Clear it rather than switching to
-              // nothing or leaving a dangling reference.
-              console.warn("[LEGACY-IDENTITY] Recognized library's associated profile no longer exists — clearing the stale association.");
-              try {
-                const cleared = await setLibraryProfile(activeLibraryRecord.id, null);
-                activeLibraryRecord = cleared || { ...activeLibraryRecord, profileId: null };
-              } catch (error) {
-                activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
-              }
+              // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+              // Preserve the shared association projection for S4 recovery.
+              // No Profile switch occurs; the user can explicitly replace or
+              // clear the missing target from This Library after load.
+              console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
             }
           }
         } else if (matchResult.status === "ambiguous") {
@@ -4624,21 +4583,13 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
         recognizedProfileName = profile.getProfileName();
       }
     } else {
-      // [LIBRARY-PROFILE-ASSOCIATION] Test F — the Profile this library
-      // was associated with no longer exists. Never guess a replacement
-      // (no name-matching, no falling back to whatever's active): clear
-      // the stale pointer and fall through to the "unassociated" path
-      // below, which offers re-association once the library has loaded.
+      // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+      // Never guess or switch when the shared target is unavailable. Keep its
+      // id in the local projection so the single association renderer exposes
+      // S4 and offers an explicit replacement or shared null clear.
       console.warn(
-        `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" was associated with a profile that no longer exists. Clearing the stale association.`
+        `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" is associated with a Profile that is unavailable.`
       );
-      try {
-        const updated = await setLibraryProfile(activeLibraryRecord.id, null);
-        if (updated) activeLibraryRecord = updated;
-      } catch (error) {
-        console.warn("[LIBRARY-REGISTRY] Could not clear the stale profile association.", error);
-        activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
-      }
     }
   }
 
@@ -4793,7 +4744,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // from a partial walk.
 
     // [Phase 8.4-2] Single visibility rule, same one loadFiles() uses for
-    // the legacy path — see currentLoadIsAssociated() for the id-less
+    // the legacy path — see the Stage 07 association mapper for the id-less
     // edge case (a library that failed to persist never shows the
     // button, since a click would have nothing to associate).
     syncAssociateButtonVisibility();
@@ -5030,8 +4981,12 @@ async function associateThroughSyncV2(localLibraryId, targetProfileId) {
   return getLibraryByLibraryId(sharedLibraryId);
 }
 
-async function associateCurrentLibraryWithProfile(targetProfileId) {
-  if (!targetProfileId) return false;
+// [SYNCV3 / STAGE-07 / ASSOCIATION-WRITE]
+// `targetProfileId: null` is an intentional shared disassociation. An omitted,
+// undefined, or unknown id is invalid. The options object keeps those cases
+// distinct without a truthy/falsy shortcut.
+async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
+  if (targetProfileId !== null && !getProfileNameById(targetProfileId)) return false;
 
   if (currentSourceKind === "legacy") {
     if (legacyHasDurableIdentity) {
@@ -5049,9 +5004,10 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
         pendingLegacySignature = null;
         logLegacyIdentity("associated profile id", { profileId: targetProfileId, libraryId: activeLibraryRecord.id });
         syncAssociateButtonVisibility();
-        fsaStatusText.textContent =
-          `Associated this folder with "${profile.getProfileName()}". ` +
-          "It should be recognized next time you pick the same folder here.";
+        const targetProfileName = getProfileNameById(targetProfileId);
+        fsaStatusText.textContent = targetProfileName
+          ? `Now remembered with ${targetProfileName}. It should be recognized next time you pick the same folder here.`
+          : "This Library is no longer linked to a Profile.";
         return true;
       } catch (error) {
         console.warn("[LEGACY-IDENTITY] Could not save this legacy library association.", error);
@@ -5067,6 +5023,10 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
     // legacySessionAssociated's own comment. Nothing is persisted;
     // re-loading (even the exact same files again) starts unassociated
     // again, by design.
+    // [SYNCV3 / STAGE-07 / ASSOCIATION-WRITE]
+    // Stage 07 never offers its arbitrary-target picker for this id-less
+    // session model. Preserve its historical active-Profile-only behavior.
+    if (targetProfileId !== profile.getProfileId()) return false;
     legacySessionAssociated = true;
     syncAssociateButtonVisibility();
     fsaStatusText.textContent = `Associated the current folder with "${profile.getProfileName()}" for this session.`;
@@ -5079,9 +5039,12 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
   profileAssociateBtn.disabled = true;
   try {
     const updated = await associateThroughSyncV2(activeLibraryRecord.id, targetProfileId);
-    if (updated) activeLibraryRecord = updated;
+    activeLibraryRecord = updated || { ...activeLibraryRecord, profileId: targetProfileId };
     syncAssociateButtonVisibility();
-    fsaStatusText.textContent = `Associated "${activeLibraryRecord.name}" with "${profile.getProfileName()}".`;
+    const targetProfileName = getProfileNameById(targetProfileId);
+    fsaStatusText.textContent = targetProfileName
+      ? `Now remembered with ${targetProfileName}.`
+      : "This Library is no longer linked to a Profile.";
     await renderRecentLibraries();
     return true;
   } catch (error) {
@@ -5105,13 +5068,108 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
 // reconsider before adding logic here.
 fsaAssociateBtn.addEventListener("click", () => {
   if (currentSourceKind === "none") return;
+  // [SYNCV3 / STAGE-07 / MOBILE-ASSOCIATION-HANDOFF]
+  // [WHY: a mobile association shortcut must complete the navigation it
+  // initiates; opening Profile beneath the Media Folder takeover leaves the
+  // user in the wrong visible workspace. Route through the drawer's canonical
+  // close owner, then let the existing Settings activation/open/focus path run.]
+  // Desktop is deliberately unchanged: its rail is not a drawer and this
+  // compact-only branch is skipped entirely.
+  if (isCompactViewport()) closeControlsDrawer();
   pendingLibraryAssociationIntent = true;
   expandAndScrollToProfileSection();
 });
 
-profileAssociateBtn.addEventListener("click", async () => {
-  if (currentSourceKind === "none") return;
-  await associateCurrentLibraryWithProfile(profile.getProfileId());
+// [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
+// [WHY: Stage 07 manages only the current local Library because catalog-only
+// shared Libraries are not writable through the existing localLibraryId-keyed
+// association path.]
+function populateAssociationPicker({ preservePending = false } = {}) {
+  const associationUi = getCurrentAssociationUiState();
+  const pendingValue = preservePending ? profileAssociationSelect.value : null;
+  const profiles = profile.listProfiles();
+  profileAssociationSelect.innerHTML = "";
+
+  const noProfile = document.createElement("option");
+  noProfile.value = "";
+  noProfile.textContent = "— No Profile —";
+  profileAssociationSelect.appendChild(noProfile);
+
+  for (const entry of profiles) {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.textContent = entry.name;
+    profileAssociationSelect.appendChild(option);
+  }
+
+  const availableIds = new Set(profiles.map((entry) => entry.id));
+  if (preservePending && pendingValue && availableIds.has(pendingValue)) {
+    profileAssociationSelect.value = pendingValue;
+  } else if (associationUi.state === "S1" && availableIds.has(profile.getProfileId())) {
+    profileAssociationSelect.value = profile.getProfileId();
+  } else if (["S2", "S3"].includes(associationUi.state) && availableIds.has(associationUi.associatedProfileId)) {
+    profileAssociationSelect.value = associationUi.associatedProfileId;
+  } else {
+    profileAssociationSelect.value = "";
+  }
+}
+
+function openAssociationEditor() {
+  const associationUi = getCurrentAssociationUiState();
+  if (!associationUi.allowPicker) return false;
+  populateAssociationPicker();
+  profileAssociationResult.textContent = "";
+  profileAssociationRow.classList.remove("hidden");
+  profileAssociateBtn.setAttribute("aria-expanded", "true");
+  profileAssociationSelect.focus();
+  return true;
+}
+
+function closeAssociationEditor({ returnFocus = true } = {}) {
+  profileAssociationRow.classList.add("hidden");
+  profileAssociateBtn.setAttribute("aria-expanded", "false");
+  if (returnFocus) profileAssociateBtn.focus();
+}
+
+profileAssociateBtn.addEventListener("click", () => {
+  if (profileAssociationRow.classList.contains("hidden")) openAssociationEditor();
+  else closeAssociationEditor();
+});
+
+profileAssociationSaveBtn.addEventListener("click", async () => {
+  const selectedProfileId = profileAssociationSelect.value || null;
+  const selectedProfileName = selectedProfileId ? getProfileNameById(selectedProfileId) : null;
+  const associationBeforeSave = getCurrentAssociationUiState();
+  profileAssociationSaveBtn.disabled = true;
+  profileAssociationCancelBtn.disabled = true;
+  try {
+    const saved = associationBeforeSave.associatedProfileId === selectedProfileId
+      ? true
+      : await associateCurrentLibraryWithProfile({ targetProfileId: selectedProfileId });
+    if (!saved) {
+      profileAssociationResult.textContent = "Could not save. Try again.";
+      return;
+    }
+    profileAssociationResult.textContent = selectedProfileName
+      ? `Now remembered with ${selectedProfileName}.`
+      : "This Library is no longer linked to a Profile.";
+    syncAssociateButtonVisibility();
+    closeAssociationEditor();
+  } catch (error) {
+    console.warn("[SYNCV3 / STAGE-07 / ASSOCIATION-WRITE] Could not save association.", error);
+    profileAssociationResult.textContent = "Could not save. Try again.";
+  } finally {
+    profileAssociationSaveBtn.disabled = false;
+    profileAssociationCancelBtn.disabled = false;
+  }
+});
+
+profileAssociationCancelBtn.addEventListener("click", () => closeAssociationEditor());
+
+profileAssociationRow.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  closeAssociationEditor();
 });
 
 function setLoadingState(isLoading, total) {
@@ -8777,6 +8835,7 @@ profile.subscribe(() => {
 function renderProfileSelector() {
   const profiles = profile.listProfiles();
   const activeId = profile.getProfileId();
+  const activeName = profile.getProfileName();
 
   profileSelect.innerHTML = "";
 
@@ -8788,6 +8847,26 @@ function renderProfileSelector() {
   });
 
   if (activeId) profileSelect.value = activeId;
+
+  // [SYNCV3 / STAGE-07 / DELETE-PROFILE-LABEL]
+  // [WHY: destructive actions should identify their exact target before
+  // activation, not only inside the confirmation step.] These are the same
+  // active Profile getters the delete handler reads at click time, so the
+  // visible target and the actual target cannot become separate concepts.
+  profileDeleteBtn.textContent = activeId && activeName ? `Delete ${activeName}` : "Delete Profile";
+}
+
+async function refreshCurrentAssociationFromRegistry() {
+  const localLibraryId = activeLibraryRecord && activeLibraryRecord.id;
+  const durable = currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
+  if (!durable || !localLibraryId) return;
+  const refreshed = await getLibraryById(localLibraryId);
+  if (!refreshed || !activeLibraryRecord || activeLibraryRecord.id !== localLibraryId) return;
+  activeLibraryRecord = refreshed;
+  syncAssociateButtonVisibility();
+  if (!profileAssociationRow.classList.contains("hidden")) {
+    populateAssociationPicker({ preservePending: true });
+  }
 }
 
 profileSelect.addEventListener("change", async () => {
@@ -8850,27 +8929,13 @@ profileDeleteBtn.addEventListener("click", async () => {
     await profile.deleteProfile(activeId);
     profileActiveStatusText.textContent = `Deleted "${activeName}". Now on "${profile.getProfileName()}".`;
 
-    // [LIBRARY-PROFILE-UX / Phase 8.5]
-    // WHAT: If the CURRENTLY LOADED library was associated with the
-    // profile just deleted, clear that association right now.
-    // WHY: Section 1 — "update the row immediately when... a stale/deleted
-    // Profile association is cleared" — without this, activeLibraryRecord
-    // keeps pointing at a profileId that no longer exists until the next
-    // reopen (updateAssociatedStatusRow already refuses to fall back to
-    // the active profile's name in that case, but "Associate with
-    // Profile" should reappear immediately too, not just the row text).
-    // FUTURE: Mirrors the existing stale-profile clearing already done at
-    // LOAD time in loadFromFsaHandle/loadFiles — this is the same cleanup,
-    // just triggered by a live delete instead of a re-pick.
+    // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+    // Keep a durable current Library's missing profileId visible as S4. It is
+    // still the shared association truth until the user explicitly chooses a
+    // replacement or No Profile; silently clearing only the local projection
+    // would hide that recovery state and could be reasserted by shared truth.
     if (activeLibraryRecord && activeLibraryRecord.profileId === activeId) {
-      if (currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity)) {
-        try {
-          const cleared = await setLibraryProfile(activeLibraryRecord.id, null);
-          activeLibraryRecord = cleared || { ...activeLibraryRecord, profileId: null };
-        } catch (error) {
-          activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
-        }
-      }
+      // Durable association intentionally retained for S4 recovery.
     } else if (currentSourceKind === "legacy" && !legacyHasDurableIdentity && legacySessionAssociated) {
       // Ephemeral association has no stored profileId to compare against —
       // it's simply "the profile active when Associate was clicked". If a
@@ -8899,6 +8964,13 @@ profile.subscribe(() => {
   // a rename of THAT profile, or a switch away from it, needs to refresh
   // this row even though nothing about the loaded library itself changed.
   syncAssociateButtonVisibility();
+  if (!profileAssociationRow.classList.contains("hidden")) {
+    populateAssociationPicker({ preservePending: true });
+  }
+  // Existing ASSOCIATIONS_CHANGED adoption updates the registry projection
+  // before emitting. Re-read only the current local row so another tab's
+  // shared association change reaches this single management surface.
+  refreshCurrentAssociationFromRegistry().catch(() => undefined);
 });
 
 // ---- Profile Export / Import ----------------------------------------------

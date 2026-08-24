@@ -1310,7 +1310,30 @@
         <div class="profile-settings-group">
           <h3 class="profile-group-heading">This Library</h3>
           <p id="profile-library-association-text" class="product-status product-status-muted">No folder loaded.</p>
-          <button id="profile-associate-btn" class="secondary hidden" type="button" disabled>Associate Current Library</button>
+          <button
+            id="profile-associate-btn"
+            class="secondary hidden"
+            type="button"
+            aria-expanded="false"
+            aria-controls="profile-association-row"
+            disabled
+          >Associate Current Library</button>
+
+          <!-- [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
+               [WHY: association is shared state while active Profile is a
+                local device choice; association changes must never silently
+                switch the active Profile.] -->
+          <div id="profile-association-row" class="profile-association-row hidden">
+            <label for="profile-association-select">Remember this Library with</label>
+            <select id="profile-association-select" class="field-control"></select>
+            <div class="profile-association-actions">
+              <button id="profile-association-save-btn" class="secondary" type="button">Save Association</button>
+              <button id="profile-association-cancel-btn" class="secondary" type="button">Cancel</button>
+            </div>
+            <p class="hint">Only the link changes. Favorites, Hidden and Tags stay in their own Profiles.</p>
+            <p class="hint">This link is shared with your other devices. Your active Profile stays on this device.</p>
+          </div>
+          <p id="profile-association-result" class="hint" role="status"></p>
         </div>
 
         <div class="profile-settings-group">
