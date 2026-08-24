@@ -155,6 +155,55 @@ await test("2. hybrid clock is monotonic under a frozen and a rewound wall clock
   b.clock.observeReplica(r);
   const next = b.stamp();
   assert(next.t > 50_000, "observeReplica raises the floor above every stamp present");
+
+  // [SYNCV3 / CLOCK-HOTFIX / LIBRARY-FACT-OBSERVATION]
+  // [WHY: exercise the real merge -> observe -> local Library mutation path,
+  //  once for each independently stamped Library field. A single combined
+  //  record would only prove that the one highest field happened to be visited.]
+  const libraryFields = ["name", "sourceDeviceId", "lastLoadedAt"];
+  for (const [index, field] of libraryFields.entries()) {
+    const remoteTime = 90_000 + index;
+    const remote = F.emptyReplica();
+    remote.libraries["library-remote"] = {
+      name: { v: "Remote Library", t: 10, d: "device-a" },
+      sourceDeviceId: { v: "device-a", t: 11, d: "device-a" },
+      lastLoadedAt: { v: 12, t: 12, d: "device-a" },
+    };
+    remote.libraries["library-remote"][field].t = remoteTime;
+
+    const local = F.emptyReplica();
+    const merged = mergeReplicas(local, remote);
+    const receiver = device(`device-library-${field}`, { ms: 700 });
+    receiver.clock.observeReplica(merged);
+    const afterLocalAction = F.recordLibraryLoaded(
+      merged,
+      "library-local",
+      { name: "Local Library", sourceDeviceId: receiver.id, at: 701 },
+      receiver.stamp()
+    );
+    const localFact = afterLocalAction.libraries["library-local"];
+    assert(
+      localFact.name.t > remoteTime &&
+        localFact.sourceDeviceId.t > remoteTime &&
+        localFact.lastLoadedAt.t > remoteTime,
+      `a new Library fact outranks an observed remote Library ${field} stamp`
+    );
+  }
+
+  // Existing V2 families remain part of the same canonical observation path.
+  const existingFamilies = [
+    ["association", (stamp) => F.setLibraryAssociation(F.emptyReplica(), "lib", BEAST, stamp)],
+    ["profile", (stamp) => F.setProfileName(F.emptyReplica(), BEAST, "BEAST", stamp)],
+    ["item", (stamp) => F.setHidden(F.emptyReplica(), BEAST, "x", true, stamp)],
+    ["tag assignment", (stamp) => F.setItemTag(F.emptyReplica(), BEAST, "x", "tag", true, stamp)],
+    ["tag tombstone", (stamp) => F.deleteTag(F.emptyReplica(), BEAST, "tag", stamp)],
+  ];
+  for (const [index, [family, build]] of existingFamilies.entries()) {
+    const remoteTime = 100_000 + index;
+    const receiver = device(`device-existing-${index}`, { ms: 700 });
+    receiver.clock.observeReplica(build({ t: remoteTime, d: "device-a" }));
+    assert(receiver.stamp().t > remoteTime, `${family} facts still raise the clock floor`);
+  }
 });
 
 await test("3. favorite vs unfavorite — the same fact, newest wins, both directions", async () => {

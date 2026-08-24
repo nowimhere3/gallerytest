@@ -29,6 +29,7 @@ const Store = await import(src("storage/profile-sync-store.js"));
 const Policy = await import(src("profile/sync-v3-write-policy.js"));
 const Channel = await import(src("profile/local-state-channel.js"));
 const LibraryRegistry = await import(src("storage/library-registry.js"));
+const { SyncIdentity } = await import(src("profile/sync-device.js"));
 
 // ---- Tiny test runner ------------------------------------------------------
 
@@ -848,6 +849,134 @@ await test("A V2-mode store publishes no Library catalog (req 35, 36)", async ()
   const files = Object.keys(dir.snapshotFiles());
   assert(!files.some((p) => p.includes("libraries.json")), `V2 wrote no libraries.json: ${files.join(", ")}`);
   assert(files.some((p) => p.includes("sync-v2/devices/")), "under the V2 root, unchanged");
+});
+
+// ---- Durable read-back observation (37-39) ---------------------------------
+
+await test("Durable read-back of libraries restores the clock floor across restart (req 37)", async () => {
+  const origin = makeOrigin();
+  const FUTURE = Date.now() + 5 * 365 * 24 * 60 * 60 * 1000;
+
+  // Persist a Library fact stamped far in the future (e.g. accepted from a peer before restart).
+  globalThis.indexedDB = origin.idb;
+  await Store.saveV3LibrariesCache({
+    [LIB_1]: {
+      name: fact("Peer Library Name", FUTURE, DEVICE_B),
+      sourceDeviceId: fact(DEVICE_B, FUTURE, DEVICE_B),
+      lastLoadedAt: fact(12345, FUTURE, DEVICE_B),
+    },
+  });
+
+  // Recreate store and identity from scratch (simulating a process/tab restart).
+  const identity = new SyncIdentity();
+  await identity.ready;
+  const store = new ProfileStore({
+    identity,
+    associationStore: Store.V3_ASSOCIATION_STORE,
+  });
+  openContexts.push(store);
+  await settle(20);
+  await store.whenLibrariesSettled();
+
+  assertEqual(store.listLibraries()[0].name, "Peer Library Name", "reloaded peer library from durable cache");
+
+  // Local device now performs a meaningful library load.
+  const row = await seedLocalLibrary(origin);
+  await store.recordLibraryLoaded(row.id, { name: "Local Library Name", at: Date.now() });
+  await settle(20);
+
+  const localLib = store.getLibraries()[LIB_1];
+  assert(
+    localLib.name.t > FUTURE,
+    `new local library name stamp (${localLib.name.t}) outranks persisted remote stamp (${FUTURE})`
+  );
+  assertEqual(localLib.name.v, "Local Library Name", "local mutation wins because clock floor was restored");
+  assertEqual(store.listLibraries()[0].name, "Local Library Name", "and the catalog reflects the local update");
+});
+
+await test("Durable read-back of associations restores the clock floor across restart (req 38)", async () => {
+  const origin = makeOrigin();
+  const FUTURE = Date.now() + 5 * 365 * 24 * 60 * 60 * 1000;
+
+  // Persist an association fact stamped far in the future (e.g. accepted from a peer before restart).
+  globalThis.indexedDB = origin.idb;
+  await Store.saveV3AssociationsCache({
+    [LIB_1]: fact("profile-remote", FUTURE, DEVICE_B),
+  });
+
+  // Recreate store and identity from scratch.
+  const identity = new SyncIdentity();
+  await identity.ready;
+  const store = new ProfileStore({
+    identity,
+    associationStore: Store.V3_ASSOCIATION_STORE,
+  });
+  openContexts.push(store);
+  await settle(20);
+  await store.whenAssociationsSettled();
+
+  assertEqual(store.listAssociations()[LIB_1], "profile-remote", "reloaded remote association from durable cache");
+
+  // Local device changes the association.
+  const row = await seedLocalLibrary(origin);
+  await store.setLibraryAssociation(row.id, "profile-local");
+  await settle(20);
+
+  const replica = await store.getFullReplica();
+  const assocFact = replica.associations[LIB_1];
+  assert(
+    assocFact.t > FUTURE,
+    `new local association stamp (${assocFact.t}) outranks persisted remote stamp (${FUTURE})`
+  );
+  assertEqual(assocFact.v, "profile-local", "local mutation wins because clock floor was restored");
+  assertEqual(store.listAssociations()[LIB_1], "profile-local", "and local state agrees");
+});
+
+await test("Sibling-context refresh of associations and libraries raises the clock floor (req 39)", async () => {
+  const origin = makeOrigin();
+  const FUTURE = Date.now() + 5 * 365 * 24 * 60 * 60 * 1000;
+
+  const identityA = new SyncIdentity();
+  await identityA.ready;
+  const a = new ProfileStore({
+    identity: identityA,
+    associationStore: Store.V3_ASSOCIATION_STORE,
+    localStateChannel: Channel.createLocalStateChannel({ channelName: origin.channelName }),
+  });
+  openContexts.push(a);
+
+  const identityB = new SyncIdentity();
+  await identityB.ready;
+  const b = new ProfileStore({
+    identity: identityB,
+    associationStore: Store.V3_ASSOCIATION_STORE,
+    localStateChannel: Channel.createLocalStateChannel({ channelName: origin.channelName }),
+  });
+  openContexts.push(b);
+
+  await settle(20);
+  await a.whenLibrariesSettled();
+  await b.whenLibrariesSettled();
+
+  // Context A adopts a future peer replica (e.g. from sync pass) and announces it.
+  await a.adoptMergedReplica(
+    replicaWith({
+      [LIB_1]: libraryFacts({ name: "from sync pass", sourceDeviceId: DEVICE_B, lastLoadedAt: 10, t: FUTURE, d: DEVICE_B }),
+    })
+  );
+  await propagate();
+
+  // Context B should have refreshed from storage and raised its clock floor.
+  const row = await seedLocalLibrary(origin);
+  await b.recordLibraryLoaded(row.id, { name: "B updated locally", at: Date.now() });
+  await settle(20);
+
+  const bLib = b.getLibraries()[LIB_1];
+  assert(
+    bLib.name.t > FUTURE,
+    `sibling context B's stamp (${bLib.name.t}) outranks the refreshed fact (${FUTURE})`
+  );
+  assertEqual(bLib.name.v, "B updated locally", "B's local update wins");
 });
 
 // ---- Summary ---------------------------------------------------------------

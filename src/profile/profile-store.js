@@ -333,6 +333,11 @@ export class ProfileStore {
       const loaded = await this.#associationStore.load();
       if (generation !== this.#associationLoadGeneration) return;
       this.#associations = loaded;
+      await this.#identity.ready;
+      // [SYNCV3 / CLOCK-HOTFIX / ASSOCIATION-CACHE-OBSERVATION]
+      // [WHY: durable read-back is an observation too; otherwise a restart can
+      //  restore an LWW fact without restoring the clock floor that received it.]
+      this.#identity.observeReplica({ profiles: {}, associations: this.#associations, libraries: {} });
     } catch (error) {
       console.warn(`[SYNC] Could not load library associations from "${this.#associationStore.id}".`, error);
     }
@@ -507,6 +512,11 @@ export class ProfileStore {
   async #loadLibraries() {
     try {
       this.#libraries = await loadV3LibrariesCache();
+      await this.#identity.ready;
+      // [SYNCV3 / CLOCK-HOTFIX / LIBRARY-CACHE-OBSERVATION]
+      // [WHY: re-observing the durable cache preserves observe-before-tick
+      //  across a restart after accepting a peer's newer Library facts.]
+      this.#identity.observeReplica({ profiles: {}, associations: {}, libraries: this.#libraries });
     } catch (error) {
       console.warn("[SYNCV3] Could not load the shared Library catalog.", error);
     }
@@ -2034,6 +2044,7 @@ export class ProfileStore {
       await this.#associationsReady;
       const stored = await this.#associationStore.load();
       const merged = MergeEngine.mergeMaps(this.#associations, stored || {}, MergeEngine.mergeFact);
+      this.#identity.observeReplica({ profiles: {}, associations: merged, libraries: {} });
       if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#associations)) {
         this.#associations = merged;
         registryChanged = true;
@@ -2054,6 +2065,10 @@ export class ProfileStore {
       await this.#librariesReady;
       const stored = await loadV3LibrariesCache();
       const merged = MergeEngine.mergeMaps(this.#libraries, stored || {}, MergeEngine.mergeLibraryFacts);
+      // [SYNCV3 / CLOCK-HOTFIX / LIBRARY-CACHE-OBSERVATION]
+      // [WHY: sibling-context read-back accepts stamped facts just like peer
+      //  adoption does, so it must raise the same canonical clock floor.]
+      this.#identity.observeReplica({ profiles: {}, associations: {}, libraries: merged });
       if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#libraries)) {
         this.#libraries = merged;
         registryChanged = true;

@@ -272,6 +272,18 @@ export function forEachFact(replica, visit) {
     if (isFact(fact)) visit(fact);
   }
 
+  // [SYNCV3 / CLOCK-HOTFIX / LIBRARY-FACT-OBSERVATION]
+  // [WHY: LibraryFacts are three independently ordered facts. Keeping them in
+  //  this canonical traversal makes every observeReplica caller raise its
+  //  clock floor past the complete replica, just as it already does for
+  //  associations and Profile facts.]
+  for (const library of Object.values(replica.libraries || {})) {
+    if (!library || typeof library !== "object") continue;
+    if (isFact(library.name)) visit(library.name);
+    if (isFact(library.sourceDeviceId)) visit(library.sourceDeviceId);
+    if (isFact(library.lastLoadedAt)) visit(library.lastLoadedAt);
+  }
+
   for (const profile of Object.values(replica.profiles || {})) {
     if (!profile || typeof profile !== "object") continue;
     if (isFact(profile.name)) visit(profile.name);
