@@ -260,6 +260,21 @@ input {
   margin-bottom: 16px;
 }
 
+.advanced-playback-section {
+  max-width: 620px;
+  margin-bottom: 20px;
+}
+
+.advanced-playback-section .field-control {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.advanced-playback-section .hint:last-child {
+  margin: 8px 0 0;
+}
+
 /* [UI-REDESIGN / STAGE 6] [PROFILE-TAGS-DISCLOSURE]
    WHAT: The Tags administration disclosure, relocated from the removed
    top-level Tagging workspace — see TAGS-PROFILE-ADMIN in index.html.

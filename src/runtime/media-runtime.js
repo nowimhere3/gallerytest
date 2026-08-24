@@ -1,9 +1,18 @@
+import {
+  normalizeShuffleMode,
+  selectNextShuffledIndex,
+  SHUFFLE_MODE_LOOP,
+} from "./shuffle-selector.js";
+
 export class MediaRuntime {
   #items = [];
   #currentIndex = -1;
   #timerId = null;
   #intervalMs = 5000;
   #shuffle = true;
+  #shuffleMode = SHUFFLE_MODE_LOOP;
+  #shufflePoolKey = null;
+  #random = Math.random;
   #loop = true;
   #isPlaying = false;
   #listeners = new Set();
@@ -57,7 +66,8 @@ export class MediaRuntime {
   #profile = null;
   #unsubscribeProfile = null;
 
-  constructor({ profile = null } = {}) {
+  constructor({ profile = null, random = Math.random } = {}) {
+    this.#random = typeof random === "function" ? random : Math.random;
     this.setProfile(profile);
   }
 
@@ -138,6 +148,7 @@ export class MediaRuntime {
       isPlaying: this.#isPlaying,
       intervalMs: this.#intervalMs,
       shuffle: this.#shuffle,
+      shuffleMode: this.#shuffleMode,
       loop: this.#loop,
       hasItems: this.#items.length > 0,
       // Distinct from hasItems: true only if at least one loaded item is
@@ -174,6 +185,18 @@ export class MediaRuntime {
 
   setShuffle(enabled) {
     this.#shuffle = Boolean(enabled);
+    this.#emit();
+  }
+
+  // [PLAYBACK / SHUFFLE-MODES / PREFERENCE]
+  // Changing behavior starts a fresh transient cycle but preserves Back
+  // history; the persisted value is a preference, never session/deck state.
+  setShuffleMode(mode) {
+    const normalized = normalizeShuffleMode(mode);
+    if (normalized === this.#shuffleMode) return;
+    this.#shuffleMode = normalized;
+    this.#shufflePoolKey = null;
+    this.#visitedShuffleIndices = this.#currentIndex >= 0 ? new Set([this.#currentIndex]) : new Set();
     this.#emit();
   }
 
@@ -330,18 +353,29 @@ export class MediaRuntime {
         return;
       }
 
-      let pool = eligibleIndices.filter((index) => !this.#visitedShuffleIndices.has(index));
-
-      if (!pool.length) {
-        // Completed a full cycle through the currently-visible items —
-        // start a new cycle, but still avoid repeating the current item
-        // immediately if any other visible item exists.
-        this.#visitedShuffleIndices.clear();
-        pool = eligibleIndices.filter((index) => index !== this.#currentIndex);
-        if (!pool.length) pool = eligibleIndices;
+      // [PLAYBACK / SHUFFLE-MODES / SHUFFLE-LOOP]
+      // A membership change starts a fresh cycle. The key is transient and
+      // derived from the runtime-owned eligible pool; nothing is persisted.
+      const poolKey = JSON.stringify(
+        eligibleIndices.map((index) => [index, this.#items[index]?.id ?? this.#items[index]?.relativePath ?? null])
+      );
+      if (poolKey !== this.#shufflePoolKey) {
+        this.#shufflePoolKey = poolKey;
+        this.#visitedShuffleIndices = eligibleIndices.includes(this.#currentIndex)
+          ? new Set([this.#currentIndex])
+          : new Set();
       }
 
-      const nextIndex = pool[Math.floor(Math.random() * pool.length)];
+      const selection = selectNextShuffledIndex({
+        eligibleIndices,
+        currentIndex: this.#currentIndex,
+        mode: this.#shuffleMode,
+        visitedIndices: this.#visitedShuffleIndices,
+        random: this.#random,
+      });
+      const nextIndex = selection.nextIndex;
+      this.#visitedShuffleIndices = new Set(selection.visitedIndices);
+      if (nextIndex === null) return;
 
       this.#currentIndex = nextIndex;
       this.#history.push(nextIndex);
@@ -567,6 +601,7 @@ export class MediaRuntime {
     this.#history = this.#currentIndex >= 0 ? [this.#currentIndex] : [];
     this.#historyCursor = this.#history.length ? 0 : -1;
     this.#visitedShuffleIndices = this.#history.length ? new Set(this.#history) : new Set();
+    this.#shufflePoolKey = null;
   }
 
   // Keeps the history stack from growing unbounded over a long-running

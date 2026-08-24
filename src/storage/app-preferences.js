@@ -17,6 +17,10 @@ const RECORD_ID = "global";
 const DEFAULT_PLAYBACK = {
   intervalSeconds: 5,
   shuffle: true,
+  // [PLAYBACK / SHUFFLE-MODES / PREFERENCE]
+  // Compatibility default: this is the non-repeating cycle Browser Gallery
+  // shipped before the preference existed.
+  shuffleMode: "shuffle-loop",
   skipDuplicates: false,
   loopPlaylist: true,
   // [UI-REDESIGN / Stage 3] `fillPanel: true` retired with the checkbox it
@@ -102,6 +106,10 @@ function bool(value, fallback) {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function shuffleMode(value) {
+  return value === "true-random" ? "true-random" : "shuffle-loop";
+}
+
 // Missing/malformed/out-of-range fields fall back to defaults individually
 // (rather than discarding the whole record) so a single corrupt field can
 // never break startup or silently reset unrelated preferences. Also the
@@ -118,6 +126,7 @@ function normalizeRecord(raw) {
     playback: {
       intervalSeconds: clampInterval(playbackSource.intervalSeconds ?? DEFAULT_PLAYBACK.intervalSeconds),
       shuffle: bool(playbackSource.shuffle, DEFAULT_PLAYBACK.shuffle),
+      shuffleMode: shuffleMode(playbackSource.shuffleMode),
       skipDuplicates: bool(playbackSource.skipDuplicates, DEFAULT_PLAYBACK.skipDuplicates),
       loopPlaylist: bool(playbackSource.loopPlaylist, DEFAULT_PLAYBACK.loopPlaylist),
       // [UI-REDESIGN / Stage 3] `fillPanel` is intentionally absent — see

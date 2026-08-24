@@ -133,6 +133,7 @@ const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
 const shuffleInput = document.getElementById("shuffle-input");
+const shuffleModeSelect = document.getElementById("shuffle-mode-select");
 const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
@@ -7379,6 +7380,11 @@ shuffleInput.addEventListener("change", () => {
   savePlaybackPreferences({ shuffle: shuffleInput.checked });
 });
 
+shuffleModeSelect.addEventListener("change", () => {
+  runtime.setShuffleMode(shuffleModeSelect.value);
+  savePlaybackPreferences({ shuffleMode: shuffleModeSelect.value });
+});
+
 skipDuplicatesInput.addEventListener("change", () => {
   const currentItem = runtime.getState().currentItem;
   skipDuplicates = skipDuplicatesInput.checked;
@@ -9708,6 +9714,7 @@ function applyLoadedPreferences(preferences) {
 
   intervalInput.value = String(playback.intervalSeconds);
   shuffleInput.checked = playback.shuffle;
+  shuffleModeSelect.value = playback.shuffleMode;
   skipDuplicatesInput.checked = playback.skipDuplicates;
   skipDuplicates = playback.skipDuplicates;
   loopInput.checked = playback.loopPlaylist;
@@ -9724,6 +9731,7 @@ function applyLoadedPreferences(preferences) {
   ghostOpacityInput.value = String(ghostPercent);
 
   runtime.setShuffle(shuffleInput.checked);
+  runtime.setShuffleMode(shuffleModeSelect.value);
   runtime.setLoop(loopInput.checked);
   runtime.setIntervalMs(Number(intervalInput.value) * 1000);
   applyGhostOpacity(Number(ghostOpacityInput.value));

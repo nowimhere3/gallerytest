@@ -1440,6 +1440,16 @@
         <details class="advanced-settings-section">
           <summary>Advanced Settings</summary>
 
+          <div class="advanced-playback-section">
+            <h3 class="profile-sync-heading">Playback</h3>
+            <label for="shuffle-mode-select" class="hint">Shuffle behavior</label>
+            <select id="shuffle-mode-select" class="field-control">
+              <option value="true-random">True Shuffle</option>
+              <option value="shuffle-loop">Shuffle Loop</option>
+            </select>
+            <p class="hint">True Shuffle allows repeats. Shuffle Loop plays every eligible item before reshuffling.</p>
+          </div>
+
         <!-- [PROFILE-SYNC]
              WHAT: Compact status + controls for the Profile Sync Folder POC
              — an optional cross-device mirror of the FULL Profile
