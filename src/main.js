@@ -2160,10 +2160,10 @@ const LAB_ROUND = [
 ];
 
 const LAB_CONE = [
-  "..3333333..",
-  "..3.....3..",
-  "..3.....3..",
-  ".3.......3.",
+  "....333....",
+  "....3.3....",
+  "....3.3....",
+  "...3...3...",
   ".3.......3.",
   "3.........3",
   "3.........3",
@@ -2176,6 +2176,16 @@ const LAB_BEAKER = ["33.....33", "3.......3", "3.......3", "3.......3", "3......
 const LAB_CYLINDER = ["333", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "333"];
 
 const LAB_VIAL = ["3..3", "3..3", "3..3", "3..3", "33.3", ".33."];
+
+const LAB_WIDE_FLASK = ["...33...", "...33...", "...33...", "..3..3..", ".3....3.", "3......3", "3......3", ".3....3.", "..3333.."];
+
+const LAB_TALL_FLASK = ["..33..", "..33..", "..33..", "..33..", ".3..3.", "3....3", "3....3", ".3..3.", "..33.."];
+
+const LAB_SMALL_ROUND = ["..33..", "..33..", ".3..3.", "3....3", ".3..3.", "..33.."];
+
+const LAB_NARROW_CONE = ["..33..", "..33..", ".3..3.", ".3..3.", "3....3", "333333"];
+
+const LAB_SQUAT_CONE = ["..33..", ".3..3.", "3....3", "3....3", "333333"];
 
 const LAB_TILE = ["3333333", "3222223", "32.3.23", "32333.3", "3222223", "3333333"];
 
@@ -2222,7 +2232,7 @@ function labEnergy(t) {
 }
 
 // THE COMPLICATION, 13.5s-17s: pressure runs away, the centre flask foams up
-// toward its neck, the flame flares and the gauge pushes into the red — then a
+// toward its neck and the flame flares — then a
 // hand reaches in and throttles the burner back. Without a scare in the middle
 // the bench was just pleasant activity; the near-miss gives the success at the
 // end something to be a success over.
@@ -2277,10 +2287,29 @@ function drawLabScene(ctx, state, t, now) {
   drawLabLiquid(ctx, LAB_BEAKER, bx, by2, 4, ARCADE_INK[1]);
   drawLabBubbles(ctx, bx, by2 + 2, 9, 4, 4, 460, now, 1, ARCADE_INK[2]);
 
-  // ---- tubing: round flask -> centre cone, droplets travelling ----
+  // A staggered run of quieter experiments fills out the bench without
+  // competing with the main reaction: low pulse, still sample, slow fizz.
+  const wx = 36;
+  const wy = bench - LAB_WIDE_FLASK.length;
+  drawArcadeSprite(ctx, LAB_WIDE_FLASK, wx, wy, 1);
+  drawLabLiquid(ctx, LAB_WIDE_FLASK, wx, wy, 2 + (Math.floor(now / 1100) % 2), ARCADE_INK[1]);
+
+  const ntx = 47;
+  const nty = bench - LAB_NARROW_CONE.length;
+  drawArcadeSprite(ctx, LAB_NARROW_CONE, ntx, nty, 1);
+  drawLabLiquid(ctx, LAB_NARROW_CONE, ntx, nty, 1, ARCADE_INK[1]);
+
+  // ---- tubing: neck-to-neck round flask -> centre cone ----
   const ax = rx + 5;
-  const tox = 62;
-  const tubePt = (p) => [ax + (tox - ax) * p, ry - 8 - Math.sin(p * Math.PI) * 12 + p * p * 4];
+  const cx2 = 57;
+  const cy2 = bench - LAB_CONE.length;
+  const tox = cx2 + 5;
+  const tubeStartY = ry - 8;
+  const tubeEndY = cy2;
+  const tubePt = (p) => [
+    ax + (tox - ax) * p,
+    tubeStartY + (tubeEndY - tubeStartY) * p - Math.sin(p * Math.PI) * 10,
+  ];
   ctx.fillStyle = ARCADE_INK[1];
   for (let p = 0; p <= 1.001; p += 0.02) {
     const [x, y] = tubePt(p);
@@ -2295,8 +2324,6 @@ function drawLabScene(ctx, state, t, now) {
   }
 
   // ---- CENTRE: the main conical flask (the reaction vessel) ----
-  const cx2 = 57;
-  const cy2 = bench - LAB_CONE.length;
   drawArcadeSprite(ctx, LAB_CONE, cx2, cy2, 1);
   const fill = 2 + Math.round(arcadeClamp01((t - 7000) / 11000) * 6);
   drawLabLiquid(ctx, LAB_CONE, cx2, cy2, fill, ARCADE_INK[1]);
@@ -2315,10 +2342,15 @@ function drawLabScene(ctx, state, t, now) {
   // a hand throttles the burner back
   if (t > 15600 && t < 17200) {
     const p = arcadeClamp01((t - 15600) / 700) - arcadeClamp01((t - 16600) / 600);
-    const hx = rx + 14 - Math.round(p * 11);
+    const hx = rx + 20 - Math.round(p * 13);
     ctx.fillStyle = ARCADE_INK[2];
-    ctx.fillRect(hx, bench - 7, 7, 4);
-    ctx.fillRect(hx + 6, bench - 10, 3, 7);
+    // sleeve running back to the left frame edge, so the hand has an owner
+    ctx.fillRect(0, bench - 9, hx + 2, 6);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(0, bench - 9, hx + 2, 1);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(hx, bench - 8, 8, 5);
+    ctx.fillRect(hx + 6, bench - 11, 3, 8);
   }
   // vapour
   if (t > 9000) {
@@ -2329,24 +2361,28 @@ function drawLabScene(ctx, state, t, now) {
     }
   }
 
-  // ---- CENTRE-RIGHT: graduated cylinder + gauge ----
+  // ---- CENTRE-RIGHT: graduated cylinder + varied receiving glassware ----
   const gx2 = 74;
   drawArcadeSprite(ctx, LAB_CYLINDER, gx2, bench - LAB_CYLINDER.length, 1);
   drawLabLiquid(ctx, LAB_CYLINDER, gx2, bench - LAB_CYLINDER.length, 5 + Math.round(e * 4), ARCADE_INK[1]);
   ctx.fillStyle = ARCADE_INK[1];
   for (let i = 1; i < 6; i++) ctx.fillRect(gx2 + 3, bench - 2 - i * 2, 2, 1);
 
-  const gx = 100;
-  const gy = 18;
-  drawArcadeCircle(ctx, gx, gy, 10, ARCADE_INK[2]);
-  drawArcadeCircle(ctx, gx, gy, 2, ARCADE_INK[1]);
-  for (let i = 0; i <= 6; i++) {
-    const a = Math.PI * (0.85 + (i / 6) * 1.3);
-    ctx.fillStyle = i > 4 ? ARCADE_INK[3] : ARCADE_INK[1];
-    ctx.fillRect(Math.round(gx + Math.cos(a) * 8), Math.round(gy + Math.sin(a) * 8), 1, 1);
-  }
-  const na = Math.PI * (0.85 + e * 1.3);
-  drawArcadeLine(ctx, gx, gy, gx + Math.cos(na) * 8, gy + Math.sin(na) * 8, ARCADE_INK[3]);
+  const sbx = 82;
+  const sby = bench - LAB_SMALL_ROUND.length;
+  drawArcadeSprite(ctx, LAB_SMALL_ROUND, sbx, sby, 1);
+  drawLabLiquid(ctx, LAB_SMALL_ROUND, sbx, sby, 2, ARCADE_INK[1]);
+
+  const tfx = 91;
+  const tfy = bench - LAB_TALL_FLASK.length;
+  drawArcadeSprite(ctx, LAB_TALL_FLASK, tfx, tfy, 1);
+  drawLabLiquid(ctx, LAB_TALL_FLASK, tfx, tfy, 5, ARCADE_INK[1]);
+  drawLabBubbles(ctx, tfx, tfy + 3, 6, 5, 2, 920, now, 4, ARCADE_INK[2]);
+
+  const tvx = 101;
+  const tvy = bench - LAB_SQUAT_CONE.length;
+  drawArcadeSprite(ctx, LAB_SQUAT_CONE, tvx, tvy, 1);
+  drawLabLiquid(ctx, LAB_SQUAT_CONE, tvx, tvy, 4, ARCADE_INK[1]);
 
   // ---- RIGHT: test-tube rack, receiving vial, side flask ----
   const tr = 116;
@@ -2362,10 +2398,15 @@ function drawLabScene(ctx, state, t, now) {
     ctx.fillStyle = ARCADE_INK[1];
     ctx.fillRect(tx + 1, bench - 3 - lvl, 3, lvl);
     if (i % 2 === 0) drawLabBubbles(ctx, tx, bench - 3 - lvl, 5, lvl, 3, 700, now, i, ARCADE_INK[2]);
+    // Drips now start AT the dropper nozzle above each tube, not three rows
+    // above the rack in open air — that was the unexplained floating object.
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(tx + 1, bench - 26, 3, 4);
+    ctx.fillRect(tx + 2, bench - 22, 1, 2);
     const dp = (now / 1200 + i * 0.3) % 1;
     if (dp < 0.4) {
       ctx.fillStyle = ARCADE_INK[3];
-      ctx.fillRect(tx + 2, bench - 23 + Math.round(dp * 2.5 * 14), 1, 2);
+      ctx.fillRect(tx + 2, bench - 20 + Math.round((dp / 0.4) * 15), 1, 2);
     }
   }
   const vx2 = 148;
@@ -2390,12 +2431,6 @@ function drawLabScene(ctx, state, t, now) {
   }
 }
 
-// ---- SCENE: deep sea diver ------------------------------------------------
-//
-// Almost entirely negative space. The lamp cone is the only thing that
-// reveals anything, so the viewer discovers the seabed at the same moment
-// the diver does — which is the whole reason this is a diver scene and not a
-// submarine scene. Personal, close, and slow until it very suddenly isn't.
 const DIVER_DURATION_MS = 28000;
 
 const DIVER_SPRITE = [
@@ -2903,8 +2938,6 @@ function drawSpyScene(ctx, state, t, now) {
   }
 }
 
-
-
 // ---- SCENE: aquarium ------------------------------------------------------
 //
 // The calm one. No story, no payoff to wait for — the brief is simply "this is
@@ -3084,6 +3117,408 @@ function drawAquariumScene(ctx, state, t, now) {
   }
 }
 
+// ---- SCENE: first-person drive --------------------------------------------
+//
+// The purest living diorama in the pool: the cockpit never moves at all, and
+// every bit of motion comes from the world beyond the glass. The road is
+// drawn with pseudo-3D scanlines — each screen row is a depth, so one
+// curvature value bends the whole road AND slides the roadside furniture
+// without anything being animated individually.
+//
+// PERFECT LOOP: curvature is sin() over exactly two cycles of the duration
+// and the scroll distance over one duration is a whole multiple of the lane
+// -marking period, so at t=duration every dash, pole and bend is exactly
+// where it was at t=0.
+const DRIVE_DURATION_MS = 33000;
+const DRIVE_HORIZON = 22;
+const DRIVE_DASH_PERIOD = 2;
+const DRIVE_SPEED = 0.02;
+
+// -1 hard left .. +1 hard right, returning to 0 at both ends of the loop.
+function driveCurve(t) {
+  const p = t / DRIVE_DURATION_MS;
+  return Math.sin(p * Math.PI * 4) * 0.72 + Math.sin(p * Math.PI * 8) * 0.18;
+}
+
+function drawDriveScene(ctx, state, t, now) {
+  const curve = driveCurve(t);
+  const travel = t * DRIVE_SPEED;
+  const dashBottom = 62;
+
+  // ---- sky + distant hills ----
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 0; i < 12; i++) {
+    const sx = ((i * 61 - curve * 30) % 170 + 170) % 170 - 5;
+    ctx.fillRect(Math.round(sx), 4 + ((i * 17) % 9), 1, 1);
+  }
+  for (let x = 0; x < ARCADE_WIDTH; x++) {
+    const h = 4 + Math.round(Math.sin((x + curve * 26) / 31) * 3 + Math.sin((x + curve * 26) / 13) * 1.4);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(x, DRIVE_HORIZON - h, 1, h);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, DRIVE_HORIZON, ARCADE_WIDTH, 1);
+
+  // ---- the road, one scanline per depth ----
+  const centreAt = (d) => 80 + curve * (620 / (d + 6));
+  for (let y = DRIVE_HORIZON + 1; y <= dashBottom; y++) {
+    const d = y - DRIVE_HORIZON;
+    const half = 2 + d * 2.05;
+    const cxr = centreAt(d);
+    // verge + edge lines
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(Math.round(cxr - half), y, 2, 1);
+    ctx.fillRect(Math.round(cxr + half - 1), y, 2, 1);
+    // road surface tone, kept dim so the markings stay the brightest thing
+    if (d % 3 === 0) {
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(Math.round(cxr - half + 2), y, Math.max(1, Math.round(half * 2 - 4)), 1);
+    }
+    // centre dashes: world distance for this row, scrolling toward the viewer
+    const worldZ = 260 / d + travel;
+    if (worldZ % (DRIVE_DASH_PERIOD * 2) < DRIVE_DASH_PERIOD) {
+      ctx.fillStyle = ARCADE_INK[3];
+      const w = Math.max(1, Math.round(d / 9));
+      ctx.fillRect(Math.round(cxr - w / 2), y, w, 1);
+    }
+  }
+
+  // ---- roadside furniture: poles marching past on both shoulders ----
+  for (let i = 0; i < 9; i++) {
+    const z = ((i * 6 - travel) % 54 + 54) % 54 + 2;
+    const d = 260 / z;
+    if (d < 1.5 || d > 42) continue;
+    const y = DRIVE_HORIZON + d;
+    if (y > dashBottom) continue;
+    const half = 2 + d * 2.05;
+    const cxr = centreAt(d);
+    const hgt = Math.max(2, Math.round(d * 0.62));
+    for (const side of [-1, 1]) {
+      const px = Math.round(cxr + side * (half + 3 + d * 0.16));
+      if (px < -4 || px > ARCADE_WIDTH + 4) continue;
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(px, Math.round(y) - hgt, Math.max(1, Math.round(d / 22)), hgt);
+      // reflective marker catching the headlights
+      ctx.fillStyle = d > 12 ? ARCADE_INK[3] : ARCADE_INK[2];
+      ctx.fillRect(px, Math.round(y) - Math.round(hgt * 0.5), Math.max(1, Math.round(d / 20)), 1);
+    }
+  }
+
+  // ---- cockpit: absolutely fixed, the anchor the whole scene reads from ----
+  const dashTop = 44;
+  // A-pillars + roof line
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, 0, 6, dashTop);
+  ctx.fillRect(ARCADE_WIDTH - 6, 0, 6, dashTop);
+  ctx.fillRect(0, 0, ARCADE_WIDTH, 2);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(6, 2, ARCADE_WIDTH - 12, 1);
+
+  // dashboard slab
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, dashTop, ARCADE_WIDTH, ARCADE_HEIGHT - dashTop);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, dashTop, ARCADE_WIDTH, 1);
+
+  // speedometer + tachometer, needles alive but calm
+  for (const [gx, gy, gr, base, swing, rate] of [
+    [26, 54, 8, 0.62, 0.06, 1900],
+    [46, 55, 6, 0.5, 0.09, 1300],
+  ]) {
+    drawArcadeCircle(ctx, gx, gy, gr, ARCADE_INK[2]);
+    for (let i = 0; i <= 5; i++) {
+      const a = Math.PI * (0.82 + (i / 5) * 1.36);
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(Math.round(gx + Math.cos(a) * (gr - 1)), Math.round(gy + Math.sin(a) * (gr - 1)), 1, 1);
+    }
+    const v = base + Math.sin(now / rate) * swing;
+    const a = Math.PI * (0.82 + v * 1.36);
+    drawArcadeLine(ctx, gx, gy, gx + Math.cos(a) * (gr - 2), gy + Math.sin(a) * (gr - 2), ARCADE_INK[3]);
+  }
+  // odometer digits
+  drawArcadeNumber(ctx, 20 + (Math.floor(t / 900) % 80), 8, 50, ARCADE_INK[2]);
+  // indicator lamps
+  for (let i = 0; i < 3; i++) {
+    const on = i === 0 ? Math.floor(now / 700) % 2 === 0 : i === 1;
+    ctx.fillStyle = on ? ARCADE_INK[3] : ARCADE_INK[1];
+    ctx.fillRect(58 + i * 5, 47, 3, 3);
+  }
+
+  // ---- steering wheel: rim + spokes, rotating with the bend ----
+  const wcx = 112;
+  const wcy = 62;
+  const wr = 17;
+  const rot = -curve * 0.5;
+  drawArcadeCircle(ctx, wcx, wcy, wr, ARCADE_INK[3]);
+  drawArcadeCircle(ctx, wcx, wcy, wr - 1, ARCADE_INK[2]);
+  drawArcadeCircle(ctx, wcx, wcy, 3, ARCADE_INK[3]);
+  for (let s = 0; s < 3; s++) {
+    const a = rot + Math.PI + (s * Math.PI * 2) / 3;
+    drawArcadeLine(ctx, wcx + Math.cos(a) * 3, wcy + Math.sin(a) * 3, wcx + Math.cos(a) * (wr - 1), wcy + Math.sin(a) * (wr - 1), ARCADE_INK[2]);
+  }
+  // grip mark, so the rotation is unmistakable
+  ctx.fillStyle = ARCADE_INK[3];
+  ctx.fillRect(Math.round(wcx + Math.cos(rot - Math.PI / 2) * (wr - 2)) - 1, Math.round(wcy + Math.sin(rot - Math.PI / 2) * (wr - 2)) - 1, 3, 3);
+}
+
+// ---- SCENE: control room --------------------------------------------------
+//
+// A wall of analog instrumentation that never moves; everything interesting
+// happens inside the gauges. Grouped deliberately — meters left, scope
+// centre, status column and lever right — so it reads as a console rather
+// than a scatter of shapes.
+const CTRL_DURATION_MS = 31000;
+
+// One escalation, competently handled: a level creeps up, the warning lamp
+// lights, the trace goes unstable, an operator reaches in and corrects it,
+// everything settles and the status column goes fully lit.
+function ctrlAlarm(t) {
+  if (t < 9000) return 0;
+  if (t < 13000) return (t - 9000) / 4000;
+  if (t < 17500) return 1;
+  if (t < 20500) return 1 - (t - 17500) / 3000;
+  return 0;
+}
+
+function drawControlScene(ctx, state, t, now) {
+  const alarm = ctrlAlarm(t);
+  const settled = t > 21500;
+
+  // console surface + panel frame
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, 0, ARCADE_WIDTH, ARCADE_HEIGHT);
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(2, 2, ARCADE_WIDTH - 4, 50);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(2, 2, ARCADE_WIDTH - 4, 1);
+  ctx.fillRect(2, 51, ARCADE_WIDTH - 4, 1);
+  ctx.fillRect(2, 2, 1, 50);
+  ctx.fillRect(ARCADE_WIDTH - 3, 2, 1, 50);
+  // desk lip
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, 54, ARCADE_WIDTH, 1);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, 58, ARCADE_WIDTH, 1);
+
+  // ---- LEFT: three round gauges, the middle one is the one that climbs ----
+  for (let i = 0; i < 3; i++) {
+    const gx = 15 + i * 22;
+    const gy = 16;
+    drawArcadeCircle(ctx, gx, gy, 10, ARCADE_INK[2]);
+    for (let k = 0; k <= 6; k++) {
+      const a = Math.PI * (0.8 + (k / 6) * 1.4);
+      ctx.fillStyle = k > 4 ? ARCADE_INK[3] : ARCADE_INK[1];
+      ctx.fillRect(Math.round(gx + Math.cos(a) * 8), Math.round(gy + Math.sin(a) * 8), 1, 1);
+    }
+    let v = 0.32 + Math.sin(now / (1400 + i * 500) + i) * 0.1;
+    if (i === 1) v = 0.32 + alarm * 0.6;
+    const a = Math.PI * (0.8 + v * 1.4);
+    drawArcadeLine(ctx, gx, gy, gx + Math.cos(a) * 7, gy + Math.sin(a) * 7, i === 1 && alarm > 0.5 ? ARCADE_INK[3] : ARCADE_INK[2]);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(gx - 1, gy - 1, 3, 3);
+  }
+
+  // ---- LEFT-LOWER: bar meters fluctuating ----
+  for (let i = 0; i < 7; i++) {
+    const bx = 8 + i * 6;
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(bx, 32, 3, 14);
+    const h = Math.round((0.35 + Math.abs(Math.sin(now / (700 + i * 130) + i)) * 0.45 + alarm * 0.2) * 14);
+    ctx.fillStyle = h > 11 ? ARCADE_INK[3] : ARCADE_INK[2];
+    ctx.fillRect(bx, 46 - h, 3, h);
+  }
+
+  // ---- CENTRE: oscilloscope ----
+  const ox = 84;
+  const oy = 8;
+  const ow = 44;
+  const oh = 26;
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(ox, oy, ow, 1);
+  ctx.fillRect(ox, oy + oh, ow, 1);
+  ctx.fillRect(ox, oy, 1, oh);
+  ctx.fillRect(ox + ow - 1, oy, 1, oh);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let x = ox + 6; x < ox + ow; x += 8) ctx.fillRect(x, oy + 2, 1, oh - 4);
+  for (let y = oy + 6; y < oy + oh; y += 7) ctx.fillRect(ox + 2, y, ow - 4, 1);
+  // the trace: a clean sine that goes ragged under alarm
+  let prevY = null;
+  for (let x = 2; x < ow - 2; x++) {
+    const ph = (x + now / 26) / 7;
+    const noise = alarm * (Math.sin(ph * 5.3) * 4 + Math.sin(ph * 11.7) * 3);
+    const yy = oy + oh / 2 + Math.sin(ph) * (5 + alarm * 3) + noise;
+    const cy2 = Math.max(oy + 2, Math.min(oy + oh - 2, Math.round(yy)));
+    ctx.fillStyle = alarm > 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
+    if (prevY !== null) {
+      const lo = Math.min(prevY, cy2);
+      const hi = Math.max(prevY, cy2);
+      ctx.fillRect(ox + x, lo, 1, hi - lo + 1);
+    } else ctx.fillRect(ox + x, cy2, 1, 1);
+    prevY = cy2;
+  }
+
+  // ---- RIGHT: warning lamp, status column, rotary selector, lever ----
+  const warn = alarm > 0.35 && Math.floor(now / 190) % 2 === 0;
+  ctx.fillStyle = warn ? ARCADE_INK[3] : ARCADE_INK[1];
+  ctx.fillRect(134, 8, 12, 7);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(134, 8, 12, 1);
+  ctx.fillRect(134, 14, 12, 1);
+
+  // status column — all lit once the system is settled, the small payoff
+  for (let i = 0; i < 5; i++) {
+    const lit = settled || i < 3 - Math.round(alarm * 2);
+    ctx.fillStyle = lit ? ARCADE_INK[3] : ARCADE_INK[1];
+    ctx.fillRect(134, 19 + i * 5, 4, 3);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(140, 19 + i * 5, 6, 3);
+  }
+
+  // rotary selector, clicking round one step at a time
+  const sel = 20 + Math.floor(t / 3400) % 6;
+  drawArcadeCircle(ctx, 70, 42, 7, ARCADE_INK[2]);
+  const sa = (sel % 6) * (Math.PI / 3);
+  drawArcadeLine(ctx, 70, 42, 70 + Math.cos(sa) * 5, 42 + Math.sin(sa) * 5, ARCADE_INK[3]);
+
+  // toggle switches, one of which flips mid-scene
+  for (let i = 0; i < 6; i++) {
+    const sx = 88 + i * 8;
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(sx, 38, 5, 9);
+    const up = i === 2 ? t < 17800 : i % 2 === 0;
+    ctx.fillStyle = ARCADE_INK[3];
+    ctx.fillRect(sx + 1, up ? 39 : 43, 3, 3);
+  }
+
+  // ---- the operator: one hand, used twice and never more ----
+  const reach = t > 16400 && t < 19200;
+  if (reach) {
+    const p = arcadeClamp01((t - 16400) / 700) - arcadeClamp01((t - 18200) / 800);
+    const hy = 62 - Math.round(p * 22);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(100, hy, 7, 64 - hy);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(100, hy, 7, 1);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(97, hy, 5, 4);
+  }
+}
+
+// ---- SCENE: tape machine --------------------------------------------------
+// A front-facing hybrid of a reel-to-reel and a cassette deck. Eight whole
+// reel turns in each direction make both reverse points and the loop seam
+// mechanically continuous rather than hiding a reset.
+const TAPE_DURATION_MS = 34000;
+
+function tapePlayback(t) {
+  if (t < 15800) return { position: t / 15800, direction: 1, running: 1 };
+  if (t < 17000) return { position: 1, direction: 1, running: 0 };
+  if (t < 32800) return { position: 1 - (t - 17000) / 15800, direction: -1, running: 1 };
+  return { position: 0, direction: -1, running: 0 };
+}
+
+function drawTapeReel(ctx, cx, cy, packRadius, angle, markerOffset) {
+  drawArcadeCircle(ctx, cx, cy, 17, ARCADE_INK[2]);
+  drawArcadeCircle(ctx, cx, cy, 15, ARCADE_INK[1]);
+  drawArcadeCircle(ctx, cx, cy, packRadius, ARCADE_INK[2]);
+  drawArcadeCircle(ctx, cx, cy, 4, ARCADE_INK[3]);
+  // Five spokes plus one offset bright stud make even a small rotation clear.
+  for (let i = 0; i < 5; i++) {
+    const a = angle + (i * Math.PI * 2) / 5;
+    drawArcadeLine(ctx, cx + Math.cos(a) * 5, cy + Math.sin(a) * 5,
+      cx + Math.cos(a) * 14, cy + Math.sin(a) * 14, i === 0 ? ARCADE_INK[3] : ARCADE_INK[2]);
+  }
+  const ma = angle + markerOffset;
+  ctx.fillStyle = ARCADE_INK[3];
+  ctx.fillRect(Math.round(cx + Math.cos(ma) * 11) - 1, Math.round(cy + Math.sin(ma) * 11) - 1, 2, 2);
+}
+
+function drawTapeVu(ctx, left, top, value) {
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(left, top, 39, 1);
+  ctx.fillRect(left, top + 11, 39, 1);
+  ctx.fillRect(left, top, 1, 12);
+  ctx.fillRect(left + 38, top, 1, 12);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 0; i < 6; i++) ctx.fillRect(left + 5 + i * 6, top + 2, 1, 2 + (i > 3 ? 1 : 0));
+  const pivotX = left + 19;
+  const pivotY = top + 10;
+  const a = Math.PI * (1.15 + value * 0.7);
+  drawArcadeLine(ctx, pivotX, pivotY, pivotX + Math.cos(a) * 14, pivotY + Math.sin(a) * 14, ARCADE_INK[3]);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(pivotX - 1, pivotY - 1, 3, 2);
+}
+
+function drawTapeMachineScene(ctx, state, t) {
+  const play = tapePlayback(t);
+  const turns = play.position * Math.PI * 16;
+  const leftPack = Math.round(12 - play.position * 5);
+  const rightPack = Math.round(7 + play.position * 5);
+
+  // Full-frame faceplate, screws and separator rails establish one machine.
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(1, 1, 158, 62);
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(3, 3, 154, 58);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(3, 38, 154, 1);
+  for (const [x, y] of [[5, 5], [154, 5], [5, 58], [154, 58]]) drawArcadeCircle(ctx, x, y, 1, ARCADE_INK[2]);
+
+  drawTapeReel(ctx, 48, 20, leftPack, turns, 0.35);
+  drawTapeReel(ctx, 109, 20, rightPack, turns, 1.55);
+
+  // Tape leaves each pack tangentially, passes over guides and across the
+  // head/capstan block. Every segment terminates on a visible mechanism.
+  drawArcadeLine(ctx, 48, 20 + leftPack, 63, 35, ARCADE_INK[3]);
+  drawArcadeCircle(ctx, 65, 35, 2, ARCADE_INK[2]);
+  drawArcadeLine(ctx, 67, 35, 75, 37, ARCADE_INK[3]);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(75, 34, 18, 5);
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(79, 34, 3, 3);
+  ctx.fillRect(86, 34, 3, 3);
+  drawArcadeCircle(ctx, 94, 35, 2, ARCADE_INK[2]);
+  drawArcadeLine(ctx, 93, 37, 107, 20 + rightPack, ARCADE_INK[3]);
+  ctx.fillStyle = ARCADE_INK[3];
+  ctx.fillRect(82, 36, 4, 1);
+
+  const waking = play.running ? Math.min(1, t < 17000 ? t / 450 : (t - 17000) / 450) : 0;
+  const leftVu = waking * arcadeClamp01(0.38 + Math.sin(t / 510) * 0.16 + Math.sin(t / 137) * 0.1 + (Math.sin(t / 2400) > 0.88 ? 0.22 : 0));
+  const rightVu = waking * arcadeClamp01(0.44 + Math.sin(t / 670 + 1.7) * 0.14 + Math.sin(t / 181) * 0.08 + (Math.sin(t / 3100 + 2) > 0.91 ? 0.2 : 0));
+  drawTapeVu(ctx, 7, 42, leftVu);
+  drawTapeVu(ctx, 49, 42, rightVu);
+
+  // Four-digit mechanical counter tracks tape position in both directions.
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(93, 42, 23, 10);
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(95, 44, 19, 6);
+  const counter = 372 + Math.floor(play.position * 13);
+  drawArcadeNumber(ctx, String(counter).padStart(4, "0"), 97, 44, ARCADE_INK[3]);
+
+  // Direction, record lamp and cassette-style transport bank.
+  ctx.fillStyle = play.direction > 0 ? ARCADE_INK[3] : ARCADE_INK[1];
+  drawArcadeLine(ctx, 121, 44, 126, 47, ctx.fillStyle);
+  drawArcadeLine(ctx, 121, 50, 126, 47, ctx.fillStyle);
+  ctx.fillStyle = play.direction < 0 ? ARCADE_INK[3] : ARCADE_INK[1];
+  drawArcadeLine(ctx, 133, 44, 128, 47, ctx.fillStyle);
+  drawArcadeLine(ctx, 133, 50, 128, 47, ctx.fillStyle);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(139, 43, 4, 4);
+  ctx.fillStyle = play.running ? ARCADE_INK[3] : ARCADE_INK[1];
+  ctx.fillRect(146, 43, 7, 4);
+  for (let i = 0; i < 5; i++) {
+    ctx.fillStyle = i === 1 && play.running ? ARCADE_INK[3] : ARCADE_INK[2];
+    ctx.fillRect(119 + i * 7, 54, 5, 5);
+  }
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(120, 56, 2, 1); // rewind
+  ctx.fillRect(127, 55, 1, 3); // play
+  ctx.fillRect(134, 55, 3, 3); // stop
+  ctx.fillRect(142, 56, 2, 1); // fast-forward
+  drawArcadeCircle(ctx, 150, 56, 1, play.running ? ARCADE_INK[1] : ARCADE_INK[3]); // record/click lamp
+}
+
 // ---- the pool -------------------------------------------------------------
 //
 // A scene is a plain object. `create`/`update` are optional — scenes whose
@@ -3130,6 +3565,14 @@ const ARCADE_SCENES = [
     draw: drawLabScene,
   },
   {
+    name: "tape-machine",
+    durationMs: TAPE_DURATION_MS,
+    // Both tape packs are visibly unequal, meters active and PLAY lit.
+    stillAtMs: 11200,
+    fade: 1,
+    draw: drawTapeMachineScene,
+  },
+  {
     name: "deep-sea-diver",
     durationMs: DIVER_DURATION_MS,
     stillAtMs: 22200,
@@ -3152,6 +3595,20 @@ const ARCADE_SCENES = [
     stillAtMs: 9000,
     fade: 0.9,
     draw: drawAquariumScene,
+  },
+  {
+    name: "drive",
+    durationMs: DRIVE_DURATION_MS,
+    stillAtMs: 8000,
+    fade: 1,
+    draw: drawDriveScene,
+  },
+  {
+    name: "control-room",
+    durationMs: CTRL_DURATION_MS,
+    stillAtMs: 15000,
+    fade: 1,
+    draw: drawControlScene,
   },
 ];
 
@@ -3274,6 +3731,7 @@ function renderArcadeFrame(now) {
 // Reusing the real simulation means the still is a genuine frame of that
 // scene rather than a separate asset that could drift from it.
 function renderArcadeStill(scene) {
+  if (scene.onSessionStart) scene.onSessionStart();
   arcadeState = scene.create ? scene.create() : null;
   if (scene.update) {
     for (let t = 0; t <= scene.stillAtMs; t += ARCADE_FRAME_MS) {
@@ -3292,6 +3750,10 @@ function startArcadeAnimation() {
   }
 
   const scene = pickArcadeScene();
+  // [V2-POLISH] Per-SESSION setup, distinct from create(): the controller
+  // calls create() again on every loop wrap, so anything that must remain
+  // fixed for the whole load belongs here instead.
+  if (scene.onSessionStart) scene.onSessionStart();
   arcadeState = scene.create ? scene.create() : null;
   arcadeLastLoopT = -1;
   arcadeLastRender = 0;
