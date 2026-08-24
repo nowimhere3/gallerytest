@@ -180,7 +180,14 @@ await test("3. each queued save persists the state as of ITS mutation", async ()
   // saves land as 22 and the first mutation's intended row is lost.
   store.recordTagActivity(tagId, { position: 11, total: 50, shuffle: false });
   store.recordTagActivity(tagId, { position: 22, total: 50, shuffle: false });
-  await settle(20);
+  // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+  // [WHY: tick budget only - the assertions below are untouched. #persist now
+  //  re-reads the stored row before writing it (the stale-row guard for
+  //  same-origin tabs), and every IndexedDB request is a separate macrotask in
+  //  the fake store, so two serialized saves need roughly twice the ticks they
+  //  did. Raised rather than reasoned about per-request so this stays robust if
+  //  the save path gains another await.]
+  await settle(60);
 
   assert(saved.includes(11), "the first save recorded position 11", `saved positions: [${saved.join(", ")}]`);
   assert(saved.includes(22), "the second save recorded position 22", `saved positions: [${saved.join(", ")}]`);

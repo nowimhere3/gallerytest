@@ -18,6 +18,28 @@ import {
   linkLocalLibraryToSharedId,
 } from "./storage/library-registry.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
+// [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
+// [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
+//  observed and reads nothing back into anything the user sees. Nothing it does
+//  can change how this file behaves, which is exactly why it is safe to land
+//  before the Stage 01B shared-signature audit decides what Stage 02 may
+//  project. It is also why it should land NOW rather than with Stage 02: the
+//  evidence it banks is the intersection of Profile facts and files still
+//  reachable at their historical paths, and that intersection shrinks every
+//  time a folder is reorganized before it has been recorded.]
+import { resolveScopeForRoot } from "./storage/media-scope.js";
+import { runSeedingPass } from "./storage/media-seeding.js";
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// [WHY: Stage 02 is the first stage that READS MEDIA-ID back into what the user
+//  sees. It projects Favorite / favoritedAt / Hidden / Tags across
+//  DETERMINISTIC same-device aliases only — T0 (exact key) and T1 (a prefix
+//  proven by FileSystemDirectoryHandle.resolve() or by a version-guarded
+//  re-base). No structural inference, no metadata matching, no hashing. Nothing
+//  here migrates, rewrites, rekeys, copies or restamps a Profile fact: the
+//  facts stay exactly where the user put them and the projection is a read.]
+import { buildAliasIndexForLoad, createMediaIdentityChannel, MEDIA_IDENTITY_MESSAGE_KINDS } from "./storage/media-alias-index.js";
+// [MEDIA-ID / STAGE-02B / TELEMETRY]
+import { createSessionHistory, formatTelemetry, TELEMETRY_LIMITS } from "./profile/media-identity-telemetry.js";
 import {
   loadPreferences,
   savePlaybackPreferences,
@@ -27,6 +49,7 @@ import {
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
+import { createProfileProjectionView } from "./profile/profile-projection-view.js";
 import { ProfileSync } from "./profile/profile-sync.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
@@ -38,6 +61,16 @@ const provider = new LocalFileInputProvider();
 // ever actually loaded into the app at once.
 const fsaProvider = new FsaFileProvider();
 const profile = new ProfileStore();
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// [WHY: constructed immediately beside `profile` and handed to MediaRuntime
+//  below, because the runtime and the render sites in this file MUST read the
+//  same answer. Some code stamps item.isFavorite/isHidden/userTags onto the
+//  MediaItem; other code reads the store live at render time. Routing only one
+//  of those through the projection would make the heart button and the grid
+//  disagree with each other. `profile` itself stays the writer and the owner of
+//  everything that is not per-item curation (profiles, tags vocabulary,
+//  import/export, associations) — this facade deliberately does not wrap those.]
+const profileView = createProfileProjectionView({ profile });
 // [PROFILE-SYNC]
 // WHAT: The Profile Sync engine — watches `profile` for changes and mirrors
 // the full Profile collection into a separately-chosen sync folder.
@@ -50,7 +83,11 @@ const profile = new ProfileStore();
 // interact, that almost certainly means the boundary is being crossed by
 // mistake — re-read profile-sync.js's header first.
 const profileSync = new ProfileSync(profile);
-const runtime = new MediaRuntime({ profile });
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// The runtime uses exactly subscribe/isFavorite/isHidden/toggleFavorite/
+// toggleHidden, all of which the projection view implements, so media-runtime.js
+// is unmodified by this stage.
+const runtime = new MediaRuntime({ profile: profileView });
 
 // [TS-POC] Single adapter instance reused across items — attach() always
 // tears down whatever it was previously doing first, so this is safe to
@@ -161,6 +198,21 @@ const profileSyncChangeBtn = document.getElementById("profile-sync-change-btn");
 const profileSyncDisconnectBtn = document.getElementById("profile-sync-disconnect-btn");
 const profileSyncActivatePanel = document.getElementById("profile-sync-activate-panel");
 const profileSyncActivateBtn = document.getElementById("profile-sync-activate-btn");
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION] Temporary development controls — see
+// the panel's own comment in index.html for why this surface is scaffolding.
+const profileSyncV3Panel = document.getElementById("profile-sync-v3-panel");
+const profileSyncV3StatusText = document.getElementById("profile-sync-v3-status-text");
+// [SYNCV3 / STAGE-05 / DEVICE-NAMING] Temporary bridge control — see the panel
+// comment in index.html for why this is deliberately minimal.
+const profileSyncV3DeviceNameInput = document.getElementById("profile-sync-v3-device-name");
+const profileSyncV3DeviceNameSaveBtn = document.getElementById("profile-sync-v3-device-name-save-btn");
+const profileSyncV3DeviceNameResetBtn = document.getElementById("profile-sync-v3-device-name-reset-btn");
+const profileSyncV3DeviceNameStatus = document.getElementById("profile-sync-v3-device-name-status");
+const profileSyncV3ChooseBtn = document.getElementById("profile-sync-v3-choose-btn");
+const profileSyncV3ReconnectBtn = document.getElementById("profile-sync-v3-reconnect-btn");
+const profileSyncV3ActivateBtn = document.getElementById("profile-sync-v3-activate-btn");
+const profileSyncV3LeaveBtn = document.getElementById("profile-sync-v3-leave-btn");
+const profileSyncV3DisconnectBtn = document.getElementById("profile-sync-v3-disconnect-btn");
 const profileSyncLinkPanel = document.getElementById("profile-sync-link-panel");
 const profileSyncLinkSelect = document.getElementById("profile-sync-link-select");
 const profileSyncLinkBtn = document.getElementById("profile-sync-link-btn");
@@ -208,7 +260,12 @@ const associatedText = document.getElementById("associated-text");
 const mobileLoadPrimaryText = document.getElementById("mobile-load-primary-text");
 const mobileLoadActivityBar = document.getElementById("mobile-load-activity-bar");
 const mobileLoadCountText = document.getElementById("mobile-load-count-text");
-const mobileLoadAscii = document.getElementById("mobile-load-ascii");
+// [V2-POLISH / MICRO-ARCADE-CANVAS] Was #mobile-load-ascii (a <pre> of
+// fixed-width text frames). Renamed with the element when the ASCII worker
+// was replaced by the pixel canvas — the old id described a medium that no
+// longer exists. Nothing outside this file's animation code ever referenced
+// it (verified: one capture, one CSS rule, one markup line).
+const mobileLoadCanvas = document.getElementById("mobile-load-canvas");
 const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
 // [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] #counter-text and
 // its capture (formerly `counterText`) are gone — the Player transport is
@@ -1064,11 +1121,18 @@ function isCompactViewport() {
 // partial total, and the activity bar's indeterminate sweep (driven by the
 // animation tick below) takes over instead of a fake percentage.
 let mobileLoadHasKnownTotal = false;
+// [V2-POLISH / MICRO-ARCADE-CANVAS] The arcade canvas draws this as its
+// score-style readout. Mirrored HERE, at the one place the truthful text
+// readouts are already written from the loaders' own onProgress values —
+// deliberately not a second count, not a derived estimate, and read-only
+// everywhere else.
+let mobileLoadLoadedCount = 0;
 const MOBILE_ACTIVITY_BAR_WIDTH = 10;
 
 function renderMobileLoadProgress(primaryText, loaded, total) {
   mobileLoadPrimaryText.textContent = primaryText;
   mobileLoadHasKnownTotal = typeof total === "number" && total > 0;
+  mobileLoadLoadedCount = typeof loaded === "number" && loaded > 0 ? loaded : 0;
 
   if (mobileLoadHasKnownTotal) {
     mobileLoadCountText.textContent = `${loaded.toLocaleString()} / ${total.toLocaleString()} media files`;
@@ -1096,38 +1160,2160 @@ function renderMobileActivityBarSweep(tick) {
   mobileLoadActivityBar.textContent = `[${cells.join("")}]`;
 }
 
-// [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
-// WHAT: a 6-frame, ping-pong "scan brackets" loop — abstract corner marks
-// breathing in and out around a centre dot — plus a short, restrained set of
-// atmospheric phrases. Both are pure decoration: neither is read by, nor
-// feeds back into, any loader state. Every line is fixed-width (verified
-// equal length) so the box never jitters between frames.
-const MOBILE_TAKEOVER_FRAMES = [
-  "┌───────────────┐\n│ ◢           ◣ │\n│       ·       │\n│ ◥           ◤ │\n└───────────────┘",
-  "┌───────────────┐\n│    ◢     ◣    │\n│       ◦       │\n│    ◥     ◤    │\n└───────────────┘",
-  "┌───────────────┐\n│      ◢ ◣      │\n│       ◉       │\n│      ◥ ◤      │\n└───────────────┘",
-  "┌───────────────┐\n│      ◢ ◣      │\n│       ●       │\n│      ◥ ◤      │\n└───────────────┘",
-  "┌───────────────┐\n│      ◢ ◣      │\n│       ◉       │\n│      ◥ ◤      │\n└───────────────┘",
-  "┌───────────────┐\n│    ◢     ◣    │\n│       ◦       │\n│    ◥     ◤    │\n└───────────────┘",
+// ---- [V2-POLISH / MICRO-ARCADE-CANVAS] [V2-POLISH / STARFIGHTER-PROTOTYPE] -
+//      [V2-POLISH / MICRO-ARCADE-SCENE-POOL] [V2-POLISH / MICRO-ARCADE-160X64]
+//
+// WHAT: The approved Micro-Arcade canvas expands from 128x64 to 160x64 logical
+// pixels and becomes a reusable load-session scene pool, adding Bigfoot, UFO
+// File Abduction, Projector Booth, and Pirate Ship sequences while retaining
+// one shared renderer/lifecycle.
+// WHY: The additional horizontal space gives character, machinery, travel,
+// dodging, cannon arcs, entrances and exits enough breathing room to read as
+// tiny vintage game/cartoon scenes without increasing the Live Status
+// takeover's vertical footprint.
+// FUTURE: The pool is intentionally extensible with additional curated scenes
+// such as Chomper, Asteroid Run, Frame Carrier, Scanner Build, Kaiju, Tape
+// Deck, submarine/sonar and other media/arcade sequences. The same selected
+// scene can later power the planned desktop left-rail Live Status takeover.
+//
+// [V2-POLISH / MICRO-ARCADE-CREATIVE-PACK]
+// WHAT: The Micro-Arcade pool was deliberately pruned and expanded around a
+// higher entertainment bar, with scene choreography delegated more heavily to
+// the implementer rather than predetermined through detailed storyboards.
+// WHY: The strongest scenes emerged when composition and animation served the
+// idea naturally. Scene concepts now define intent and emotional territory
+// while leaving framing, timing and choreography open to creative execution.
+// FUTURE: Keep only scenes that are genuinely enjoyable to watch. Prefer a
+// smaller pool of distinctive, high-quality micro-films over a large pool of
+// merely functional animations.
+//
+// [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
+// WHAT: Micro-Arcade scenes use scene-specific framing and choreography
+// rather than a mandatory close-up/reveal formula. Close perspective is used
+// only where it naturally supports the action or improves readability.
+// WHY: Testing showed that forced close-ups and abrupt integer-scale
+// transitions can reduce scene quality even when they add sprite detail.
+// Full-machine, medium, wide, or close compositions should be chosen
+// according to what makes each tiny scene most readable and entertaining.
+// FUTURE: New Micro-Arcade scenes should optimize for composition,
+// silhouette, motion, timing and payoff rather than following a universal
+// camera template.
+//
+// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST] SUPERSEDED, not deleted — the
+// pass is still worth knowing about because its failure is instructive. It
+// staged every scene as CLOSE-UP -> RECEDE -> ACTION on the theory that a
+// large sprite teaches the viewer what the small one is. That held for
+// Starfighter, where the ship genuinely flies away from the camera, and it
+// was wrong everywhere else: the Projector's whole appeal is seeing the
+// mechanism work at once, Bigfoot's joke needs the clearing in frame, the
+// Pirate's conflict needs sea and monster sharing the canvas, and the UFO's
+// legibility problem was solved far better by drawing a more detailed
+// saucer than by moving a camera around a coarse one. What survives from
+// that pass is the detail work it produced — the 36x13 saucer, the hull gun
+// ports, the arm-swing walk cycle, the off-canvas cell culling — all of
+// which help at any framing.
+//
+// The dramatic shape scenes actually follow is ESTABLISH -> ACTION ->
+// ESCALATE -> PAYOFF -> LOOP. "Establish" means make the scene
+// understandable and appealing; it does not mean open on a giant sprite.
+// Where apparent depth IS used, two rules still apply: recede in integer
+// scale steps using the same mask, and keep apparent size monotonic across
+// the transition — anything that grows mid-recede reads as a cut.
+//
+// ARCHITECTURE — the split that keeps this from becoming a game engine:
+//   SHARED (below, then the controller at the bottom) owns the canvas, the
+//   palette, the pixel-drawing toolkit, timing, scene selection, looping,
+//   reduced motion, and the start/stop lifecycle.
+//   EACH SCENE owns only: a duration, a still-frame moment, an optional
+//   mutable state factory, an optional update, and a draw. Scenes never touch
+//   the canvas element, the rAF loop, selection, or the loader.
+// A scene is a plain object — no classes, no registry indirection, no scene
+// graph. Adding one is appending a literal to ARCADE_SCENES.
+//
+// SCOPE: presentation only. Nothing here reads, writes, delays, or blocks any
+// loader state. The single product value any scene displays
+// (mobileLoadLoadedCount, in Starfighter's HUD) is mirrored from the same
+// renderMobileLoadProgress() call the truthful text readouts already use — it
+// is never computed here and never fed back.
+//
+// RESOLUTION: 160x64 logical, a 25% horizontal expansion at exactly the same
+// height. The height is load-bearing: the takeover slot is a wide, short card
+// on a 390x844 phone, and growing vertically would push the truthful text
+// readouts toward the fold. Widening costs nothing vertically and is what
+// gives Bigfoot somewhere to walk and the cannonball somewhere to arc.
+const ARCADE_WIDTH = 160;
+const ARCADE_HEIGHT = 64;
+const ARCADE_FRAME_MS = 33;
+
+// Three phosphor intensities. Level 3 is exactly the #00ff00 the Live Status
+// box already uses, so the brightest pixels on the screen and the green text
+// around it are literally the same colour.
+const ARCADE_BG = "#03140a";
+const ARCADE_INK = { 1: "#0a5c22", 2: "#00b52a", 3: "#00ff00" };
+
+// ---- shared pixel toolkit -------------------------------------------------
+//
+// Sprites are authored as pixel masks: "." is transparent, "1".."3" pick a
+// phosphor intensity. Shading is what gives a small shape a readable
+// silhouette at 1x and still holds up blown to 5x during Starfighter's
+// fly-by. `inkOverride` flattens a mask to one intensity, which is how the
+// same tree/ship mask doubles as its own dim background copy.
+
+// Cells outside the canvas are skipped rather than handed to the context to
+// clip. [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST] made this worth doing: the
+// close-up passes deliberately crop large sprites against the frame edge (a
+// 102px bust, a 108px saucer entering from off-left), so a partially visible
+// sprite is now the normal case rather than the exception, and the invisible
+// half was costing a fillRect per cell per frame.
+function drawArcadeSprite(ctx, sprite, left, top, scale, inkOverride) {
+  for (let r = 0; r < sprite.length; r++) {
+    const y = top + r * scale;
+    if (y + scale <= 0 || y >= ARCADE_HEIGHT) continue;
+    const row = sprite[r];
+    for (let c = 0; c < row.length; c++) {
+      if (row[c] === ".") continue;
+      const x = left + c * scale;
+      if (x + scale <= 0 || x >= ARCADE_WIDTH) continue;
+      const ink = inkOverride || ARCADE_INK[row[c]];
+      if (!ink) continue;
+      ctx.fillStyle = ink;
+      ctx.fillRect(x, y, scale, scale);
+    }
+  }
+}
+
+function drawArcadeSpriteCentered(ctx, sprite, cx, cy, scale, inkOverride) {
+  const left = Math.round(cx - (sprite[0].length * scale) / 2);
+  const top = Math.round(cy - (sprite.length * scale) / 2);
+  drawArcadeSprite(ctx, sprite, left, top, scale, inkOverride);
+  return { left, top };
+}
+
+// Integer Bresenham — spokes, cone edges, masts, rigging and tentacles all
+// need a real line, and a shared one keeps every scene's geometry snapped to
+// the same pixel grid.
+function drawArcadeLine(ctx, x0, y0, x1, y1, ink) {
+  ctx.fillStyle = ink;
+  let x = Math.round(x0);
+  let y = Math.round(y0);
+  const ex = Math.round(x1);
+  const ey = Math.round(y1);
+  const dx = Math.abs(ex - x);
+  const dy = -Math.abs(ey - y);
+  const sx = x < ex ? 1 : -1;
+  const sy = y < ey ? 1 : -1;
+  let err = dx + dy;
+  for (let guard = 0; guard < 400; guard++) {
+    ctx.fillRect(x, y, 1, 1);
+    if (x === ex && y === ey) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+// Midpoint circle outline — projector reels and sonar-style ripples.
+function drawArcadeCircle(ctx, cx, cy, radius, ink) {
+  ctx.fillStyle = ink;
+  let x = radius;
+  let y = 0;
+  let err = 1 - radius;
+  while (x >= y) {
+    const pts = [
+      [cx + x, cy + y],
+      [cx + y, cy + x],
+      [cx - y, cy + x],
+      [cx - x, cy + y],
+      [cx - x, cy - y],
+      [cx - y, cy - x],
+      [cx + y, cy - x],
+      [cx + x, cy - y],
+    ];
+    for (const [px, py] of pts) ctx.fillRect(Math.round(px), Math.round(py), 1, 1);
+    y += 1;
+    if (err < 0) {
+      err += 2 * y + 1;
+    } else {
+      x -= 1;
+      err += 2 * (y - x) + 1;
+    }
+  }
+}
+
+// [t, value] waypoints, linearly interpolated and clamped at both ends. Every
+// scene's scripted motion goes through this rather than each inventing its
+// own easing — Starfighter's cruise, the pirate ship's sail-in, the UFO's
+// approach.
+function arcadePath(waypoints, t) {
+  if (t <= waypoints[0][0]) return waypoints[0][1];
+  for (let i = 1; i < waypoints.length; i++) {
+    if (t <= waypoints[i][0]) {
+      const [t0, v0] = waypoints[i - 1];
+      const [t1, v1] = waypoints[i];
+      return v0 + (v1 - v0) * ((t - t0) / (t1 - t0));
+    }
+  }
+  return waypoints[waypoints.length - 1][1];
+}
+
+function easeInOutCubic(p) {
+  return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+}
+
+function arcadeClamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+// 3x5 arcade digits for Starfighter's score-style readout.
+const ARCADE_DIGITS = {
+  0: ["111", "1.1", "1.1", "1.1", "111"],
+  1: [".1.", "11.", ".1.", ".1.", "111"],
+  2: ["111", "..1", "111", "1..", "111"],
+  3: ["111", "..1", "111", "..1", "111"],
+  4: ["1.1", "1.1", "111", "..1", "..1"],
+  5: ["111", "1..", "111", "..1", "111"],
+  6: ["111", "1..", "111", "1.1", "111"],
+  7: ["111", "..1", "..1", "..1", "..1"],
+  8: ["111", "1.1", "111", "1.1", "111"],
+  9: ["111", "1.1", "111", "..1", "111"],
+};
+
+function drawArcadeNumber(ctx, value, left, top, ink) {
+  const text = String(value);
+  ctx.fillStyle = ink;
+  for (let i = 0; i < text.length; i++) {
+    const glyph = ARCADE_DIGITS[text[i]];
+    if (!glyph) continue;
+    for (let r = 0; r < glyph.length; r++) {
+      for (let c = 0; c < 3; c++) {
+        if (glyph[r][c] === "1") ctx.fillRect(left + i * 4 + c, top + r, 1, 1);
+      }
+    }
+  }
+}
+
+// Expanding chunky ring plus a bright core for the first third — pixel
+// clusters rather than a circle, so it stays legible at this resolution.
+// Shared by Starfighter's kills and the pirate cannon's impact.
+const ARCADE_BURST_MS = 420;
+
+function drawArcadeBurst(ctx, burst, now, lifeMs) {
+  const age = (now - burst.born) / (lifeMs || ARCADE_BURST_MS);
+  if (age < 0 || age >= 1) return;
+  const radius = 1 + age * (burst.reach || 9);
+  if (age < 0.35) {
+    ctx.fillStyle = ARCADE_INK[3];
+    ctx.fillRect(Math.round(burst.x) - 2, Math.round(burst.y) - 2, 4, 4);
+  }
+  ctx.fillStyle = age < 0.6 ? ARCADE_INK[3] : ARCADE_INK[2];
+  const size = age < 0.5 ? 2 : 1;
+  for (let i = 0; i < 10; i++) {
+    const angle = (i / 10) * Math.PI * 2 + burst.seed;
+    ctx.fillRect(
+      Math.round(burst.x + Math.cos(angle) * radius),
+      Math.round(burst.y + Math.sin(angle) * radius * 0.8),
+      size,
+      size
+    );
+  }
+  if (age > 0.45) {
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 - burst.seed;
+      ctx.fillRect(
+        Math.round(burst.x + Math.cos(angle) * radius * 0.55),
+        Math.round(burst.y + Math.sin(angle) * radius * 0.45),
+        1,
+        1
+      );
+    }
+  }
+}
+
+// ---- SCENE 1: starfighter -------------------------------------------------
+//
+// [V2-POLISH / STARFIGHTER-FLAGSHIP]
+// WHAT: The original Starfighter Micro-Arcade prototype was expanded into a
+// longer authored cinematic dogfight with richer spacecraft detail, multiple
+// combat beats, enemy variation, environmental hazards, a distinct climax,
+// and an integrated return-to-camera loop.
+// WHY: Starfighter naturally supports near-to-far perspective because
+// physical recession is part of the scene itself. The expanded timeline
+// gives the battle enough space to read clearly and avoids excessive
+// repetition during real library loads.
+// FUTURE: Treat Starfighter as a quality benchmark for action-oriented
+// Micro-Arcade scenes: readable silhouettes, composition-driven perspective,
+// meaningful choreography, distinct escalation and payoff, and no
+// unnecessary gameplay architecture.
+//
+// HOW THE NEAR->FAR TRANSITION AVOIDS SCALE POPPING — the quality gate of
+// this rebuild. Three things, together:
+//   1. FIVE authored sizes, not integer scaling of one mask. Every size is
+//      generated from ONE shared profile by buildFighterMask(), so the
+//      silhouette — nose, canopy, swept delta, wingtip lights, twin engine
+//      cores — is provably identical at every distance. The eye tracks the
+//      shape, so the shape must not change.
+//   2. Gentle ratios. 73 -> 49 -> 33 -> 23 -> 15 px is about x0.67 per step,
+//      versus the old 75 -> 15 in three violent jumps. Each step is near the
+//      threshold where a size change reads as distance rather than as a cut.
+//   3. Every step is COVERED by motion: the ship is translating and banking
+//      through the swap, the engine plume shortens with distance, and the
+//      starfield streaks hardest exactly across the transition. A size
+//      change the viewer is not looking at is a size change they do not see.
+const SF_DURATION_MS = 28000;
+
+// One profile, five distances. `bank` squeezes one half-span and stretches
+// the other, which changes the SILHOUETTE rather than just sliding the
+// sprite — a banking ship has to look banked, not merely displaced.
+function buildFighterMask(w, h, bank) {
+  const width = 2 * w + 1;
+  const cx = w;
+  const g = Array.from({ length: h }, () => new Array(width).fill("."));
+  const put = (r, c, ch) => {
+    if (r >= 0 && r < h && c >= 0 && c < width) g[r][c] = ch;
+  };
+
+  for (let r = 0; r < h; r++) {
+    const p = r / (h - 1);
+    const fus = Math.max(0, Math.round(w * (0.08 + 0.26 * Math.min(1, p * 2.4))));
+    let wing = 0;
+    if (p >= 0.4 && p <= 0.86) {
+      const wp = (p - 0.4) / 0.46;
+      wing = Math.round(w * (0.3 + 0.7 * Math.min(1, wp * 1.6)));
+      if (wp > 0.72) wing = Math.round(wing * (1 - (wp - 0.72) * 2));
+    }
+    const half = Math.max(fus, wing);
+    const lh = Math.max(0, Math.round(half * (bank > 0 ? 0.62 : 1)));
+    const rh = Math.max(0, Math.round(half * (bank < 0 ? 0.62 : 1)));
+    for (let c = cx - lh; c <= cx + rh; c++) put(r, c, "2");
+  }
+
+  // Canopy — the single brightest mass, and the cue that reads as "cockpit"
+  // even when the whole ship is 15px wide.
+  for (let r = Math.round(h * 0.18); r <= Math.round(h * 0.36); r++) {
+    const cw = Math.max(0, Math.round(w * 0.1));
+    for (let c = cx - cw; c <= cx + cw; c++) put(r, c, "3");
+  }
+  put(0, cx, "3");
+
+  // Twin engine cores.
+  const eRow = h - Math.max(1, Math.round(h * 0.12)) - 1;
+  const eOff = Math.max(1, Math.round(w * 0.22));
+  for (let d = 0; d <= Math.max(0, Math.round(h * 0.06)); d++) {
+    put(eRow + d, cx - eOff, "3");
+    put(eRow + d, cx + eOff, "3");
+  }
+
+  // Wingtip navigation lights.
+  for (let r = 0; r < h; r++) {
+    const p = r / (h - 1);
+    if (p <= 0.62 || p >= 0.72) continue;
+    const row = g[r];
+    const lit = row.indexOf("2");
+    if (lit < 0) continue;
+    let rit = width - 1;
+    while (rit > 0 && row[rit] === ".") rit -= 1;
+    put(r, lit, "3");
+    put(r, rit, "3");
+  }
+
+  return { mask: g.map((r) => r.join("")), engineOff: eOff, w, h };
+}
+
+// XL is the close pass; S is the combat size. The two intermediate steps
+// exist purely so no single change in apparent size is large enough to read
+// as a cut.
+const SF_XL = buildFighterMask(36, 35, 0);
+const SF_L = buildFighterMask(24, 25, 0);
+const SF_M = buildFighterMask(16, 17, 0);
+const SF_SM = buildFighterMask(11, 13, 0);
+const SF_S = buildFighterMask(7, 11, 0);
+const SF_S_BANK_L = buildFighterMask(7, 11, -1);
+const SF_S_BANK_R = buildFighterMask(7, 11, 1);
+const SF_XL_BANK_L = buildFighterMask(36, 35, -1);
+const SF_XL_BANK_R = buildFighterMask(36, 35, 1);
+const SF_RECEDE = [SF_XL, SF_L, SF_M, SF_SM, SF_S];
+
+// Three enemy silhouettes, each deliberately unlike the player's delta.
+// SCOUT is a round drone, INTERCEPTOR a wide downward chevron, HEAVY a
+// blocky cruiser — distinguishable at a glance by outline alone.
+const SF_SCOUT = ["..333..", ".32223.", "3222223", ".22222.", "..2.2.."];
+
+const SF_INTERCEPTOR = ["22222222222", "12222222221", ".233333332.", "..2333332..", "....333...."];
+
+const SF_HEAVY = [
+  "...22222222222...",
+  ".222222222222222.",
+  "22222333333322222",
+  "22233333333333222",
+  "32233333333333223",
+  "22233333333333222",
+  "22222333333322222",
+  ".222222222222222.",
+  "....222222222....",
 ];
+
+const SF_ROCK = [".22..", "22322", "23222", ".222."];
+
+// ---- timeline -------------------------------------------------------------
+// CLOSE PASS   0     - 4000   hull fills frame, banking, stars streaking
+// RECESSION    4000  - 7000   five sizes over 3s, covered by motion
+// DOGFIGHT     7000  - 20000  beats A..E
+// CLIMAX       20000 - 25200  the heavy
+// RETURN       25200 - 28000  grows back over the camera, loop seam
+const SF_PASS_MS = 4000;
+const SF_RECEDE_MS = 7000;
+const SF_FIGHT_MS = 20000;
+const SF_CLIMAX_MS = 25200;
+
+const SF_SHIP_Y = 50;
+const SF_NOSE_Y = 44;
+const SF_ENEMY_VY = 0.024;
+const SF_BULLET_VY = -0.085;
+const SF_HAZARD_VY = 0.042;
+
+// Lateral flight path for the whole battle, in scene time. The dodges at
+// 11200 and 18300 are authored to be clear of incoming fire; the long
+// 12800->14600 sweep is the pursuit.
+const SF_SHIP_PATH = [
+  [7000, 80],
+  [8000, 80],
+  [8700, 44],
+  [9800, 44],
+  [10600, 96],
+  [11200, 96],
+  [12100, 30],
+  [12800, 30],
+  [14600, 132],
+  [15400, 132],
+  [16200, 60],
+  [17200, 96],
+  [17900, 96],
+  [18300, 24],
+  [19200, 24],
+  [19900, 80],
+  [21000, 80],
+  [21700, 128],
+  [22600, 128],
+  [23200, 80],
+  [24600, 80],
+  [25200, 80],
+];
+
+// kind: scout | interceptor | heavy. fireAt fires one aimed shot downward.
+//
+// Every enemy's x is the x the SHIP PATH actually puts the fighter at when
+// it fires, and every spawn time is solved backwards from the intended
+// collision height so the shot connects where it is meant to. Hand-picking
+// round numbers for these produced a scene whose climax silently never hit —
+// the heavy sat at x=80 while the fighter fired from x=128 — which is
+// exactly the kind of miss that looks like "nothing happened" rather than
+// like a bug. The numbers below are solved, not guessed.
+const SF_ENEMIES = [
+  // BEAT A — first contact: a formation drifts in, two die.
+  { t: 7080, x: 70, kind: "scout" },
+  { t: 8090, x: 44, kind: "scout" },
+  { t: 7300, x: 120, kind: "scout" },
+  // BEAT B — crossing attack with return fire, then a kill.
+  { t: 9885, x: 96, kind: "interceptor", fireAt: 10500 },
+  { t: 10200, x: 140, kind: "scout" },
+  // BEAT C — pursuit across the full width, three exchanges.
+  { t: 11880, x: 41, kind: "scout" },
+  { t: 12990, x: 92, kind: "interceptor" },
+  { t: 13830, x: 132, kind: "scout" },
+  // BEAT E — ambush: two vectors at once, crossfire, counterattack.
+  { t: 17585, x: 24, kind: "interceptor", fireAt: 17900 },
+  { t: 17200, x: 128, kind: "scout", fireAt: 18200 },
+  { t: 18490, x: 40, kind: "scout" },
+  // CLIMAX — three hits required, all from x=80 where the path parks.
+  { t: 20200, x: 80, kind: "heavy", fireAt: 21400 },
+];
+
+// Extra aimed shots from the heavy, so the climax threat fires a pattern
+// rather than a single pellet.
+const SF_HEAVY_VOLLEY = [21400, 22100, 22800];
+
+const SF_SHOTS = [8200, 9000, 10900, 13000, 13900, 14900, 18600, 19400, 21900, 23400, 23700, 24000];
+
+// BEAT D — a drifting debris field the fighter threads through. Bullets
+// destroy fragments; the fighter simply flies among them.
+const SF_DEBRIS = [
+  { t: 15100, x: 20 },
+  { t: 15100, x: 58 },
+  { t: 15400, x: 104 },
+  { t: 15400, x: 140 },
+  { t: 15900, x: 38 },
+  { t: 15900, x: 122 },
+  { t: 16400, x: 76 },
+];
+
+const SF_STARS = Array.from({ length: 40 }, (_, i) => ({
+  x: (i * 37) % ARCADE_WIDTH,
+  y: (i * 53) % ARCADE_HEIGHT,
+  depth: 0.3 + ((i * 17) % 12) / 13,
+}));
+
+function createStarfighterState() {
+  return { enemies: [], bullets: [], hazards: [], debris: [], bursts: [], spawned: 0, fired: 0, rocks: 0, volley: 0 };
+}
+
+// Star speed carries the whole depth illusion, so it is driven by the phase
+// rather than being constant: fast during the close pass and both accel
+// phases, slow while the dogfight needs a calm background.
+function starfighterStarSpeed(t) {
+  if (t < SF_PASS_MS) return 0.05;
+  if (t < SF_RECEDE_MS) return 0.115;
+  if (t < SF_FIGHT_MS) return 0.014;
+  if (t < SF_CLIMAX_MS) return 0.02;
+  return 0.13;
+}
+
+function starfighterShipX(t) {
+  return arcadePath(SF_SHIP_PATH, t);
+}
+
+function updateStarfighter(state, t, dt, now) {
+  const speed = starfighterStarSpeed(t);
+  for (const star of SF_STARS) {
+    star.y += speed * star.depth * dt;
+    if (star.y > ARCADE_HEIGHT) {
+      star.y -= ARCADE_HEIGHT;
+      star.x = (star.x + 41) % ARCADE_WIDTH;
+    }
+  }
+
+  if (t < SF_RECEDE_MS || t > SF_CLIMAX_MS) return;
+
+  while (state.spawned < SF_ENEMIES.length && SF_ENEMIES[state.spawned].t <= t) {
+    const def = SF_ENEMIES[state.spawned];
+    state.enemies.push({
+      x: def.x,
+      y: def.kind === "heavy" ? -10 : -6,
+      kind: def.kind,
+      hp: def.kind === "heavy" ? 3 : 1,
+      fireAt: def.fireAt || 0,
+      fired: false,
+      dead: false,
+    });
+    state.spawned += 1;
+  }
+  while (state.fired < SF_SHOTS.length && SF_SHOTS[state.fired] <= t) {
+    state.bullets.push({ x: starfighterShipX(SF_SHOTS[state.fired]), y: SF_NOSE_Y, dead: false });
+    state.fired += 1;
+  }
+  while (state.rocks < SF_DEBRIS.length && SF_DEBRIS[state.rocks].t <= t) {
+    state.debris.push({ x: SF_DEBRIS[state.rocks].x, y: -6, dead: false });
+    state.rocks += 1;
+  }
+
+  const heavy = state.enemies.find((e) => e.kind === "heavy" && !e.dead);
+  while (state.volley < SF_HEAVY_VOLLEY.length && SF_HEAVY_VOLLEY[state.volley] <= t) {
+    if (heavy) {
+      // A spread, not a pellet — this is what makes the heavy read as a
+      // different class of threat.
+      for (const off of [-7, 0, 7]) state.hazards.push({ x: heavy.x + off, y: heavy.y + 6 });
+    }
+    state.volley += 1;
+  }
+
+  for (const enemy of state.enemies) {
+    enemy.y += SF_ENEMY_VY * dt * (enemy.kind === "heavy" ? 0.42 : 1);
+    if (enemy.kind === "heavy" && enemy.y > 16) enemy.y = 16;
+    if (!enemy.fired && enemy.fireAt && t >= enemy.fireAt && enemy.kind !== "heavy") {
+      enemy.fired = true;
+      state.hazards.push({ x: enemy.x, y: enemy.y + 3 });
+    }
+  }
+  for (const rock of state.debris) rock.y += SF_ENEMY_VY * 0.85 * dt;
+  for (const bullet of state.bullets) bullet.y += SF_BULLET_VY * dt;
+  for (const hazard of state.hazards) hazard.y += SF_HAZARD_VY * dt;
+
+  for (const bullet of state.bullets) {
+    if (bullet.dead) continue;
+    for (const enemy of state.enemies) {
+      if (enemy.dead) continue;
+      const halfW = enemy.kind === "heavy" ? 9 : enemy.kind === "interceptor" ? 6 : 4;
+      const halfH = enemy.kind === "heavy" ? 5 : 4;
+      if (Math.abs(bullet.x - enemy.x) <= halfW && Math.abs(bullet.y - enemy.y) <= halfH) {
+        bullet.dead = true;
+        enemy.hp -= 1;
+        if (enemy.hp <= 0) {
+          enemy.dead = true;
+          state.bursts.push({
+            x: enemy.x,
+            y: enemy.y,
+            born: now,
+            seed: (enemy.x % 7) * 0.9,
+            reach: enemy.kind === "heavy" ? 30 : enemy.kind === "interceptor" ? 12 : 9,
+            life: enemy.kind === "heavy" ? 1500 : 460,
+          });
+        } else {
+          // Non-fatal hit: a small spark, so shots that do not kill still
+          // read as landing.
+          state.bursts.push({ x: bullet.x, y: enemy.y + 3, born: now, seed: 2.1, reach: 5, life: 240 });
+        }
+        break;
+      }
+    }
+    if (bullet.dead) continue;
+    for (const rock of state.debris) {
+      if (rock.dead) continue;
+      if (Math.abs(bullet.x - rock.x) <= 3 && Math.abs(bullet.y - rock.y) <= 3) {
+        rock.dead = true;
+        bullet.dead = true;
+        state.bursts.push({ x: rock.x, y: rock.y, born: now, seed: 1.4, reach: 7, life: 380 });
+      }
+    }
+  }
+
+  state.enemies = state.enemies.filter((e) => !e.dead && e.y < ARCADE_HEIGHT + 10);
+  state.debris = state.debris.filter((r) => !r.dead && r.y < ARCADE_HEIGHT + 8);
+  state.bullets = state.bullets.filter((b) => !b.dead && b.y > -6);
+  state.hazards = state.hazards.filter((h) => h.y < ARCADE_HEIGHT + 6);
+  state.bursts = state.bursts.filter((b) => now - b.born < (b.life || ARCADE_BURST_MS));
+}
+
+// Engine plume, drawn beneath whichever hull size is current. Length scales
+// with the hull so it shortens naturally with distance — one of the cues
+// carrying the recession.
+function drawFighterPlume(ctx, entry, left, top, thrust, now) {
+  const cx = left + entry.w;
+  const baseY = top + entry.h;
+  const unit = Math.max(1, Math.round(entry.w / 7));
+  const pulse = Math.floor(now / 70) % 3;
+  const bands = [
+    [ARCADE_INK[3], unit * (1 + pulse) * thrust],
+    [ARCADE_INK[2], unit * 2 * thrust],
+    [ARCADE_INK[1], unit * (1 + ((pulse + 1) % 3)) * thrust],
+  ];
+  for (const side of [-1, 1]) {
+    let y = baseY - unit;
+    for (const [ink, len] of bands) {
+      const h = Math.max(1, Math.round(len));
+      ctx.fillStyle = ink;
+      ctx.fillRect(Math.round(cx + side * entry.engineOff - unit / 2), Math.round(y), Math.max(1, unit), h);
+      y += h;
+    }
+  }
+}
+
+function drawStarfighterScene(ctx, state, t, now) {
+  // Background: stars streak when the ship is moving through depth and sit
+  // still during the dogfight, so speed is legible without any HUD.
+  const streak = starfighterStarSpeed(t) > 0.04;
+  ctx.fillStyle = ARCADE_INK[1];
+  for (const star of SF_STARS) {
+    const bright = star.depth > 1.1;
+    ctx.fillStyle = bright ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(Math.round(star.x), Math.round(star.y), 1, streak ? Math.round(2 + star.depth * 3) : 1);
+  }
+
+  let entry = SF_S;
+  let cx = ARCADE_WIDTH / 2;
+  let cy = SF_SHIP_Y;
+  let thrust = 1;
+
+  if (t < SF_PASS_MS) {
+    // CLOSE PASS. Never static: the hull drifts, banks through the middle of
+    // the beat, and rides a slow vertical float.
+    const p = t / SF_PASS_MS;
+    const bankPhase = Math.sin(p * Math.PI * 1.4);
+    entry = bankPhase > 0.45 ? SF_XL_BANK_R : bankPhase < -0.45 ? SF_XL_BANK_L : SF_XL;
+    cx = 80 + Math.sin(p * Math.PI * 1.1) * 16;
+    cy = 26 + p * 8 + Math.sin(now / 520) * 1.5;
+    thrust = 1.5 + Math.sin(now / 90) * 0.25;
+  } else if (t < SF_RECEDE_MS) {
+    // RECESSION.
+    const p = (t - SF_PASS_MS) / (SF_RECEDE_MS - SF_PASS_MS);
+    const idx = Math.min(SF_RECEDE.length - 1, Math.floor(p * SF_RECEDE.length));
+    entry = SF_RECEDE[idx];
+    const e = easeInOutCubic(p);
+    cx = 80 + Math.sin(p * Math.PI) * 14;
+    cy = 30 + (SF_SHIP_Y - 30) * e;
+    thrust = 1.8 - 0.8 * e;
+  } else if (t <= SF_CLIMAX_MS) {
+    // COMBAT. Bank state is derived from actual lateral velocity, so the
+    // ship banks because it is turning rather than on a timer.
+    cx = starfighterShipX(t);
+    const dx = starfighterShipX(Math.min(SF_CLIMAX_MS, t + 120)) - cx;
+    entry = dx > 5 ? SF_S_BANK_R : dx < -5 ? SF_S_BANK_L : SF_S;
+    cy = SF_SHIP_Y + Math.sin(t / 520);
+    thrust = Math.abs(dx) > 5 ? 1.4 : 1;
+  } else {
+    // RETURN. The recession list played backwards, so the last frame of the
+    // scene is the same hull at the same scale the first frame opens on.
+    const p = (t - SF_CLIMAX_MS) / (SF_DURATION_MS - SF_CLIMAX_MS);
+    const idx = Math.min(SF_RECEDE.length - 1, Math.floor((1 - p) * SF_RECEDE.length));
+    entry = SF_RECEDE[idx];
+    const e = easeInOutCubic(p);
+    cx = 80 + Math.sin((1 - p) * Math.PI) * 14;
+    cy = SF_SHIP_Y + (26 - SF_SHIP_Y) * e;
+    thrust = 1 + 0.9 * e;
+  }
+
+  // Enemies, debris, fire.
+  for (const rock of state.debris) drawArcadeSpriteCentered(ctx, SF_ROCK, rock.x, rock.y, 1);
+  for (const enemy of state.enemies) {
+    const sprite = enemy.kind === "heavy" ? SF_HEAVY : enemy.kind === "interceptor" ? SF_INTERCEPTOR : SF_SCOUT;
+    drawArcadeSpriteCentered(ctx, sprite, enemy.x, enemy.y, 1);
+  }
+
+  // Player fire is a long bright lance; enemy fire is a short mid-tone
+  // dash. Different length, different brightness, opposite direction —
+  // three independent cues so they never read as the same object.
+  ctx.fillStyle = ARCADE_INK[3];
+  for (const bullet of state.bullets) ctx.fillRect(Math.round(bullet.x), Math.round(bullet.y), 1, 4);
+  ctx.fillStyle = ARCADE_INK[2];
+  for (const hazard of state.hazards) ctx.fillRect(Math.round(hazard.x), Math.round(hazard.y), 2, 2);
+
+  const left = Math.round(cx - entry.w);
+  const top = Math.round(cy - entry.h / 2);
+  drawFighterPlume(ctx, entry, left, top, thrust, now);
+  drawArcadeSprite(ctx, entry.mask, left, top, 1);
+
+  for (const burst of state.bursts) drawArcadeBurst(ctx, burst, now, burst.life);
+
+  if (mobileLoadLoadedCount > 0) drawArcadeNumber(ctx, mobileLoadLoadedCount, 3, 3, ARCADE_INK[1]);
+}
+
+// ---- SCENE 4: projector booth ---------------------------------------------
+//
+// The most literally on-brand scene: a machine whose entire job is showing you
+// pictures. The wide canvas is what lets the machinery AND the projected image
+// both be legible — at 128px one of the two always lost.
+//
+// Reels and film share ONE speed function, so when the film jams the reels
+// stutter with it rather than each drifting on its own clock. That single
+// shared value is what makes it read as a mechanism instead of two spinning
+// circles.
+const PROJECTOR_DURATION_MS = 15000;
+
+const PROJECTED_FRAMES = [
+  [
+    "...............",
+    "..........333..",
+    "..........333..",
+    ".......2.......",
+    "......222......",
+    ".....22322.....",
+    "....2222222....",
+    "...222222222...",
+    "..22222222222..",
+    ".2222222222222.",
+    "222222222222222",
+  ],
+  [
+    ".....22222.....",
+    "...222222222...",
+    "..22222222222..",
+    "..23322233222..",
+    "..22222222222..",
+    "..22222222222..",
+    "..22222222222..",
+    "..22333333222..",
+    "..22222222222..",
+    "...222222222...",
+    ".....22222.....",
+  ],
+  [
+    ".......2.......",
+    "......222......",
+    ".....22322.....",
+    "....2233222....",
+    "...223333222...",
+    "..22333333222..",
+    "...223333222...",
+    "....2233222....",
+    ".....22322.....",
+    "......222......",
+    ".......2.......",
+  ],
+  [
+    ".......2.......",
+    "......222......",
+    ".....22222.....",
+    "....2222222....",
+    "......222......",
+    ".....22222.....",
+    "....2222222....",
+    "...222222222...",
+    ".......1.......",
+    ".......1.......",
+    ".....22222.....",
+  ],
+];
+
+// One speed curve drives both reels and the film. The 8000-9200 window is the
+// jam: alternating near-stall and over-run, which is what a slipping sprocket
+// actually looks like.
+// [V2-POLISH / MICRO-ARCADE-COMPOSITION-FIRST]
+// RESTORED to the original pre-close-up curves. The whole mechanism visible
+// at once IS this scene, so it opens on the full machine and never cuts.
+function projectorSpeed(t) {
+  if (t < 1500) return 0;
+  if (t < 2500) return ((t - 1500) / 1000) * 0.006;
+  if (t < 8000) return 0.006;
+  if (t < 9200) return Math.floor((t - 8000) / 150) % 2 === 0 ? 0.0009 : 0.0105;
+  if (t < 12800) return 0.006;
+  if (t < 14200) return 0.006 * (1 - (t - 12800) / 1400);
+  return 0;
+}
+
+function projectorLamp(t) {
+  if (t < 2500) return 0;
+  if (t < 3500) return (t - 2500) / 1000;
+  if (t < 12800) return 1;
+  if (t < 14200) return 1 - (t - 12800) / 1400;
+  return 0;
+}
+
+function createProjectorState() {
+  return { angle: 0, film: 0 };
+}
+
+function updateProjectorState(state, t, dt) {
+  const speed = projectorSpeed(t);
+  state.angle += speed * dt;
+  state.film += speed * dt * 9;
+}
+
+// [V2-POLISH / MICRO-ARCADE-IDENTITY-FIRST]
+// The establishing close-up: one big reel cropped by the left edge, the film
+// running right out of it through sprockets, and the gate it feeds. Drawn
+// from the same primitives as the booth but at a `scale` multiplier, and
+// positioned so that shrinking 3 -> 2 walks the reel toward exactly where
+// the booth's feed reel will be. That is what makes the cut to the wide
+// shot read as pulling back rather than as changing the subject.
+function drawProjectorScene(ctx, state, t, now) {
+  const lamp = projectorLamp(t);
+  const jamming = t >= 8000 && t < 9200;
+  const jitter = jamming ? (Math.floor(now / 60) % 2 === 0 ? 1 : -1) : 0;
+
+  // --- projector body ---
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(6, 30, 46, 20);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(6, 30, 46, 1);
+  ctx.fillRect(6, 49, 46, 1);
+  ctx.fillRect(6, 30, 1, 20);
+  ctx.fillRect(51, 30, 1, 20);
+  ctx.fillRect(20, 50, 4, 6);
+  ctx.fillRect(38, 50, 4, 6);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(12, 54, 34, 2);
+
+  // --- reels: feed above, take-up below-right, both on the shared angle ---
+  const reels = [
+    [17, 14, 9],
+    [42, 18, 7],
+  ];
+  for (const [cx, cy, r] of reels) {
+    drawArcadeCircle(ctx, cx, cy, r, ARCADE_INK[2]);
+    drawArcadeCircle(ctx, cx, cy, Math.max(1, r - 5), ARCADE_INK[1]);
+    for (let s = 0; s < 4; s++) {
+      const angle = state.angle + (s * Math.PI) / 2;
+      drawArcadeLine(
+        ctx,
+        cx + Math.cos(angle) * 2,
+        cy + Math.sin(angle) * 2,
+        cx + Math.cos(angle) * (r - 1),
+        cy + Math.sin(angle) * (r - 1),
+        ARCADE_INK[2]
+      );
+    }
+  }
+
+  // --- film path: feed reel -> gate -> take-up reel, sprockets travelling ---
+  const filmPath = [
+    [17, 23, 30, 36],
+    [30, 36, 42, 25],
+  ];
+  for (const [x0, y0, x1, y1] of filmPath) {
+    drawArcadeLine(ctx, x0, y0, x1, y1, ARCADE_INK[1]);
+    drawArcadeLine(ctx, x0, y0 + 2, x1, y1 + 2, ARCADE_INK[1]);
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    for (let s = 0; s < 6; s++) {
+      const p = ((s * 4 + (state.film % 4)) % len) / len;
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(Math.round(x0 + (x1 - x0) * p), Math.round(y0 + (y1 - y0) * p + 1), 1, 1);
+    }
+  }
+
+  // --- gate + lamp house + lens ---
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(28, 33, 5, 7);
+  if (lamp > 0.05) {
+    ctx.fillStyle = lamp > 0.6 ? ARCADE_INK[3] : ARCADE_INK[2];
+    ctx.fillRect(29, 34, 3, 5);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(52, 33, 6, 8);
+  ctx.fillRect(58, 35, 2, 4);
+
+  // --- light cone: lens out to the screen, widening ---
+  const screenX = 112;
+  const screenTop = 14;
+  const screenH = 34;
+  if (lamp > 0.05) {
+    // The cone's axis tilts from the lens centre (37) to the SCREEN centre
+    // (screenTop + screenH/2), and its half-height lands exactly on the
+    // screen's own half-height. Aiming it straight out of the lens instead
+    // left the light overshooting the bottom of the screen by 6px, which
+    // reads as a misaligned projector rather than a working one.
+    const screenMidY = screenTop + screenH / 2;
+    const screenHalf = Math.round((screenH / 2) * lamp);
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let x = 60; x < screenX; x += 1) {
+      const p = (x - 60) / (screenX - 60);
+      const half = Math.round((2 + p * (screenH / 2 - 2)) * lamp);
+      if (half < 1) continue;
+      const axis = 37 + (screenMidY - 37) * p;
+      if (x % 2 === 0) ctx.fillRect(x, Math.round(axis - half), 1, half * 2);
+    }
+    drawArcadeLine(ctx, 60, 35, screenX, screenMidY - screenHalf, ARCADE_INK[2]);
+    drawArcadeLine(ctx, 60, 39, screenX, screenMidY + screenHalf, ARCADE_INK[2]);
+  }
+
+  // --- screen ---
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(screenX, screenTop, 1, screenH);
+  ctx.fillRect(ARCADE_WIDTH - 4, screenTop, 1, screenH);
+  ctx.fillRect(screenX, screenTop, ARCADE_WIDTH - 4 - screenX, 1);
+  ctx.fillRect(screenX, screenTop + screenH, ARCADE_WIDTH - 4 - screenX, 1);
+
+  if (lamp > 0.25 && t >= 3500) {
+    const frame = PROJECTED_FRAMES[Math.floor((t - 3500) / 1100) % PROJECTED_FRAMES.length];
+    const cx = (screenX + ARCADE_WIDTH - 4) / 2 + jitter;
+    const cy = screenTop + screenH / 2 + (jamming ? jitter : 0);
+    drawArcadeSpriteCentered(ctx, frame, cx, cy, 2, lamp > 0.7 ? null : ARCADE_INK[1]);
+
+    // The jam leaves a burn blooming in the middle of the frame, which
+    // shrinks away again once the mechanism catches up.
+    if (jamming) {
+      const burn = 2 + Math.round(6 * arcadeClamp01((t - 8000) / 1200));
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(Math.round(cx - burn / 2), Math.round(cy - burn / 2), burn, burn);
+    } else if (t >= 9200 && t < 9800) {
+      const burn = Math.round(8 * (1 - arcadeClamp01((t - 9200) / 600)));
+      if (burn > 0) {
+        ctx.fillStyle = ARCADE_INK[2];
+        ctx.fillRect(Math.round(cx - burn / 2), Math.round(cy - burn / 2), burn, burn);
+      }
+    }
+  }
+}
+
+// ---- SCENE: science lab ---------------------------------------------------
+//
+// Wide bench, no camera moves. The entertainment here is SIMULTANEITY — the
+// promise is "we're cooking something up for you", so the rule I set myself
+// was that at any instant at least three different things must be moving:
+// a flame licking, bubbles rising, a droplet travelling the tube, vapour
+// curling, a needle creeping. A single-focus composition would have wasted
+// the concept.
+const LAB_DURATION_MS = 27000;
+const LAB_BENCH_Y = 52;
+
+// Glassware, all visibly different silhouettes rather than one triangle
+// repeated. Sizes are ~35% up on the previous bench so liquid levels, bubbles
+// and shapes are legible instead of implied.
+const LAB_ROUND = [
+  "...33333...",
+  "..3.....3..",
+  ".33.....33.",
+  "3.........3",
+  "3.........3",
+  "3.........3",
+  "3.........3",
+  ".3.......3.",
+  "..3.....3..",
+  "...33333...",
+];
+
+const LAB_CONE = [
+  "..3333333..",
+  "..3.....3..",
+  "..3.....3..",
+  ".3.......3.",
+  ".3.......3.",
+  "3.........3",
+  "3.........3",
+  "3.........3",
+  "33333333333",
+];
+
+const LAB_BEAKER = ["33.....33", "3.......3", "3.......3", "3.......3", "3.......3", "3.......3", "33333333 "];
+
+const LAB_CYLINDER = ["333", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "333"];
+
+const LAB_VIAL = ["3..3", "3..3", "3..3", "3..3", "33.3", ".33."];
+
+const LAB_TILE = ["3333333", "3222223", "32.3.23", "32333.3", "3222223", "3333333"];
+
+// Liquid poured into a vessel mask: fills from the bottom up to `level` rows,
+// clipped to whatever is inside the glass on each row. One helper keeps every
+// vessel's liquid consistent instead of hand-placing rectangles per flask.
+function drawLabLiquid(ctx, mask, left, top, level, ink) {
+  ctx.fillStyle = ink;
+  for (let r = mask.length - 1; r >= 0 && mask.length - r <= level; r--) {
+    const row = mask[r];
+    let lo = -1;
+    let hi = -1;
+    for (let c = 0; c < row.length; c++) {
+      if (row[c] !== ".") {
+        if (lo < 0) lo = c;
+        hi = c;
+      }
+    }
+    if (lo < 0 || hi - lo < 2) continue;
+    ctx.fillRect(left + lo + 1, top + r, hi - lo - 1, 1);
+  }
+}
+
+function drawLabBubbles(ctx, left, top, w, h, count, rate, now, seed, ink) {
+  for (let i = 0; i < count; i++) {
+    const ph = ((now / rate + i * 0.31 + seed) % 1);
+    const by = top + h - Math.round(ph * h);
+    ctx.fillStyle = ph > 0.65 ? ARCADE_INK[3] : ink;
+    ctx.fillRect(left + 1 + ((i * 5 + seed * 3) % Math.max(1, w - 2)), by, 1, 1);
+  }
+}
+
+// Reaction energy 0..1 — the spine every other element reads from, so the
+// whole bench escalates together instead of each vessel running its own clock.
+function labEnergy(t) {
+  if (t < 3000) return 0.08;
+  if (t < 6000) return 0.08 + 0.32 * ((t - 3000) / 3000);
+  if (t < 13000) return 0.4 + 0.25 * ((t - 6000) / 7000);
+  if (t < 19000) return 0.65 + 0.3 * ((t - 13000) / 6000);
+  if (t < 21500) return 0.95;
+  if (t < 22200) return 1;
+  if (t < 24500) return 0.35;
+  return 0.15;
+}
+
+// THE COMPLICATION, 13.5s-17s: pressure runs away, the centre flask foams up
+// toward its neck, the flame flares and the gauge pushes into the red — then a
+// hand reaches in and throttles the burner back. Without a scare in the middle
+// the bench was just pleasant activity; the near-miss gives the success at the
+// end something to be a success over.
+function labPanic(t) {
+  if (t < 13500 || t > 17000) return 0;
+  if (t < 15200) return (t - 13500) / 1700;
+  if (t < 15900) return 1;
+  return 1 - (t - 15900) / 1100;
+}
+
+function drawLabScene(ctx, state, t, now) {
+  const e = Math.min(1, labEnergy(t) + labPanic(t) * 0.35);
+  const panic = labPanic(t);
+  const burnerOn = t > 2600;
+  const bench = LAB_BENCH_Y;
+
+  // bench slab + a shelf line behind, for depth
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, bench, ARCADE_WIDTH, 1);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, bench + 3, ARCADE_WIDTH, 1);
+  ctx.fillRect(0, 8, ARCADE_WIDTH, 1);
+  for (let x = 4; x < ARCADE_WIDTH; x += 30) ctx.fillRect(x, bench + 1, 3, 2);
+
+  // ---- LEFT: burner + main round-bottom flask ----
+  const rx = 8;
+  const ry = bench - LAB_ROUND.length - 5;
+  drawArcadeSprite(ctx, LAB_ROUND, rx, ry, 1);
+  ctx.fillStyle = ARCADE_INK[3];
+  ctx.fillRect(rx + 4, ry - 7, 1, 8);
+  ctx.fillRect(rx + 6, ry - 7, 1, 8);
+  ctx.fillRect(rx + 3, ry - 8, 5, 1);
+  drawLabLiquid(ctx, LAB_ROUND, rx, ry, 6, ARCADE_INK[1]);
+  drawLabBubbles(ctx, rx, ry + 3, 11, 7, 8, 240 - e * 110, now, 0, ARCADE_INK[2]);
+  // burner
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(rx + 2, bench - 4, 7, 1);
+  ctx.fillRect(rx + 5, bench - 3, 1, 3);
+  if (burnerOn) {
+    const fl = 3 + Math.round(e * 4) + Math.round(panic * 5) + (Math.floor(now / 80) % 2);
+    for (let i = 0; i < fl; i++) {
+      ctx.fillStyle = i < fl - 2 ? ARCADE_INK[3] : ARCADE_INK[2];
+      const w = Math.max(1, 4 - Math.floor(i / 2));
+      ctx.fillRect(rx + 5 - Math.floor(w / 2), bench - 5 - i, w, 1);
+    }
+  }
+
+  // ---- LEFT-CENTRE: a beaker simmering on its own ----
+  const bx = 24;
+  const by2 = bench - LAB_BEAKER.length;
+  drawArcadeSprite(ctx, LAB_BEAKER, bx, by2, 1);
+  drawLabLiquid(ctx, LAB_BEAKER, bx, by2, 4, ARCADE_INK[1]);
+  drawLabBubbles(ctx, bx, by2 + 2, 9, 4, 4, 460, now, 1, ARCADE_INK[2]);
+
+  // ---- tubing: round flask -> centre cone, droplets travelling ----
+  const ax = rx + 5;
+  const tox = 62;
+  const tubePt = (p) => [ax + (tox - ax) * p, ry - 8 - Math.sin(p * Math.PI) * 12 + p * p * 4];
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let p = 0; p <= 1.001; p += 0.02) {
+    const [x, y] = tubePt(p);
+    ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
+  }
+  if (t > 7000) {
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = tubePt((now / 1500 + i * 0.25) % 1);
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(Math.round(x), Math.round(y) - 1, 1, 2);
+    }
+  }
+
+  // ---- CENTRE: the main conical flask (the reaction vessel) ----
+  const cx2 = 57;
+  const cy2 = bench - LAB_CONE.length;
+  drawArcadeSprite(ctx, LAB_CONE, cx2, cy2, 1);
+  const fill = 2 + Math.round(arcadeClamp01((t - 7000) / 11000) * 6);
+  drawLabLiquid(ctx, LAB_CONE, cx2, cy2, fill, ARCADE_INK[1]);
+  drawLabBubbles(ctx, cx2, cy2 + 3, 11, 6, 7, 300 - e * 160, now, 2, ARCADE_INK[2]);
+
+  // foam surging up the neck during the complication
+  if (panic > 0.05) {
+    const foam = Math.round(panic * 11);
+    for (let i = 0; i < foam; i++) {
+      ctx.fillStyle = i > foam - 3 ? ARCADE_INK[3] : ARCADE_INK[2];
+      ctx.fillRect(cx2 + 2 + ((i * 2) % 4), cy2 - i, 5 + (i % 3), 1);
+    }
+    ctx.fillStyle = Math.floor(now / 130) % 2 === 0 ? ARCADE_INK[3] : ARCADE_INK[1];
+    ctx.fillRect(88, bench - 6, 5, 5);
+  }
+  // a hand throttles the burner back
+  if (t > 15600 && t < 17200) {
+    const p = arcadeClamp01((t - 15600) / 700) - arcadeClamp01((t - 16600) / 600);
+    const hx = rx + 14 - Math.round(p * 11);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(hx, bench - 7, 7, 4);
+    ctx.fillRect(hx + 6, bench - 10, 3, 7);
+  }
+  // vapour
+  if (t > 9000) {
+    for (let i = 0; i < 7; i++) {
+      const ph = (now / 1700 + i * 0.15) % 1;
+      ctx.fillStyle = ph > 0.55 ? ARCADE_INK[1] : ARCADE_INK[2];
+      ctx.fillRect(cx2 + 5 + Math.round(Math.sin(ph * 7 + i) * (1 + ph * 5)), cy2 - Math.round(ph * 20), 1, 1);
+    }
+  }
+
+  // ---- CENTRE-RIGHT: graduated cylinder + gauge ----
+  const gx2 = 74;
+  drawArcadeSprite(ctx, LAB_CYLINDER, gx2, bench - LAB_CYLINDER.length, 1);
+  drawLabLiquid(ctx, LAB_CYLINDER, gx2, bench - LAB_CYLINDER.length, 5 + Math.round(e * 4), ARCADE_INK[1]);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 1; i < 6; i++) ctx.fillRect(gx2 + 3, bench - 2 - i * 2, 2, 1);
+
+  const gx = 100;
+  const gy = 18;
+  drawArcadeCircle(ctx, gx, gy, 10, ARCADE_INK[2]);
+  drawArcadeCircle(ctx, gx, gy, 2, ARCADE_INK[1]);
+  for (let i = 0; i <= 6; i++) {
+    const a = Math.PI * (0.85 + (i / 6) * 1.3);
+    ctx.fillStyle = i > 4 ? ARCADE_INK[3] : ARCADE_INK[1];
+    ctx.fillRect(Math.round(gx + Math.cos(a) * 8), Math.round(gy + Math.sin(a) * 8), 1, 1);
+  }
+  const na = Math.PI * (0.85 + e * 1.3);
+  drawArcadeLine(ctx, gx, gy, gx + Math.cos(na) * 8, gy + Math.sin(na) * 8, ARCADE_INK[3]);
+
+  // ---- RIGHT: test-tube rack, receiving vial, side flask ----
+  const tr = 116;
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(tr - 2, bench - 20, 30, 1);
+  for (let i = 0; i < 4; i++) {
+    const tx = tr + i * 7;
+    ctx.fillStyle = ARCADE_INK[3];
+    ctx.fillRect(tx, bench - 20, 1, 17);
+    ctx.fillRect(tx + 4, bench - 20, 1, 17);
+    ctx.fillRect(tx + 1, bench - 3, 3, 1);
+    const lvl = 3 + Math.round(Math.abs(Math.sin(now / 900 + i)) * 7 * e) + i;
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(tx + 1, bench - 3 - lvl, 3, lvl);
+    if (i % 2 === 0) drawLabBubbles(ctx, tx, bench - 3 - lvl, 5, lvl, 3, 700, now, i, ARCADE_INK[2]);
+    const dp = (now / 1200 + i * 0.3) % 1;
+    if (dp < 0.4) {
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(tx + 2, bench - 23 + Math.round(dp * 2.5 * 14), 1, 2);
+    }
+  }
+  const vx2 = 148;
+  drawArcadeSprite(ctx, LAB_VIAL, vx2, bench - LAB_VIAL.length, 1);
+  drawLabLiquid(ctx, LAB_VIAL, vx2, bench - LAB_VIAL.length, 3, ARCADE_INK[1]);
+
+  // ---- payoff ----
+  if (t >= 21500 && t < 22200) {
+    const p = (t - 21500) / 700;
+    const r = Math.round(8 + p * 30);
+    drawArcadeCircle(ctx, cx2 + 5, cy2 + 3, r, p < 0.5 ? ARCADE_INK[3] : ARCADE_INK[2]);
+    drawArcadeCircle(ctx, cx2 + 5, cy2 + 3, Math.max(1, r - 5), ARCADE_INK[1]);
+  }
+  if (t >= 22200) {
+    const p = arcadeClamp01((t - 22200) / 2200);
+    const ty = cy2 - 3 - Math.round(easeInOutCubic(p) * 18);
+    if (Math.floor(now / 160) % 2 === 0) {
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(cx2 + 1, ty - 1, 9, 8);
+    }
+    drawArcadeSprite(ctx, LAB_TILE, cx2 + 2, ty, 1);
+  }
+}
+
+// ---- SCENE: deep sea diver ------------------------------------------------
+//
+// Almost entirely negative space. The lamp cone is the only thing that
+// reveals anything, so the viewer discovers the seabed at the same moment
+// the diver does — which is the whole reason this is a diver scene and not a
+// submarine scene. Personal, close, and slow until it very suddenly isn't.
+const DIVER_DURATION_MS = 28000;
+
+const DIVER_SPRITE = [
+  "..2222..",
+  ".233332.",
+  ".233332.",
+  "..2222..",
+  ".222222.",
+  "22222222",
+  "22222222",
+  "2.2222.2",
+  "..2222..",
+  "..2..2..",
+  ".22..22.",
+];
+
+const DIVER_CHEST = [
+  ".2222222222.",
+  "222222222222",
+  "23333333332 ",
+  "222222222222",
+  "2.22222222.2",
+  "222222222222",
+];
+
+const DIVER_PARTICLES = Array.from({ length: 26 }, (_, i) => ({
+  x: (i * 53) % ARCADE_WIDTH,
+  y: (i * 29) % ARCADE_HEIGHT,
+  sp: 0.004 + ((i * 7) % 5) / 700,
+}));
+
+function createDiverState() {
+  return { bubbles: [] };
+}
+
+function updateDiverState(state, t, dt, now) {
+  for (const p of DIVER_PARTICLES) {
+    p.y -= p.sp * dt;
+    if (p.y < 0) p.y += ARCADE_HEIGHT;
+  }
+  // bubble trail from the helmet, denser when the diver bolts
+  const rate = t > 23000 ? 70 : 320;
+  if (!state.last || now - state.last > rate) {
+    state.last = now;
+    const dy = diverY(t);
+    state.bubbles.push({ x: diverX(t) + 3 + ((now / 97) % 3), y: dy, born: now });
+  }
+  state.bubbles = state.bubbles.filter((b) => now - b.born < 3200);
+  for (const b of state.bubbles) b.y -= 0.011 * dt;
+}
+
+function diverX(t) {
+  return arcadePath(
+    [
+      [0, 74],
+      [9000, 74],
+      [12000, 52],
+      [17000, 52],
+      [20000, 62],
+      [23000, 62],
+      [28000, 70],
+    ],
+    t
+  );
+}
+
+function diverY(t) {
+  return arcadePath(
+    [
+      [0, -12],
+      [8500, 30],
+      [12000, 34],
+      [20500, 34],
+      [23000, 30],
+      [28000, -14],
+    ],
+    t
+  );
+}
+
+function drawDiverScene(ctx, state, t, now) {
+  // drifting motes — the only thing proving the water is water early on
+  ctx.fillStyle = ARCADE_INK[1];
+  for (const p of DIVER_PARTICLES) ctx.fillRect(Math.round(p.x), Math.round(p.y), 1, 1);
+
+  const dx = diverX(t);
+  const dy = diverY(t);
+
+  // ---- lamp cone: reveals the world, sweeps when the diver looks around ----
+  let aim = 0.5;
+  if (t > 17000 && t < 20500) aim = 0.5 + Math.sin((t - 17000) / 900) * 0.55;
+  if (t > 20500) aim = 0.95;
+  const coneLen = 46;
+  const cxs = dx + 4;
+  const cys = dy + 6;
+  for (let i = 6; i < coneLen; i++) {
+    const spread = Math.round(i * 0.42);
+    const ang = Math.PI * (0.18 + aim * 0.64);
+    const px = cxs + Math.cos(ang) * i;
+    const py = cys + Math.sin(ang) * i;
+    if (i % 2) continue;
+    ctx.fillStyle = i < 26 ? ARCADE_INK[1] : ARCADE_INK[1];
+    ctx.fillRect(Math.round(px - spread / 2), Math.round(py), Math.max(1, spread), 1);
+  }
+
+  // ---- seabed + wreck, only from the point the descent nears it ----
+  if (t > 6000) {
+    const reveal = arcadeClamp01((t - 6000) / 2600);
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let x = 0; x < ARCADE_WIDTH; x++) {
+      const h = 3 + Math.round(Math.sin(x / 19) * 2 + Math.sin(x / 7) * 1.2);
+      if (x / ARCADE_WIDTH > reveal + 0.15) continue;
+      ctx.fillRect(x, ARCADE_HEIGHT - h, 1, h);
+    }
+    // wreck: a broken hull leaning on the seabed
+    if (reveal > 0.5) {
+      ctx.fillStyle = ARCADE_INK[1];
+      drawArcadeLine(ctx, 96, 60, 132, 46, ARCADE_INK[2]);
+      drawArcadeLine(ctx, 96, 60, 128, 58, ARCADE_INK[1]);
+      drawArcadeLine(ctx, 132, 46, 128, 58, ARCADE_INK[1]);
+      for (let i = 0; i < 5; i++) ctx.fillRect(104 + i * 6, 55 - i * 2, 2, 2);
+      // mast stub
+      drawArcadeLine(ctx, 120, 51, 118, 34, ARCADE_INK[1]);
+    }
+  }
+
+  // ---- the chest: found, opened, treasure ----
+  if (t > 9500) {
+    const chestX = 40;
+    const chestY = 52;
+    drawArcadeSprite(ctx, DIVER_CHEST, chestX, chestY, 1);
+    if (t > 13000) {
+      // lid swings up
+      const p = arcadeClamp01((t - 13000) / 900);
+      drawArcadeLine(
+        ctx,
+        chestX,
+        chestY,
+        chestX + 12 - Math.round(p * 5),
+        chestY - Math.round(p * 7),
+        ARCADE_INK[2]
+      );
+      // glow pouring out, pulsing
+      const gl = Math.floor(now / 180) % 2 === 0 ? 3 : 2;
+      for (let i = 0; i < 7; i++) {
+        const ph = (now / 900 + i * 0.14) % 1;
+        ctx.fillStyle = ph > 0.6 ? ARCADE_INK[2] : ARCADE_INK[gl];
+        ctx.fillRect(chestX + 2 + i, chestY - 1 - Math.round(ph * 9), 1, 1);
+      }
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(chestX + 3, chestY + 2, 6, 2);
+    }
+  }
+
+  // ---- THE PAYOFF: it was never a wreck's shadow ----
+  // Two eyes, far enough apart that the implied head is wider than the
+  // whole seabed. Nothing else is ever drawn of it — the negative space
+  // does the work, and drawing a body would only make it smaller.
+  if (t > 20500) {
+    const p = arcadeClamp01((t - 20500) / 1400);
+    const open = Math.round(p * 5);
+    if (open > 0) {
+      for (const ex of [26, 118]) {
+        ctx.fillStyle = ARCADE_INK[1];
+        ctx.fillRect(ex - 9, 16 - open - 1, 18, open * 2 + 3);
+        ctx.fillStyle = ARCADE_INK[3];
+        ctx.fillRect(ex - 7, 16 - open, 14, open * 2);
+        ctx.fillStyle = ARCADE_INK[1];
+        // slit pupil, tracking the diver
+        const px = ex + Math.round((dx - ex) * 0.06);
+        ctx.fillRect(px - 1, 16 - open, 3, open * 2);
+      }
+      // the faintest suggestion of a brow ridge between them
+      ctx.fillStyle = ARCADE_INK[1];
+      for (let x = 30; x < 116; x += 3) {
+        ctx.fillRect(x, 8 + Math.round(Math.sin(x / 26) * 2), 2, 1);
+      }
+    }
+  }
+
+  // bubbles
+  for (const b of state.bubbles) {
+    const age = (now - b.born) / 3200;
+    ctx.fillStyle = age > 0.6 ? ARCADE_INK[1] : ARCADE_INK[2];
+    ctx.fillRect(Math.round(b.x), Math.round(b.y), 1, 1);
+  }
+
+  // the diver
+  if (dy > -12 && dy < ARCADE_HEIGHT) {
+    drawArcadeSprite(ctx, DIVER_SPRITE, Math.round(dx), Math.round(dy), 1);
+    // air line back up to the surface
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let y = 0; y < dy; y += 3) {
+      ctx.fillRect(Math.round(dx + 4 + Math.sin(y / 9 + now / 900) * 3), y, 1, 2);
+    }
+  }
+}
+
+// ---- SCENE: vintage superspy ----------------------------------------------
+//
+// The only scene in the pool with a CAMERA. Everything else is staged in a
+// fixed 160px frame; this one is a ~900px world the camera tracks across,
+// because a five-act story crammed into one static tableau read as clutter
+// rather than as cinema — the first version drew the fence, the vault, the
+// alarm and the getaway all at once and none of them had room. Panning gives
+// each act a clean, uncrowded composition and turns the canvas width into
+// pacing instead of a constraint.
+//
+// Staged in silhouette against searchlights: a suited figure in pure outline
+// reads instantly at 5x11 where any attempt at a face would read as noise.
+// Original throughout — no borrowed iconography.
+const SPY_DURATION_MS = 32000;
+const SPY_GROUND_Y = 50;
+
+const SPY_AGENT = [".222.", ".222.", "22222", "32223", "22222", "22222", ".222.", ".2.2.", ".2.2.", "22.22"];
+const SPY_AGENT_RUN = [".222.", ".222.", "22222", "32223", "22222", ".2222", ".2.2.", "22..2", "2...2", "......"];
+const SPY_AGENT_CROUCH = ["......", "......", ".222..", "32223.", "222222", "22222.", ".2..2.", "22..22"];
+
+const SPY_GUARD = [".22.", ".22.", "2222", "2222", ".22.", ".2.2", ".2.2", "22.2"];
+
+const SPY_CAR = [
+  ".....2222222......",
+  "...2233333322....",
+  "..223333333322...",
+  ".22222222222222..",
+  "222222222222222 2",
+  "222222222222222222",
+  ".33.222222.33.....",
+];
+
+// The camera. Authored as its own path so the pan can lead the action —
+// it drifts ahead of the spy during stealth and snaps behind the car once
+// the chase starts, which is what makes the escape feel fast.
+function spyCam(t) {
+  return arcadePath(
+    [
+      [0, 0],
+      [3000, 10],
+      [7000, 120],
+      [11000, 190],
+      [14500, 270],
+      [18500, 300],
+      [19500, 320],
+      [24000, 470],
+      [28000, 690],
+      [31000, 790],
+      [32000, 820],
+    ],
+    t
+  );
+}
+
+// World x of the agent through the stealth acts.
+function spyAgentWorldX(t) {
+  return arcadePath(
+    [
+      [0, 30],
+      [3000, 70],
+      [5200, 120],
+      [7000, 150],
+      [9000, 205],
+      [11000, 240],
+      [12800, 250],
+      [14500, 330],
+      [18500, 355],
+      [19600, 380],
+      [22500, 470],
+      [24200, 520],
+    ],
+    t
+  );
+}
+
+function drawSpyScene(ctx, state, t, now) {
+  const cam = spyCam(t);
+  const X = (worldX) => Math.round(worldX - cam);
+  const onScreen = (worldX, pad) => worldX - cam > -(pad || 40) && worldX - cam < ARCADE_WIDTH + (pad || 40);
+
+  const alarm = t > 18500 && t < 29000;
+  const flash = alarm && Math.floor(now / 200) % 2 === 0;
+
+  // ---- sky: stars parallax at a fraction of the camera ----
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 0; i < 18; i++) {
+    const sx = ((i * 61 - cam * 0.15) % 190 + 190) % 190 - 15;
+    ctx.fillRect(Math.round(sx), 3 + ((i * 13) % 11), 1, 1);
+  }
+  drawArcadeCircle(ctx, X(120) + 0, 9, 4, ARCADE_INK[1]);
+
+  // ---- ground ----
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, SPY_GROUND_Y, ARCADE_WIDTH, 1);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 0; i < 40; i++) {
+    const wx = i * 26;
+    if (onScreen(wx, 10)) ctx.fillRect(X(wx), SPY_GROUND_Y + 4, 6, 1);
+  }
+
+  // ---- ACT 1: perimeter fence + searchlight towers ----
+  for (const [wx, phase] of [[0, 0], [230, 1.9]]) {
+    if (!onScreen(wx, 60)) continue;
+    const tx = X(wx);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(tx - 1, 22, 3, SPY_GROUND_Y - 22);
+    ctx.fillRect(tx - 3, 20, 7, 3);
+    const aim = Math.PI * (0.34 + Math.sin(now / 1600 + phase) * 0.15);
+    for (let i = 5; i < 40; i++) {
+      const px = tx + Math.cos(aim) * i;
+      const py = 22 + Math.sin(aim) * i;
+      if (py > SPY_GROUND_Y) break;
+      const spread = Math.max(2, Math.round(i * 0.4));
+      ctx.fillStyle = i % 3 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
+      ctx.fillRect(Math.round(px - spread / 2), Math.round(py), spread, 1);
+    }
+  }
+  // chain-link fence
+  for (let wx = 40; wx < 200; wx += 4) {
+    if (!onScreen(wx, 6)) continue;
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(X(wx), 34, 1, SPY_GROUND_Y - 34);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  if (onScreen(120, 90)) ctx.fillRect(X(40), 34, 160, 1);
+
+  // ---- ACT 1b: the security beam and the gadget that kills it ----
+  const beamAlive = t < 9200;
+  if (onScreen(212, 30)) {
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(X(206), 30, 2, 6);
+    ctx.fillRect(X(206), SPY_GROUND_Y - 8, 2, 6);
+    if (beamAlive) {
+      ctx.fillStyle = Math.floor(now / 120) % 2 === 0 ? ARCADE_INK[3] : ARCADE_INK[2];
+      for (let y = 36; y < SPY_GROUND_Y - 8; y += 2) ctx.fillRect(X(207), y, 1, 1);
+    } else if (t < 10200) {
+      // dying sparks
+      ctx.fillStyle = ARCADE_INK[2];
+      for (let i = 0; i < 4; i++) ctx.fillRect(X(207) + ((i * 3) % 5) - 2, 38 + i * 3, 1, 1);
+    }
+  }
+  // the gadget: a small disc the agent sets down, which pulses then kills it
+  if (t > 7600 && t < 11500 && onScreen(200, 20)) {
+    const pulse = Math.floor(now / 140) % 2 === 0;
+    ctx.fillStyle = t < 9200 && pulse ? ARCADE_INK[3] : ARCADE_INK[2];
+    ctx.fillRect(X(199), SPY_GROUND_Y - 3, 4, 2);
+    if (t < 9200) {
+      const r = 3 + Math.round(((now / 90) % 10));
+      drawArcadeCircle(ctx, X(201), SPY_GROUND_Y - 3, r, ARCADE_INK[1]);
+    }
+  }
+
+  // ---- ACT 1c: a guard on patrol ----
+  const guardWorld = 268 + Math.sin(t / 2100) * 30;
+  if (onScreen(guardWorld, 20)) {
+    drawArcadeSprite(ctx, SPY_GUARD, X(guardWorld), SPY_GROUND_Y - SPY_GUARD.length, 1);
+    // torch
+    ctx.fillStyle = ARCADE_INK[1];
+    const dir = Math.cos(t / 2100) > 0 ? 1 : -1;
+    for (let i = 2; i < 14; i += 2) ctx.fillRect(X(guardWorld) + 2 + dir * i, SPY_GROUND_Y - 6 + (i >> 2), 2, 1);
+  }
+
+  // ---- ACT 2: the facility wall + vault ----
+  if (onScreen(360, 120)) {
+    ctx.fillStyle = flash ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(X(300), 26, 1, SPY_GROUND_Y - 26);
+    ctx.fillRect(X(430), 26, 1, SPY_GROUND_Y - 26);
+    ctx.fillRect(X(300), 26, 131, 1);
+    for (let i = 0; i < 8; i++) {
+      const wx = 312 + i * 15;
+      ctx.fillStyle = flash ? ARCADE_INK[3] : i % 3 === 0 ? ARCADE_INK[2] : ARCADE_INK[1];
+      ctx.fillRect(X(wx), 31, 4, 3);
+    }
+    // vault
+    const vx = X(348);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(vx, 36, 14, 14);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(vx + 1, 37, 12, 12);
+    drawArcadeCircle(ctx, vx + 7, 43, 3, ARCADE_INK[2]);
+    if (t > 15600) {
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(vx - 6, 36, 6, 14);
+      if (t < 18500) {
+        ctx.fillStyle = Math.floor(now / 150) % 2 === 0 ? ARCADE_INK[3] : ARCADE_INK[2];
+        ctx.fillRect(vx + 5, 41, 5, 5);
+      }
+    }
+  }
+
+  // ---- ACT 3: the closing gate, and the pursuer ----
+  if (t > 22000 && onScreen(560, 60)) {
+    const p = arcadeClamp01((t - 22000) / 3200);
+    const gh = Math.round(p * 28);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(X(556), 20, 2, SPY_GROUND_Y - 20);
+    ctx.fillRect(X(600), 20, 2, SPY_GROUND_Y - 20);
+    ctx.fillRect(X(556), 20, 46, 2);
+    for (let i = 0; i < gh; i += 3) ctx.fillRect(X(558), 22 + i, 42, 1);
+  }
+  if (t > 24500) {
+    const chaseX = arcadePath([[24500, 420], [31000, 700]], t);
+    if (onScreen(chaseX, 30)) {
+      drawArcadeSprite(ctx, SPY_CAR, X(chaseX), SPY_GROUND_Y - 7, 1, ARCADE_INK[1]);
+      if (flash) {
+        ctx.fillStyle = ARCADE_INK[3];
+        ctx.fillRect(X(chaseX) + 6, SPY_GROUND_Y - 11, 2, 2);
+      }
+    }
+  }
+
+  // ---- the agent ----
+  let agentWorld = spyAgentWorldX(t);
+  let sprite = SPY_AGENT;
+  let agentVisible = t < 24600;
+  if (t > 4200 && t < 5200) sprite = SPY_AGENT_CROUCH; // ducks a sweep
+  else if (t > 7600 && t < 9200) sprite = SPY_AGENT_CROUCH; // placing the gadget
+  else if (t > 11400 && t < 12900) sprite = SPY_AGENT_CROUCH; // hides from the guard
+  else if (t > 18500) sprite = Math.floor(t / 130) % 2 === 0 ? SPY_AGENT_RUN : SPY_AGENT;
+  else if (t > 3000 && t < 14500) sprite = Math.floor(t / 210) % 2 === 0 ? SPY_AGENT_RUN : SPY_AGENT;
+
+  if (agentVisible && onScreen(agentWorld, 20)) {
+    drawArcadeSprite(ctx, sprite, X(agentWorld), SPY_GROUND_Y - sprite.length, 1);
+    // the stolen tile, once taken, stays visibly in hand for the rest of it
+    if (t > 17400) {
+      ctx.fillStyle = Math.floor(now / 150) % 2 === 0 ? ARCADE_INK[3] : ARCADE_INK[2];
+      ctx.fillRect(X(agentWorld) - 2, SPY_GROUND_Y - sprite.length - 3, 4, 4);
+    }
+  }
+
+  // ---- ACT 4: the car, the dock, and the payoff ----
+  const carWorld = arcadePath(
+    [
+      [20000, 620],
+      [23200, 505],
+      [24400, 505],
+      [28600, 800],
+      [30000, 872],
+      [32000, 940],
+    ],
+    t
+  );
+  const launched = t > 24400;
+
+  // the dock and the water beyond it
+  if (onScreen(840, 140)) {
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(X(700), SPY_GROUND_Y, Math.max(0, X(846) - X(700)), 1);
+    ctx.fillStyle = ARCADE_INK[1];
+    for (let i = 0; i < 5; i++) ctx.fillRect(X(760 + i * 20), SPY_GROUND_Y + 1, 2, 6);
+    // sea
+    for (let x = Math.max(0, X(846)); x < ARCADE_WIDTH; x++) {
+      const wy = SPY_GROUND_Y + 4 + Math.round(Math.sin((x + cam * 0.6 + now / 90) / 6) * 1.6);
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(x, wy, 1, 1);
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(x, wy + 5, 1, 1);
+    }
+  }
+
+  if (t > 20000 && onScreen(carWorld, 40)) {
+    // arc off the end of the dock, then submerge
+    let carY = SPY_GROUND_Y - 7;
+    let submerged = false;
+    if (t > 29300) {
+      const p = arcadeClamp01((t - 29300) / 900);
+      carY = SPY_GROUND_Y - 7 - Math.round(Math.sin(p * Math.PI) * 9) + Math.round(p * 14);
+      submerged = p >= 1;
+    }
+    if (!submerged) {
+      drawArcadeSprite(ctx, SPY_CAR, X(carWorld), Math.round(carY), 1);
+      if (launched) {
+        ctx.fillStyle = ARCADE_INK[1];
+        for (let i = 1; i <= 5; i++) ctx.fillRect(X(carWorld) - i * 8 - 4, Math.round(carY) + 3 + (i % 2), 6, 1);
+      }
+    } else {
+      // PAYOFF: it surfaces as a submersible — hull, conning tower, periscope,
+      // and the stolen tile still glowing behind the canopy.
+      const subY = SPY_GROUND_Y + 8;
+      ctx.fillStyle = ARCADE_INK[2];
+      ctx.fillRect(X(carWorld) + 1, subY, 16, 4);
+      ctx.fillRect(X(carWorld) + 5, subY - 3, 6, 3);
+      ctx.fillStyle = ARCADE_INK[3];
+      ctx.fillRect(X(carWorld) + 7, subY - 8, 1, 5);
+      ctx.fillRect(X(carWorld) + 7, subY - 9, 3, 1);
+      ctx.fillRect(X(carWorld) + 12, subY + 1, 2, 2);
+      // bubbles
+      ctx.fillStyle = ARCADE_INK[1];
+      for (let i = 0; i < 5; i++) {
+        const ph = (now / 700 + i * 0.2) % 1;
+        ctx.fillRect(X(carWorld) - 3 - i * 3, subY + 2 - Math.round(ph * 6), 1, 1);
+      }
+    }
+    // the splash as it hits
+    if (t > 29900 && t < 30600) {
+      const p = (t - 29900) / 700;
+      ctx.fillStyle = p < 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
+      for (let i = 0; i < 9; i++) {
+        ctx.fillRect(
+          X(carWorld) + 8 + Math.round((i - 4) * p * 9),
+          SPY_GROUND_Y + 6 - Math.round(Math.sin(p * Math.PI) * 12) + Math.abs(i - 4),
+          1,
+          2
+        );
+      }
+    }
+  }
+}
+
+
+
+// ---- SCENE: aquarium ------------------------------------------------------
+//
+// The calm one. No story, no payoff to wait for — the brief is simply "this is
+// a nice little aquarium", so the design goal was continuous life rather than
+// progression.
+//
+// SEAMLESS LOOP: every fish's motion is a pure function of scene time whose
+// period divides AQUARIUM_DURATION_MS exactly (32s / 1, 2 or 4). At t=duration
+// every swimmer is therefore back where it began, so the wrap is invisible
+// even on a load long enough to replay it several times. Bubbles and seaweed
+// key off `now` instead and are continuous by construction.
+const AQUARIUM_DURATION_MS = 32000;
+const AQ_FLOOR_Y = 54;
+
+// Fish silhouettes, deliberately unalike: a plain swimmer, a tall round one,
+// a tiny dart, a long slow cruiser, and a flat bottom-dweller.
+const AQ_FISH_S = [".22.", "2222", "3222", ".22."];
+const AQ_FISH_S_L = [".22.", "2222", "2223", ".22."];
+const AQ_FISH_ROUND = ["..222..", ".22222.", "3222222", ".222222", "..2222."];
+const AQ_FISH_TINY = ["22.", "323"];
+const AQ_FISH_BIG = [
+  "....22222....",
+  "..222222222..",
+  ".32222222222.",
+  "3222222222222",
+  ".32222222222.",
+  "..222222222..",
+  "....22222....",
+];
+const AQ_FISH_FLAT = [".2222.", "322222", ".2222."];
+
+// The landmark: a little sunken ship, listing to port with a snapped mast,
+// two portholes and a half-buried bow.
+const AQ_WRECK = [
+  "..........3..........",
+  ".........3...........",
+  "........3............",
+  "......33.............",
+  ".....3...............",
+  "..3333333333333......",
+  ".3.2.....2....33.....",
+  "33333333333333333....",
+  "..3333333333333333...",
+];
+
+function aqFish(t, period, phase) {
+  // 0..1, wrapping. Period divides the scene duration so the loop is clean.
+  return ((t / period + phase) % 1 + 1) % 1;
+}
+
+function drawAqSeaweed(ctx, baseX, height, now, seed) {
+  for (let i = 0; i < height; i++) {
+    const sway = Math.sin(now / 900 + seed + i / 3.2) * (i / height) * 3.5;
+    ctx.fillStyle = i > height - 3 ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(Math.round(baseX + sway), AQ_FLOOR_Y - i, 2, 1);
+  }
+}
+
+function drawAquariumScene(ctx, state, t, now) {
+  // tank glass
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, 1, ARCADE_WIDTH, 1);
+  ctx.fillRect(0, 0, 1, ARCADE_HEIGHT);
+  ctx.fillRect(ARCADE_WIDTH - 1, 0, 1, ARCADE_HEIGHT);
+  // surface shimmer
+  for (let x = 2; x < ARCADE_WIDTH - 2; x += 2) {
+    const s = Math.sin((x + now / 40) / 7) > 0.3;
+    ctx.fillStyle = s ? ARCADE_INK[2] : ARCADE_INK[1];
+    ctx.fillRect(x, 3, 1, 1);
+  }
+
+  // gravel + rocks
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let x = 1; x < ARCADE_WIDTH - 1; x++) {
+    const h = 4 + Math.round(Math.sin(x / 13) * 1.6 + Math.sin(x / 5) * 0.9);
+    ctx.fillRect(x, ARCADE_HEIGHT - h, 1, h);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  for (let x = 3; x < ARCADE_WIDTH; x += 7) ctx.fillRect(x, AQ_FLOOR_Y + 4, 2, 1);
+  // a couple of boulders
+  for (const [bx, bw] of [[18, 9], [96, 7]]) {
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(bx, AQ_FLOOR_Y - 1, bw, 5);
+    ctx.fillRect(bx + 1, AQ_FLOOR_Y - 3, bw - 2, 3);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(bx + 1, AQ_FLOOR_Y - 3, bw - 2, 1);
+  }
+
+  drawAqSeaweed(ctx, 8, 22, now, 0);
+  drawAqSeaweed(ctx, 12, 15, now, 1.4);
+  drawAqSeaweed(ctx, 140, 26, now, 2.1);
+  drawAqSeaweed(ctx, 146, 17, now, 3.3);
+  drawAqSeaweed(ctx, 70, 12, now, 4.7);
+
+  // the sunken ship, the tank's landmark
+  const wreckX = 46;
+  const wreckY = AQ_FLOOR_Y - AQ_WRECK.length + 3;
+  drawArcadeSprite(ctx, AQ_WRECK, wreckX, wreckY, 1);
+  // it burps a bubble now and then, from the same porthole
+  const burp = (now / 2600) % 1;
+  if (burp < 0.5) {
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(wreckX + 4, wreckY + 6 - Math.round(burp * 2 * 26), 1, 1);
+  }
+
+  // air stone, bottom left — a continuous column, the tank's heartbeat
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(30, AQ_FLOOR_Y + 3, 5, 2);
+  for (let i = 0; i < 9; i++) {
+    const ph = ((now / 1500 + i * 0.111) % 1);
+    const by = AQ_FLOOR_Y + 2 - Math.round(ph * (AQ_FLOOR_Y - 2));
+    ctx.fillStyle = ph > 0.7 ? ARCADE_INK[1] : ARCADE_INK[2];
+    ctx.fillRect(32 + Math.round(Math.sin(ph * 9 + i) * 2), by, 1, 1);
+  }
+
+  // ---- fish ----
+  // Big slow cruiser, right to left, one full traverse per loop.
+  {
+    const p = aqFish(t, AQUARIUM_DURATION_MS, 0.15);
+    const x = ARCADE_WIDTH + 16 - p * (ARCADE_WIDTH + 34);
+    const y = 20 + Math.sin(p * Math.PI * 4) * 5;
+    drawArcadeSprite(ctx, AQ_FISH_BIG, Math.round(x), Math.round(y), 1);
+    // tail beat
+    ctx.fillStyle = ARCADE_INK[2];
+    const tw = Math.abs(Math.sin(now / 340)) > 0.5 ? 3 : 2;
+    ctx.fillRect(Math.round(x) + 13, Math.round(y) + 2, tw, 3);
+
+    // THE GAG: a tiny fish tucks in behind the cruiser and tags along, then
+    // loses interest and peels off.
+    const follow = p > 0.28 && p < 0.62;
+    if (follow) {
+      const fx = x + 17 + Math.sin(now / 300) * 2;
+      drawArcadeSprite(ctx, AQ_FISH_TINY, Math.round(fx), Math.round(y + 3), 1);
+    }
+  }
+
+  // Round fish, left to right, twice per loop, bobbing.
+  {
+    const p = aqFish(t, AQUARIUM_DURATION_MS / 2, 0.6);
+    const x = -10 + p * (ARCADE_WIDTH + 22);
+    const y = 32 + Math.sin(p * Math.PI * 6) * 6;
+    drawArcadeSprite(ctx, AQ_FISH_ROUND, Math.round(x), Math.round(y), 1);
+  }
+
+  // Two small fish loosely schooling, right to left, twice per loop.
+  for (let i = 0; i < 2; i++) {
+    const p = aqFish(t, AQUARIUM_DURATION_MS / 2, 0.05 + i * 0.06);
+    const x = ARCADE_WIDTH + 8 - p * (ARCADE_WIDTH + 20);
+    const y = 12 + i * 5 + Math.sin(p * Math.PI * 8 + i) * 3;
+    drawArcadeSprite(ctx, AQ_FISH_S_L, Math.round(x), Math.round(y), 1);
+  }
+
+  // Tiny darter: four traversals, moves in bursts then coasts.
+  {
+    const p = aqFish(t, AQUARIUM_DURATION_MS / 4, 0.33);
+    const burst = Math.min(1, Math.max(0, (Math.sin(p * Math.PI * 6) + 1) / 2));
+    const x = -6 + (p * 0.75 + burst * 0.25) * (ARCADE_WIDTH + 14);
+    const y = 40 + Math.sin(p * Math.PI * 10) * 4;
+    drawArcadeSprite(ctx, AQ_FISH_TINY, Math.round(x), Math.round(y), 1);
+  }
+
+  // Bottom-dweller, hugging the gravel, one slow pass per loop.
+  {
+    const p = aqFish(t, AQUARIUM_DURATION_MS, 0.72);
+    const x = -8 + p * (ARCADE_WIDTH + 18);
+    const y = AQ_FLOOR_Y - 3 + Math.sin(p * Math.PI * 12) * 1.2;
+    drawArcadeSprite(ctx, AQ_FISH_FLAT, Math.round(x), Math.round(y), 1);
+  }
+
+  // A shy one that peeks out of the wreck and thinks better of it.
+  {
+    const ph = (t / (AQUARIUM_DURATION_MS / 2)) % 1;
+    if (ph > 0.55 && ph < 0.78) {
+      const out = Math.sin(((ph - 0.55) / 0.23) * Math.PI) * 6;
+      drawArcadeSprite(ctx, AQ_FISH_S, Math.round(wreckX + 8 + out), wreckY + 5, 1);
+    }
+  }
+}
+
+// ---- the pool -------------------------------------------------------------
+//
+// A scene is a plain object. `create`/`update` are optional — scenes whose
+// choreography is a pure function of scene time (Bigfoot, UFO, Pirate) omit
+// them entirely, which is why only Starfighter and Projector carry mutable
+// state at all.
+//   durationMs  full loop length; ~15s so a small load sees a meaningful
+//               chunk, a typical load sees most of one, and a big load
+//               repeats only a couple of times.
+//   stillAtMs   the moment rendered for prefers-reduced-motion. Chosen per
+//               scene as its strongest single frame.
+//   fade        alpha used to repaint the background each frame. Lower keeps
+//               more phosphor trail. Fast-moving scenes want the smear;
+//               character scenes want a crisper silhouette, so Bigfoot and
+//               Projector sit near-opaque.
+const ARCADE_SCENES = [
+  {
+    name: "starfighter",
+    durationMs: SF_DURATION_MS,
+    // The heavy on screen, its three-shot spread descending, the fighter
+    // banking clear with a lance in flight — the frame with the most
+    // "tiny space battle" context in it, rather than the one with the most
+    // pixels.
+    stillAtMs: 22000,
+    fade: 0.62,
+    create: createStarfighterState,
+    update: updateStarfighter,
+    draw: drawStarfighterScene,
+  },
+  {
+    name: "projector",
+    durationMs: PROJECTOR_DURATION_MS,
+    stillAtMs: 6200,
+    fade: 0.9,
+    create: createProjectorState,
+    update: updateProjectorState,
+    draw: drawProjectorScene,
+  },
+  {
+    name: "science-lab",
+    durationMs: LAB_DURATION_MS,
+    stillAtMs: 19000,
+    fade: 0.94,
+    draw: drawLabScene,
+  },
+  {
+    name: "deep-sea-diver",
+    durationMs: DIVER_DURATION_MS,
+    stillAtMs: 22200,
+    fade: 0.86,
+    create: createDiverState,
+    update: updateDiverState,
+    draw: drawDiverScene,
+  },
+  {
+    name: "superspy",
+    durationMs: SPY_DURATION_MS,
+    // Agent at the vault with the glowing tile, alarm just lit.
+    stillAtMs: 17800,
+    fade: 0.94,
+    draw: drawSpyScene,
+  },
+  {
+    name: "aquarium",
+    durationMs: AQUARIUM_DURATION_MS,
+    stillAtMs: 9000,
+    fade: 0.9,
+    draw: drawAquariumScene,
+  },
+];
+
+// ---- animation controller -------------------------------------------------
+
+let arcadeRafId = null;
+let arcadeCtx = null;
+let arcadeState = null;
+let arcadeStartedAt = 0;
+let arcadeLastLoopT = -1;
+let arcadeLastRender = 0;
+
+// [V2-POLISH / MICRO-ARCADE-SCENE-POOL]
+// Session-scoped selection. arcadeCurrentScene is whatever is running now;
+// arcadePreviousScene outlives the session purely so the next selection can
+// exclude it. Selection happens in exactly one place —
+// startArcadeAnimation(), itself only reachable from the not-loading ->
+// loading edge in syncMobileLoadState() — so no render, progress tick or
+// loop wrap can ever re-pick.
+let arcadeCurrentScene = null;
+let arcadePreviousScene = null;
+
+// [V2-POLISH / MICRO-ARCADE-TEST-SEQUENTIAL]
+// TESTING SWITCH — flip to "random" to restore production behavior.
+// "random"     — ship behavior: uniform pick excluding the previous scene.
+// "sequential" — walks the pool in ARCADE_SCENES order, one step per load
+//                session, so every scene can be reviewed without reloading
+//                until chance offers it.
+// This is the ONLY thing that differs between the two modes. Both funnel
+// through the same pickArcadeScene() call site, so the lifecycle, the
+// same-scene looping and the rAF ownership are untouched by the choice.
+const MICRO_ARCADE_SELECTION_MODE = "sequential";
+const MICRO_ARCADE_TEST_INDEX_KEY = "bg-micro-arcade-test-index";
+
+// sessionStorage, deliberately: it is scoped to the tab, dies with it, and
+// needs no schema, migration or cleanup. Wrapped because storage access
+// throws outright in some privacy modes and sandboxed frames, and a testing
+// aid must never be able to break a real load.
+function readArcadeTestIndex() {
+  try {
+    const raw = window.sessionStorage.getItem(MICRO_ARCADE_TEST_INDEX_KEY);
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed % ARCADE_SCENES.length : 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
+function writeArcadeTestIndex(index) {
+  try {
+    window.sessionStorage.setItem(MICRO_ARCADE_TEST_INDEX_KEY, String(index));
+  } catch (err) {
+    /* testing aid only — a storage failure must not affect the load */
+  }
+}
+
+// The production selector, kept intact and reachable.
+function pickArcadeSceneRandom() {
+  const candidates =
+    ARCADE_SCENES.length > 1 ? ARCADE_SCENES.filter((scene) => scene !== arcadePreviousScene) : ARCADE_SCENES;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function pickArcadeSceneSequential() {
+  const index = readArcadeTestIndex();
+  writeArcadeTestIndex((index + 1) % ARCADE_SCENES.length);
+  return ARCADE_SCENES[index];
+}
+
+function pickArcadeScene() {
+  const chosen =
+    MICRO_ARCADE_SELECTION_MODE === "sequential" ? pickArcadeSceneSequential() : pickArcadeSceneRandom();
+  arcadeCurrentScene = chosen;
+  arcadePreviousScene = chosen;
+  return chosen;
+}
+
+// Shared frame: background persistence, the scene's own drawing, then the CRT
+// overlays. Scanlines and flicker live here rather than in any scene so all
+// five share one screen, and so a scene can never forget them.
+function paintArcadeFrame(scene, state, t, now, solid) {
+  const ctx = arcadeCtx;
+  ctx.globalAlpha = solid ? 1 : scene.fade;
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(0, 0, ARCADE_WIDTH, ARCADE_HEIGHT);
+  ctx.globalAlpha = 1;
+
+  scene.draw(ctx, state, t, now);
+
+  ctx.fillStyle = "rgba(0, 0, 0, 0.16)";
+  for (let y = 0; y < ARCADE_HEIGHT; y += 2) ctx.fillRect(0, y, ARCADE_WIDTH, 1);
+  ctx.fillStyle = `rgba(0, 0, 0, ${0.03 + 0.02 * Math.sin(now / 260)})`;
+  ctx.fillRect(0, 0, ARCADE_WIDTH, ARCADE_HEIGHT);
+}
+
+function renderArcadeFrame(now) {
+  arcadeRafId = requestAnimationFrame(renderArcadeFrame);
+  if (now - arcadeLastRender < ARCADE_FRAME_MS) return;
+
+  // Clamped so a backgrounded or janked tab resumes with a sane step instead
+  // of teleporting every sprite (which would also let Starfighter's bullets
+  // tunnel through enemies and silently lose the explosion beat).
+  const dt = Math.min(50, arcadeLastRender ? now - arcadeLastRender : ARCADE_FRAME_MS);
+  arcadeLastRender = now;
+
+  const scene = arcadeCurrentScene;
+  const t = (now - arcadeStartedAt) % scene.durationMs;
+
+  // A long load outlasting the scene replays THE SAME scene: only the
+  // scene-local state is rebuilt at the wrap, never the selection.
+  if (t < arcadeLastLoopT) arcadeState = scene.create ? scene.create() : null;
+  arcadeLastLoopT = t;
+
+  if (scene.update) scene.update(arcadeState, t, dt, now);
+  paintArcadeFrame(scene, arcadeState, t, now, false);
+}
+
+// Reduced motion: fast-forward the selected scene's own timeline headlessly to
+// its authored strongest moment, paint one frame, and never start the loop.
+// Reusing the real simulation means the still is a genuine frame of that
+// scene rather than a separate asset that could drift from it.
+function renderArcadeStill(scene) {
+  arcadeState = scene.create ? scene.create() : null;
+  if (scene.update) {
+    for (let t = 0; t <= scene.stillAtMs; t += ARCADE_FRAME_MS) {
+      scene.update(arcadeState, t, ARCADE_FRAME_MS, t);
+    }
+  }
+  paintArcadeFrame(scene, arcadeState, scene.stillAtMs, scene.stillAtMs, true);
+}
+
+function startArcadeAnimation() {
+  if (arcadeRafId !== null) return;
+  if (!arcadeCtx) {
+    arcadeCtx = mobileLoadCanvas.getContext ? mobileLoadCanvas.getContext("2d") : null;
+    if (!arcadeCtx) return;
+    arcadeCtx.imageSmoothingEnabled = false;
+  }
+
+  const scene = pickArcadeScene();
+  arcadeState = scene.create ? scene.create() : null;
+  arcadeLastLoopT = -1;
+  arcadeLastRender = 0;
+
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    renderArcadeStill(scene);
+    return;
+  }
+
+  arcadeStartedAt = performance.now();
+  arcadeRafId = requestAnimationFrame(renderArcadeFrame);
+}
+
+// arcadePreviousScene is deliberately NOT cleared here: it must survive to
+// the next startArcadeAnimation() so that call can exclude it.
+function stopArcadeAnimation() {
+  arcadeCurrentScene = null;
+  if (arcadeRafId === null) return;
+  cancelAnimationFrame(arcadeRafId);
+  arcadeRafId = null;
+}
 
 const MOBILE_ATMOSPHERE_PHRASES = ["Building your gallery…", "Still working…", "Preparing your media…"];
 
-let mobileTakeoverAnimationTimer = null;
+let mobileTakeoverTextTimer = null;
 
 // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+// The takeover's two TEXT decorations — the indeterminate activity-bar sweep
+// and the rotating atmosphere phrase. Unchanged Stage 6 behavior on its
+// original 550ms beat.
+// [V2-POLISH / MICRO-ARCADE-CANVAS] This is deliberately a separate timer
+// from the canvas scene's own requestAnimationFrame loop, rather than one
+// clock driving both: the scene runs at ~30fps and the text at ~2fps, and an
+// earlier attempt to derive one from the other only produced divide-down
+// arithmetic whose sole purpose was to reconstruct this exact 550ms cadence.
+// Two timers, each with one job, is the smaller thing.
 // Idempotent — a second call while already running is a no-op, so this can
 // never be started twice into two concurrent intervals. `tick` lives in this
-// call's own closure, so every fresh load starts the loop at frame 0 with no
-// state carried over from a previous one.
-// Respects prefers-reduced-motion by painting exactly one frame and
-// returning before the interval is ever created — see the WHY below.
-function startMobileTakeoverAnimation() {
-  if (mobileTakeoverAnimationTimer !== null) return;
+// call's own closure, so every fresh load starts at tick 0 with no state
+// carried over from a previous one.
+function startMobileTakeoverTextTicker() {
+  if (mobileTakeoverTextTimer !== null) return;
 
   let tick = 0;
   const renderTick = () => {
-    mobileLoadAscii.textContent = MOBILE_TAKEOVER_FRAMES[tick % MOBILE_TAKEOVER_FRAMES.length];
     if (!mobileLoadHasKnownTotal) renderMobileActivityBarSweep(tick);
     if (tick % 8 === 0) {
       mobileLoadAtmosphereText.textContent = MOBILE_ATMOSPHERE_PHRASES[(tick / 8) % MOBILE_ATMOSPHERE_PHRASES.length];
@@ -1144,16 +3330,32 @@ function startMobileTakeoverAnimation() {
   // above.
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
-  mobileTakeoverAnimationTimer = setInterval(renderTick, 550);
+  mobileTakeoverTextTimer = setInterval(renderTick, 550);
 }
 
-// Idempotent — safe to call even when nothing is running (every
-// syncMobileLoadState() exit path from "loading" calls this unconditionally
-// rather than trying to remember whether reduced-motion left it unset).
+function stopMobileTakeoverTextTicker() {
+  if (mobileTakeoverTextTimer === null) return;
+  clearInterval(mobileTakeoverTextTimer);
+  mobileTakeoverTextTimer = null;
+}
+
+// [V2-POLISH / MICRO-ARCADE-CANVAS]
+// The load-session lifecycle boundary, unchanged in shape from Stage 6:
+// syncMobileLoadState() still calls exactly these two, on exactly the same
+// not-loading -> loading and loading -> not-loading edges. Only what lives
+// behind them changed (ASCII frames -> pixel canvas), which is the whole
+// point of keeping the boundary — a future scene pool swaps the contents of
+// startArcadeAnimation() without touching this seam or the loader.
+// Both are idempotent; every exit path calls stop unconditionally rather
+// than tracking whether reduced-motion left a timer unset.
+function startMobileTakeoverAnimation() {
+  startMobileTakeoverTextTicker();
+  startArcadeAnimation();
+}
+
 function stopMobileTakeoverAnimation() {
-  if (mobileTakeoverAnimationTimer === null) return;
-  clearInterval(mobileTakeoverAnimationTimer);
-  mobileTakeoverAnimationTimer = null;
+  stopMobileTakeoverTextTicker();
+  stopArcadeAnimation();
 }
 
 // The single place that decides the mobile load state and writes it to the
@@ -1217,12 +3419,435 @@ function syncMobileLoadState() {
 // getVisibleItems() (used by reloadRuntime) might filter down to Favorites
 // Only — otherwise that filter would run against items that don't know
 // their own favorite/hidden status yet.
+let mediaIdSeedToken = 0;
+
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// [WHY: THE sequencing correction this stage turns on. Stage 01 resolved the
+//  media scope INSIDE the fire-and-forget seeding pass, which runs after
+//  finishLoadingItems() — so at first render getRoot() could still return null
+//  for a first-ever pick, and, worse, a child-first/MASTER-later load would
+//  render against the PRE-re-base prefixes because resolveScopeForRoot() is the
+//  call that performs the re-base.
+//
+//  So the two halves are now separate, in this order:
+//
+//      resolve / claim / join / re-base   <- AWAITED, structural, cheap
+//              -> build alias index       <- AWAITED
+//                      -> finishLoadingItems()  (first render, already correct)
+//                              -> bulk evidence seeding (fire-and-forget)
+//
+//  The scope is resolved EXACTLY ONCE: the seeding pass now receives the
+//  resolved scope instead of computing its own, so no ancestry probe and no
+//  re-base can run twice. media-scope.js and media-seeding.js needed no change
+//  at all — runSeedingPass already takes scopeId/prefixFromScopeRoot.]
+const PROJECTION_FIRST_RENDER_BUDGET_MS = 1500;
+const PROJECTION_STATUS_AFTER_MS = 250;
+
+// [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+// [WHY: MEDIA-ID's own channel, invalidation only. A sibling tab that claims a
+//  root or re-bases a scope moves every stored scope-relative path and every
+//  root prefix, so this tab's cached alias index describes state that no longer
+//  exists. The message carries a scopeId and a timestamp and NOTHING ELSE —
+//  IndexedDB stays the authority and the receiver always re-reads it. Freshness
+//  is PROMPT because of this channel; it is CORRECT because of the re-read, so
+//  a browser without BroadcastChannel simply rebuilds on its next load.]
+let mediaIdentityChannel = null;
+let lastProjectionRequest = null;
+
+function getMediaIdentityChannel() {
+  if (mediaIdentityChannel) return mediaIdentityChannel;
+  try {
+    mediaIdentityChannel = createMediaIdentityChannel({
+      deviceId: typeof profile.getDeviceId === "function" ? profile.getDeviceId() : null,
+      onInvalidate: () => {
+        // Drop the cache and rebuild from storage. Never trust the message.
+        rebuildProjectionFromStorage("a sibling tab changed MEDIA-ID state");
+      },
+    });
+  } catch (error) {
+    console.warn("[MEDIA-ID] Could not open the invalidation channel; projection will refresh on the next load.", error);
+    mediaIdentityChannel = null;
+  }
+  return mediaIdentityChannel;
+}
+
+function announceMediaIdentityChange(kind, scopeId) {
+  const channel = getMediaIdentityChannel();
+  if (channel) channel.announce(kind, { scopeId });
+}
+
+// [MEDIA-ID / STAGE-02 / DIAGNOSTIC]
+// [WHY: a projection that produces nothing has SEVERAL distinct causes and they
+//  need different fixes — no index at all (no scope row, or a single-root scope),
+//  no curated paths to project (the BP-FAIL-01 timing defect), candidates found
+//  but refused because a competing destination is PRESENT (correct duplicate
+//  safety), or refused as UNKNOWN (a root that could not be proven either way).
+//  The original line reported only "N aliased item(s)", which reads identically
+//  for all four — and during BP-FAIL-01 that cost a diagnosis cycle. This
+//  reports the counters only: no path lists, no fact values, no Profile contents.]
+function describeProjection(index) {
+  if (!index) return "no index (no scope row, or a single-root scope — nothing to project)";
+  const d = index.diagnostics || {};
+  const probes = d.probes || {};
+  const existence = d.existence || {};
+  return (
+    `${index.aliases.size} aliased of ${d.observed ?? "?"} observed; ` +
+    `factKeys=${d.factKeys ?? "?"} candidates=${d.candidates ?? 0} admitted=${d.admitted ?? 0} ` +
+    `refused(present=${d.refusedPresent ?? 0}, unknown=${d.refusedUnknown ?? 0}); ` +
+    `roots=${d.roots ?? "?"}(handles=${d.rootsWithHandles ?? "?"}) prefixes=[${(index.rootPrefixes || [])
+      .map((prefix) => JSON.stringify(prefix))
+      .join(", ")}]; ` +
+    `census(observed=${existence.observedHits ?? 0}, durable=${existence.durableHits ?? 0}, ` +
+    `absent=${existence.censusAbsent ?? 0}, probed=${existence.probed ?? 0}, unknown=${existence.unknown ?? 0}) ` +
+    `probes(dir=${probes.directoryProbes ?? 0}, file=${probes.fileProbes ?? 0}` +
+    `${probes.budgetExhausted ? ", BUDGET EXHAUSTED" : ""})` +
+    // [MEDIA-ID / STAGE-02B / TELEMETRY]
+    // [WHY: the Stage 02 line above says HOW MANY were refused; this says WHY,
+    //  which is the whole question Stage 02B exists to answer. It stays on the
+    //  same single line and keeps the same discipline — aggregate counters keyed
+    //  by a CLOSED vocabulary, so its width is fixed whether the library holds
+    //  twelve files or two hundred thousand. No path, filename or fact value is
+    //  ever emitted here; the bounded exemplars that do carry paths are reachable
+    //  only through window.__bgMediaIdTelemetry().]
+    `; ${formatTelemetry(d.telemetry)}`
+  );
+}
+
+// [MEDIA-ID / STAGE-02B / TELEMETRY]
+// [WHY SESSION-LOCAL AND IN MEMORY: one load produces several builds (the
+//  initial one, the one after evidence banking lands, one per sibling-tab
+//  invalidation), and each console line overwrites the last in a developer's
+//  attention. A fixed-length ring lets the whole sitting be read back at once —
+//  MASTER-first against child-first — which is exactly the comparison that
+//  decides whether Stage 03 is warranted.
+//
+//  It is deliberately NOT durable. A persistent store would need a schema, a
+//  version, an eviction policy and a multi-tab convergence story, all to answer
+//  a question one session already answers, and it would amount to a durable
+//  record of which media this user curates. MULTI-TAB SEMANTICS ARE THEREFORE
+//  NONE: nothing here is broadcast, nothing is read by another tab, and no tab
+//  can see or corrupt another's counters. It dies with the tab.]
+const mediaIdTelemetryHistory = createSessionHistory(TELEMETRY_LIMITS.SESSION_BUILDS);
+
+function recordProjectionTelemetry(reason, index, extra = {}) {
+  mediaIdTelemetryHistory.push({
+    at: Date.now(),
+    reason,
+    aliasedItems: index ? index.aliases.size : 0,
+    scopeId: index ? index.scopeId : null,
+    rootPrefixes: index ? [...(index.rootPrefixes || [])] : [],
+    diagnostics: index ? index.diagnostics || null : null,
+    ...extra,
+  });
+}
+
+async function rebuildProjectionFromStorage(reason) {
+  if (!lastProjectionRequest) return;
+  const request = lastProjectionRequest;
+  try {
+    const index = await buildAliasIndexForLoad(request);
+    if (lastProjectionRequest !== request) return; // superseded by a newer load
+    profileView.setAliasIndex(index);
+    // [MEDIA-ID / STAGE-02B / TELEMETRY]
+    recordProjectionTelemetry(`rebuild: ${reason}`, index);
+    console.info(`[MEDIA-ID] Projection rebuilt (${reason}): ${describeProjection(index)}`);
+  } catch (error) {
+    console.warn("[MEDIA-ID] Could not rebuild the projection. Path-exact behaviour is unaffected.", error);
+  }
+}
+
+/**
+ * Resolves the media scope structurally, then builds this load's alias index.
+ *
+ * Returns { scope, index } or null. Never throws: every failure degrades to
+ * today's exact-path behaviour rather than failing the media load.
+ */
+async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, complete, rootName = null }) {
+  let knownRootHandles = [];
+  if (handle) {
+    try {
+      // Read-only enumeration of other roots this device has persisted, so
+      // ancestry can be PROVEN against them. Unchanged from Stage 01.
+      const libraries = await listLibraries();
+      knownRootHandles = libraries
+        .filter((record) => record && record.handle && record.id !== rootId)
+        .map((record) => ({ rootId: record.id, handle: record.handle }));
+    } catch (error) {
+      console.warn("[MEDIA-ID] Could not enumerate known libraries for ancestry probing.", error);
+    }
+  }
+
+  const scope = await resolveScopeForRoot({ rootId, handle, sourceKind, knownRootHandles });
+
+  // A claim, a join, a mint or a re-base all move state sibling tabs have
+  // cached. Announced here, once, at the moment it becomes durable.
+  if (scope.action !== "existing") {
+    announceMediaIdentityChange(MEDIA_IDENTITY_MESSAGE_KINDS.SCOPE_CHANGED, scope.scopeId);
+  }
+
+  // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
+  // [WHY: `factKeys` is a CALLBACK, not a captured array, and `profileId` is
+  //  read through one too. ProfileStore starts #loadSavedRecords() in its
+  //  constructor and never exposes a promise for it — whenFactsSettled() waits
+  //  on the fact QUEUE, not on that read — so immediately after a page reload
+  //  knownPaths() legitimately returns []. A build that froze the array at that
+  //  instant saw zero curated paths, and because the SAME frozen request was
+  //  replayed by every later rebuild, the projection stayed empty for the rest
+  //  of the session. That is the Browser Preview failure exactly: correct scope,
+  //  correct prefix, 222 paths refreshed, five stamped MASTER facts present, and
+  //  "0 aliased item(s)" on every rebuild.
+  //
+  //  Both sources are the ACTIVE profile's, so Profile isolation is unchanged and
+  //  remains structural: no API on this path can return another Profile's
+  //  curation.]
+  const request = {
+    rootId,
+    profileId: () => profile.getProfileId(),
+    items,
+    factKeys: () => currentFactKeys(),
+    loadComplete: Boolean(complete),
+  };
+  lastProjectionRequest = request;
+  lastProjectionRecordCount = typeof profile.size === "function" ? profile.size() : 0;
+  lastProjectionFactPathCount = typeof profile.getFactPaths === "function" ? profile.getFactPaths().length : 0;
+
+  const index = await buildAliasIndexForLoad(request);
+
+  // [MEDIA-ID / STAGE-02B / TELEMETRY]
+  recordProjectionTelemetry("initial build", index, {
+    rootName: rootName || (handle && handle.name) || rootId,
+    scopeAction: scope.action,
+    prefixFromScopeRoot: scope.prefixFromScopeRoot,
+  });
+
+  // [MEDIA-ID / STAGE-02 / DIAGNOSTIC]
+  // The INITIAL build, reported on the same terms as a rebuild. Previously only
+  // rebuilds logged, so the first (and usually only) build was invisible.
+  console.info(
+    `[MEDIA-ID] Projection built for "${rootName || (handle && handle.name) || rootId}" ` +
+      `(scope ${scope.scopeId}, ${scope.action}, prefix ${JSON.stringify(scope.prefixFromScopeRoot)}): ` +
+      `${describeProjection(index)}`
+  );
+
+  return { scope, index };
+}
+
+// [MEDIA-ID / STAGE-02 / BP-FAIL-01]
+// [WHY: the other half of the same defect. Reading the curation live fixes a
+//  rebuild, but nothing was ASKING for a rebuild once ProfileStore's records
+//  finally arrived — the only rebuild triggers were a sibling tab's message and
+//  this tab's own seeding pass. So on a reload the first build correctly saw no
+//  curation and then nothing ever revisited it.
+//
+//  ProfileStore#loadSavedRecords ends with #emit(), and so does every adoption of
+//  a peer's facts, so a subscription here is a sufficient signal without any new
+//  ProfileStore API. It is gated on the CURATED PATH COUNT changing (size() is
+//  O(1)) and then on the new keys being able to produce a candidate at all, so an
+//  ordinary Favorite click on an already-curated item does no work, and a click
+//  that creates a path which cannot alias does no work either. Without that
+//  second gate a 20k library would re-run a ~70ms build on every first-time
+//  favourite.]
+let lastProjectionRecordCount = 0;
+let lastProjectionFactPathCount = 0;
+let projectionRebuildQueued = false;
+
+// [MEDIA-ID / STAGE-02 / BP-FAIL-03]
+// [WHY: alias DISCOVERY reads stamped fact paths, not flattened local records.
+//  ProfileStore#setRecord deletes a record that carries only false/empty values,
+//  so a path holding ONLY an un-favourite, an un-tag or an un-hide has no local
+//  record and never appears in knownPaths() — while its stamped facts are
+//  exactly what must beat the older positive value on a proven alias. Losing
+//  them made removals one-way: MASTER -> child projected, child -> MASTER did
+//  not, forever.
+//
+//  The union is deliberate and is the safe direction: getFactPaths() is the
+//  authority, and knownPaths() only covers the brief window in which a mutation
+//  has updated the local record but its fact has not yet been stamped. A key
+//  with no fact contributes nothing to resolution, and every extra candidate
+//  still goes through the unchanged competing-destination refusal.]
+function currentFactKeys() {
+  const fromFacts = typeof profile.getFactPaths === "function" ? profile.getFactPaths() : [];
+  const fromRecords = typeof profile.knownPaths === "function" ? profile.knownPaths() : [];
+  return [...new Set([...fromFacts, ...fromRecords])];
+}
+
+function couldChangeAliases() {
+  const request = lastProjectionRequest;
+  const index = profileView.getAliasIndex();
+  if (!request || !index) return true; // nothing built yet — let the rebuild decide
+
+  const observed = new Set();
+  for (const item of request.items || []) {
+    if (item && typeof item.relativePath === "string") observed.add(item.relativePath);
+  }
+
+  // A newly curated key matters only if some root prefix maps it onto a path
+  // this load is actually showing. An index that cannot answer that question
+  // falls through to rebuilding — the skip is an optimization, and it must never
+  // be the reason a projection fails to appear.
+  const prefixes = index.rootPrefixes;
+  if (!Array.isArray(prefixes) || !prefixes.length) return true;
+  for (const key of currentFactKeys()) {
+    for (const prefix of prefixes) {
+      if (prefix && !key.startsWith(prefix)) continue;
+      const viewed = key.slice(prefix.length);
+      if (viewed && observed.has(viewed) && !index.aliases.has(viewed)) return true;
+    }
+  }
+  return false;
+}
+
+// [MEDIA-ID / STAGE-02 / BP-FAIL-03]
+// [WHY: gating a rebuild on profile.size() alone was ALSO wrong, for the same
+//  underlying reason. Un-favouriting a projected Favorite on the child writes
+//  {favorite:false}, which isEmptyRecord() discards — so the record count does
+//  not change, and could even DECREASE, while a brand-new stamped fact key
+//  appeared. Measured directly: size stayed at 1 across the child removals.
+//
+//  The stamped fact-key COUNT is an exact signal here rather than a heuristic:
+//  sync-facts.js has no remove-a-key operation ("Every removal is expressed as a
+//  fact whose VALUE says removed") and mergeMaps only ever unions, so within one
+//  Profile the fact-key set is append-only and a count change means new keys.
+//  Both signals are consulted, so neither can suppress the other.]
+function onProfileCurationChanged() {
+  if (!lastProjectionRequest) return;
+  const size = typeof profile.size === "function" ? profile.size() : 0;
+  const factPathCount = typeof profile.getFactPaths === "function" ? profile.getFactPaths().length : 0;
+  if (size === lastProjectionRecordCount && factPathCount === lastProjectionFactPathCount) return;
+  lastProjectionRecordCount = size;
+  lastProjectionFactPathCount = factPathCount;
+  if (projectionRebuildQueued) return;
+
+  projectionRebuildQueued = true;
+  // Coalesced: a burst of adopted facts produces ONE rebuild, not one each.
+  Promise.resolve().then(() => {
+    projectionRebuildQueued = false;
+    if (!couldChangeAliases()) return;
+    rebuildProjectionFromStorage("the active Profile's curated paths changed");
+  });
+}
+
+profile.subscribe(onProfileCurationChanged);
+
+/**
+ * Runs the structural preparation under a soft first-render budget.
+ *
+ * [WHY A BUDGET: everything here is tens of milliseconds except one case — a
+ *  re-base rewrites every banked path row in the scope, which at 20k items is
+ *  seconds. That is rare (once per scope-root promotion, never per load) but it
+ *  must not silently stall the gallery. On overrun the load renders with exact
+ *  path behaviour and the work CONTINUES: the transaction is atomic, so
+ *  abandoning the wait never abandons the write, and the index is applied with a
+ *  single extra emit when it lands.]
+ */
+function beginMediaIdentityForLoad({ rootId, handle, sourceKind, items, rootName = null, complete = true }) {
+  mediaIdSeedToken += 1;
+  const token = mediaIdSeedToken;
+
+  // A new load invalidates the previous projection and every pending override.
+  profileView.beginEpoch();
+  profileView.setAliasIndex(null);
+  lastProjectionRequest = null;
+
+  if (!rootId || !Array.isArray(items) || !items.length) return Promise.resolve(null);
+
+  const ready = prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, complete, rootName }).catch((error) => {
+    console.warn("[MEDIA-ID] Could not prepare media identity. Path-exact behaviour is unaffected.", error);
+    return null;
+  });
+
+  // Bulk evidence banking — Stage 01's pass, unchanged in every respect except
+  // that it no longer resolves the scope itself. Still fire-and-forget, still
+  // after render, still superseded by a newer load, still failure-tolerant.
+  ready.then((prepared) => {
+    if (!prepared || !prepared.scope || token !== mediaIdSeedToken) return;
+    startMediaIdentitySeeding({ scope: prepared.scope, rootId, items, rootName, handle, token });
+  });
+
+  return ready;
+}
+
+/**
+ * Awaits the projection for at most the first-render budget, applies it, and
+ * returns. Never rejects.
+ */
+async function applyProjectionWithinBudget(ready) {
+  if (!ready) return;
+
+  let settled = false;
+  let statusTimer = null;
+  const previousStatus = statusText ? statusText.textContent : null;
+
+  if (statusText) {
+    statusTimer = setTimeout(() => {
+      if (!settled) statusText.textContent = "Reconciling library identity…";
+    }, PROJECTION_STATUS_AFTER_MS);
+  }
+
+  const budget = new Promise((resolve) => setTimeout(() => resolve("budget"), PROJECTION_FIRST_RENDER_BUDGET_MS));
+  const outcome = await Promise.race([ready.then((value) => ({ value })), budget]);
+  settled = true;
+  if (statusTimer) clearTimeout(statusTimer);
+  if (statusText && statusText.textContent === "Reconciling library identity…") {
+    statusText.textContent = previousStatus || "";
+  }
+
+  if (outcome === "budget") {
+    console.info("[MEDIA-ID] Structural preparation exceeded the first-render budget; rendering path-exact and applying the projection when it lands.");
+    ready.then((prepared) => {
+      if (prepared && prepared.index) profileView.setAliasIndex(prepared.index);
+    });
+    return;
+  }
+
+  if (outcome.value && outcome.value.index) profileView.setAliasIndex(outcome.value.index);
+}
+
+// ---- [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING] --------------------------
+//
+// The bulk evidence-banking pass. Receives an ALREADY-RESOLVED scope (see
+// beginMediaIdentityForLoad above) so no ancestry probing or re-base happens
+// twice.
+function startMediaIdentitySeeding({ scope, rootId, items, rootName, handle, token }) {
+  // Fire-and-forget by design: a user must never wait on bookkeeping that has
+  // no visible effect until the pass completes.
+  (async () => {
+    try {
+      const stats = await runSeedingPass({
+        scopeId: scope.scopeId,
+        rootId,
+        prefixFromScopeRoot: scope.prefixFromScopeRoot,
+        items,
+        factPaths: typeof profile.knownPaths === "function" ? profile.knownPaths() : [],
+        profileId: profile.getProfileId(),
+        shouldContinue: () => token === mediaIdSeedToken,
+      });
+
+      console.info(
+        `[MEDIA-ID] Banked evidence for "${rootName || (handle && handle.name) || rootId}": ` +
+          `${stats.created} new, ${stats.updated} refreshed, ${stats.adopted} adopted, ` +
+          `${stats.batches} batch(es)${stats.superseded ? " (superseded by a newer load)" : ""}. ` +
+          `Scope ${scope.scopeId} (${scope.action}).`
+      );
+
+      if (!stats.superseded && (stats.created || stats.updated)) {
+        // The durable path census grew, which can only make projection MORE
+        // conservative (more competing destinations become provably PRESENT).
+        announceMediaIdentityChange(MEDIA_IDENTITY_MESSAGE_KINDS.EVIDENCE_CHANGED, scope.scopeId);
+        if (token === mediaIdSeedToken) rebuildProjectionFromStorage("evidence banking completed");
+      }
+    } catch (error) {
+      console.warn("[MEDIA-ID] Evidence seeding did not complete. No user-visible behaviour is affected.", error);
+    }
+  })();
+}
+
 function finishLoadingItems(items) {
   items.forEach((item) => {
-    item.isFavorite = profile.isFavorite(item.relativePath);
-    item.isHidden = profile.isHidden(item.relativePath);
-    item.favoritedAt = profile.getFavoritedAt(item.relativePath);
-    item.userTags = profile.getItemTags(item.relativePath);
+    item.isFavorite = profileView.isFavorite(item.relativePath);
+    item.isHidden = profileView.isHidden(item.relativePath);
+    item.favoritedAt = profileView.getFavoritedAt(item.relativePath);
+    item.userTags = profileView.getItemTags(item.relativePath);
   });
 
   allItems = items;
@@ -1384,6 +4009,46 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     // a message that should stick around, not the generic status line.
     if (recognizedProfileName) {
       fsaStatusText.textContent = `✓ Recognized this library — Profile: ${recognizedProfileName}.`;
+    }
+
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: the legacy picker's equivalent of the FSA hook — same rule, same
+    //  moment: the items are loaded and finishLoadingItems() has run. A legacy
+    //  Library DOES have stable shared identity once it has been explicitly
+    //  associated (matchLegacySignature restores the row, libraryId and all), so
+    //  it participates on exactly the same terms as FSA rather than being
+    //  excluded. A legacy folder that was never associated, or that the matcher
+    //  declined to recognize, simply has no shared libraryId and
+    //  recordLibraryLoaded returns null — no identity is invented from a
+    //  signature or a folder name.]
+    if (activeLibraryRecord && activeLibraryRecord.id) {
+      try {
+        await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: activeLibraryRecord.name || rootName });
+      } catch (error) {
+        console.warn("[SYNCV3] Could not record this legacy Library load in the shared catalog.", error);
+      }
+
+      // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+      // [WHY: a legacy pick has no handle, so no ancestry can be proven and this
+      //  root simply gets its own media scope — a single-root scope, for which
+      //  buildAliasIndexForLoad returns null and every read is a plain
+      //  delegation. That is a real limitation, not a degraded mode: structure
+      //  alone never auto-resolves, so a Legacy root is never merged into
+      //  another scope on a guess. Its evidence is still worth banking —
+      //  legacy-library-signature.js is the only place in this app that ever
+      //  retained historical path->size pairs.
+      //
+      //  The projection is not awaited here the way the FSA path awaits it: the
+      //  identity work for a legacy root cannot change what the first render
+      //  shows (no siblings, no proven prefix), so there is nothing to wait for.]
+      beginMediaIdentityForLoad({
+        rootId: activeLibraryRecord.id,
+        handle: null,
+        sourceKind: "legacy",
+        items,
+        rootName,
+        complete: true,
+      });
     }
   } finally {
     isLoadingFiles = false;
@@ -1555,6 +4220,30 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       fsaStatusText.textContent = `${recognizedNote}Loaded ${count} item${count === 1 ? "" : "s"} from "${dirHandle.name}".${driftNote}`;
     }
 
+    // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+    // [WHY: BEFORE finishLoadingItems(), not after. finishLoadingItems() stamps
+    //  every item's Favorite/Hidden/Tags and calls reloadRuntime() — it IS the
+    //  first render. Preparing the scope afterwards (as Stage 01 did) meant a
+    //  first-ever pick had no scope row yet, and a child-first/MASTER-later load
+    //  rendered against prefixes the re-base was about to replace.
+    //
+    //  Gated on !result.incomplete exactly as the evidence pass already is: an
+    //  interrupted scan is not this folder's contents, so it can neither be
+    //  banked nor used as the completeness census that proves a competing
+    //  destination ABSENT.]
+    const mediaIdentityReady =
+      activeLibraryRecord && activeLibraryRecord.id && !result.incomplete
+        ? beginMediaIdentityForLoad({
+            rootId: activeLibraryRecord.id,
+            handle: dirHandle,
+            sourceKind: "fsa",
+            items: result.items,
+            rootName: dirHandle.name,
+            complete: true,
+          })
+        : null;
+    await applyProjectionWithinBudget(mediaIdentityReady);
+
     finishLoadingItems(result.items);
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the FSA provider out from under it.
@@ -1583,8 +4272,39 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
         // means the registry's remembered count/timestamp is stale.
         console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
       }
+
+      // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+      // [WHY: THE meaningful-load moment, and deliberately the same one
+      //  touchLibrary already uses — the scan finished and this device knows
+      //  which local Library it produced. Gated on `!result.incomplete` because
+      //  a scan that stopped early is exactly what the provider reports as NOT a
+      //  complete load; publishing "last loaded" for it would tell other devices
+      //  this Library was opened successfully when it was not.
+      //
+      //  recordLibraryLoaded reads the shared libraryId and never mints one, so
+      //  a folder that has never been explicitly associated is simply not
+      //  catalogued (returns null) rather than acquiring a synchronized identity
+      //  from being opened — Stage D3's rule, preserved. It writes locally and
+      //  announces to sibling tabs; Drive is the scheduler's job, not this
+      //  call's.]
+      if (!result.incomplete) {
+        try {
+          await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: dirHandle.name });
+        } catch (error) {
+          console.warn("[SYNCV3] Could not record this Library load in the shared catalog.", error);
+        }
+      }
+
       await renderRecentLibraries();
     }
+
+    // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+    // The evidence pass is started by beginMediaIdentityForLoad() above, off the
+    // same resolved scope, so the ancestry probing and any re-base happen
+    // exactly once per load. Its !result.incomplete gate moved up there with it,
+    // unchanged in meaning: a scan that stopped early is NOT this folder's
+    // contents, and banking it would write "these paths are all that exist here"
+    // from a partial walk.
 
     // [Phase 8.4-2] Single visibility rule, same one loadFiles() uses for
     // the legacy path — see currentLoadIsAssociated() for the id-less
@@ -3511,7 +6231,7 @@ function syncFavoriteButtons(item) {
   // even if something upstream someday forgets to re-stamp an item, and
   // means it's never displaying anything other than what's actually
   // persisted right now.
-  const isFavorite = Boolean(item && profile.isFavorite(item.relativePath));
+  const isFavorite = Boolean(item && profileView.isFavorite(item.relativePath));
 
   favoriteBtn.classList.toggle("hidden", !item);
   favoriteBtn.classList.toggle("is-favorite", isFavorite);
@@ -3638,8 +6358,8 @@ function makePresentationTagButton(tag, appliedTagIds, item) {
   btn.addEventListener("click", () => {
     if (!item) return;
     const state = runtime.getState();
-    const isApplying = !profile.hasItemTag(item.relativePath, tag.id);
-    profile.toggleItemTag(item.relativePath, tag.id);
+    const isApplying = !profileView.hasItemTag(item.relativePath, tag.id);
+    profileView.toggleItemTag(item.relativePath, tag.id);
     if (isApplying) {
       // [8.4] Shuffle context travels WITH the activity record it
       // describes, not as separate global state — a later switch of the
@@ -3673,7 +6393,7 @@ function renderPresentationTagsPanel(item) {
   // Read applied tags directly from ProfileStore rather than
   // item.userTags (a cached stamp) — same reasoning as syncFavoriteButtons:
   // never display anything other than what's actually persisted right now.
-  const appliedTagIds = item ? new Set(profile.getItemTags(item.relativePath)) : new Set();
+  const appliedTagIds = item ? new Set(profileView.getItemTags(item.relativePath)) : new Set();
 
   // First 4 tags share the "⚙ row" (with 👻 + the "Tags" label). Anything
   // beyond that starts a new row underneath, same 4-per-row shape, rather
@@ -4674,7 +7394,7 @@ overlayUndoHideBtn.addEventListener("click", () => {
   // Go straight through ProfileStore rather than toggleHidden — this is
   // always meant as "restore," regardless of the record's current state,
   // not a toggle.
-  profile.setHidden(recentHideUndo.hiddenRelativePath, false);
+  profileView.setHidden(recentHideUndo.hiddenRelativePath, false);
 
   recentHideUndo = null;
   syncUndoHideButton();
@@ -5795,10 +8515,10 @@ profileImportCopyInput.addEventListener("change", async (event) => {
 // Only reloads to pick up whatever just changed.
 profile.subscribe(() => {
   allItems.forEach((item) => {
-    item.isFavorite = profile.isFavorite(item.relativePath);
-    item.isHidden = profile.isHidden(item.relativePath);
-    item.favoritedAt = profile.getFavoritedAt(item.relativePath);
-    item.userTags = profile.getItemTags(item.relativePath);
+    item.isFavorite = profileView.isFavorite(item.relativePath);
+    item.isHidden = profileView.isHidden(item.relativePath);
+    item.favoritedAt = profileView.getFavoritedAt(item.relativePath);
+    item.userTags = profileView.getItemTags(item.relativePath);
   });
 
   // Reload whenever the currently-applied filters could be affected by
@@ -5893,11 +8613,21 @@ profile.subscribe(() => {
 function renderProfileSync() {
   const status = profileSync.getStatus();
 
-  profileSyncChooseBtn.classList.toggle("hidden", status.configured);
-  profileSyncReconnectBtn.classList.toggle("hidden", status.status !== "permission-needed");
+  // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+  // [WHY: every V1/V2 control below is additionally gated on `!isV3`. Under V3
+  //  the engine has deliberately released the V1/V2 handle in memory while
+  //  leaving its stored row untouched, so `status.configured` is false and these
+  //  controls would otherwise re-render as "not configured" — inviting the user
+  //  to choose a V1/V2 folder, which would overwrite the very V2 configuration
+  //  this stage exists to preserve. Hiding them is the honest rendering of "V2 is
+  //  dormant, not gone".]
+  const isV3 = status.mode === "v3";
+
+  profileSyncChooseBtn.classList.toggle("hidden", isV3 || status.configured);
+  profileSyncReconnectBtn.classList.toggle("hidden", isV3 || status.status !== "permission-needed");
   profileSyncConnectedRow.classList.toggle(
     "hidden",
-    !status.configured || status.status === "permission-needed"
+    isV3 || !status.configured || status.status === "permission-needed"
   );
   profileSyncNowBtn.disabled = status.status === "syncing" || status.status === "conflict";
 
@@ -5913,12 +8643,17 @@ function renderProfileSync() {
   // Offered only while still on V1, and only once a folder is actually
   // connected — activating with nothing to migrate from is possible but is a
   // Stage-E-and-later decision, not something to advertise here.
-  profileSyncActivatePanel.classList.toggle("hidden", isV2 || !status.configured || status.status === "syncing");
+  profileSyncActivatePanel.classList.toggle(
+    "hidden",
+    isV2 || isV3 || !status.configured || status.status === "syncing"
+  );
   profileSyncLinkPanel.classList.toggle("hidden", !isV2 || !status.configured);
 
-  if (!status.configured) {
+  if (!status.configured || isV3) {
     profileSyncManagePanel.classList.add("hidden");
   }
+
+  renderSyncV3Panel(status, isV3);
 
   let line;
   switch (status.status) {
@@ -5961,6 +8696,77 @@ function renderProfileSync() {
     case "migration-failed":
       line = `Sync activation did not finish — ${status.message || "Your Profile data is safe and saved locally."}`;
       break;
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: V3 gets its own status strings rather than reusing "connected".
+    //  The default branch below renders "✓ Connected — … Sync V1", because its
+    //  only mode test is `mode === "v2"` — so a V3 installation falling through
+    //  would be told it is running Sync V1 over a folder nothing has ever
+    //  written to. Every line here states plainly that no syncing happens yet;
+    //  that remains true until the stage that adds the V3 transport.]
+    case "v3-ready": {
+      // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+      // [WHY: says which of the two things is true rather than one comforting
+      //  sentence covering both. A pass that merged peers but was refused a
+      //  publish is genuinely half-working, and the user is entitled to know
+      //  their device is reading but not contributing.]
+      line = `Sync V3 — "${status.v3FolderName}"`;
+      // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+      // [WHY: a reader tab says WHY it is a reader, in the user's terms. "Another
+      //  tab is writing" is normal and expected with two or three tabs open, and
+      //  reads as reassuring; "this browser cannot coordinate writes" is a real
+      //  limitation the user needs to know about, because that device will never
+      //  contribute its changes. Collapsing both into one vague "read-only"
+      //  would hide the second behind the first.]
+      // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+      // [WHY: driven by v3IsWriter — whether this tab HOLDS the lease — rather
+      //  than by whether the last pass happened to publish. A writer with
+      //  nothing new to publish is still the writer, and reporting it as
+      //  read-only would make the two tabs look identical again, which is the
+      //  symptom that surfaced this bug in the first place.]
+      if (status.v3IsWriter) {
+        line += " · Writing for this device";
+      } else {
+        switch (status.v3PublishBlocked) {
+          case "writer-lease-held-by-another-tab":
+            line += " · Read-only — another Browser Gallery tab is writing for this device.";
+            break;
+          case "web-locks-unavailable":
+            line += " · Read-only — this browser cannot coordinate Drive writes.";
+            break;
+          case "live-writes-disabled":
+            line += " · Read-only — live V3 writes are turned off.";
+            break;
+          case "writer-lease-lost-mid-pass":
+            line += " · Read-only — the writer role moved during this pass.";
+            break;
+          default:
+            line += " · Read-only — waiting for the writer role.";
+        }
+      }
+      if (status.v3MergedPeers) {
+        line += ` · ${status.v3MergedPeers} peer device${status.v3MergedPeers === 1 ? "" : "s"} merged`;
+      }
+      if (status.v3SkippedPeers && status.v3SkippedPeers.length) {
+        const count = status.v3SkippedPeers.length;
+        line += ` · ${count} director${count === 1 ? "y" : "ies"} skipped this pass (will retry)`;
+      }
+      break;
+    }
+    case "v3-permission-needed":
+      line = `Sync V3 — permission needed for "${status.v3FolderName}". Nothing is being synced.`;
+      break;
+    case "v3-not-configured":
+      line = "Sync V3 is active — no V3 folder chosen yet. Nothing is being synced.";
+      break;
+    // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+    // [WHY: a V3 status must never reach the `default` branch below, which
+    //  renders "✓ Connected … Sync V1" because its only mode test is
+    //  `mode === "v2"`. A V3 pass that failed read-back verification reported as
+    //  a connected V1 sync is the precise false reassurance Stage B removed from
+    //  V1, so every V3 status this engine can produce gets an explicit arm.]
+    case "v3-verify-failed":
+      line = `Sync V3 not completed — ${status.message || "nothing was accepted; local Profile data is unaffected."}`;
+      break;
     case "connected":
     default: {
       const v2 = status.mode === "v2";
@@ -5982,6 +8788,64 @@ function renderProfileSync() {
     }
   }
   profileSyncStatusText.textContent = line;
+}
+
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+// WHAT: Renders the temporary Sync V3 development panel from the SAME status
+// snapshot renderProfileSync() already read.
+// [WHY: takes `status` as an argument rather than calling getStatus() again.
+//  Two reads of a live engine can straddle a state change, which is how one
+//  panel ends up describing a connection the other has already released — the
+//  same single-snapshot discipline the rest of this render function follows.]
+// FUTURE: this whole function is expected to be deleted by the Profile & Sync
+// Settings redesign stage. Do not grow it into that page.
+function renderSyncV3Panel(status, isV3) {
+  // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+  // [WHY: the input shows the CUSTOM name only, never the detected fallback, so
+  //  an empty field honestly means "you have not named this device". Pre-filling
+  //  it with "Chromebook" would make a Save look like a no-op while actually
+  //  freezing a detected value as a custom one. The status line underneath is
+  //  where the effective name and the id suffix are shown together — that is the
+  //  answer to "which machine am I looking at", and it needs both halves.]
+  if (document.activeElement !== profileSyncV3DeviceNameInput) {
+    profileSyncV3DeviceNameInput.value = status.deviceName || "";
+  }
+  const shortId = status.deviceId ? String(status.deviceId).replace(/^dev-/, "").replace(/[^0-9a-zA-Z]/g, "").slice(0, 8) : "";
+  profileSyncV3DeviceNameStatus.textContent = status.deviceDisplayName
+    ? `This device: ${status.deviceDisplayName}${shortId ? ` · ${shortId}` : ""}${status.deviceName ? "" : " (detected)"}`
+    : "This device: unknown";
+  profileSyncV3DeviceNameResetBtn.disabled = !status.deviceName;
+
+  const connected = Boolean(status.v3Configured);
+
+  profileSyncV3ChooseBtn.textContent = connected ? "Change V3 Sync Folder" : "Choose V3 Sync Folder";
+  profileSyncV3ReconnectBtn.classList.toggle("hidden", !connected || status.v3Status !== "permission-needed");
+  profileSyncV3DisconnectBtn.classList.toggle("hidden", !connected);
+  profileSyncV3ActivateBtn.classList.toggle("hidden", isV3);
+  profileSyncV3LeaveBtn.classList.toggle("hidden", !isV3);
+
+  let line;
+  if (!connected) {
+    line = isV3
+      ? "Mode: V3 (active) · No V3 folder chosen yet."
+      : "Mode: " + status.mode + " · No V3 folder chosen yet.";
+  } else if (status.v3Status === "permission-needed") {
+    line = `Mode: ${isV3 ? "V3 (active)" : status.mode} · Folder "${status.v3FolderName}" — permission needed.`;
+  } else {
+    line = `Mode: ${isV3 ? "V3 (active)" : status.mode} · Folder "${status.v3FolderName}" — ready.`;
+  }
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: the Stage 01 line here said "No V3 transport yet — nothing is written
+  //  to this folder", which stopped being true the moment live writes were
+  //  enabled. A status surface that keeps asserting a retired invariant is worse
+  //  than one that says nothing, because it is the line a user checks when
+  //  deciding whether their data is safe to touch.]
+  if (isV3) {
+    line += status.v3IsWriter
+      ? " This tab is the Drive writer for this device."
+      : " This tab is read-only; another tab or browser holds the writer role.";
+  }
+  profileSyncV3StatusText.textContent = line;
 }
 
 // [PROFILE-SYNC-SETUP]
@@ -6138,6 +9002,109 @@ profileSyncActivateBtn.addEventListener("click", async () => {
     await profileSync.activateSyncV2();
   } finally {
     profileSyncActivateBtn.disabled = false;
+  }
+  await renderSharedLibraryOptions();
+});
+
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+// WHAT: Handlers for the temporary Sync V3 development controls.
+// [WHY: the picker is called DIRECTLY from the click, with no confirmation modal
+//  in between — unlike the V1/V2 path, which routes through openSyncSetupModal()
+//  to explain the shared-Drive convention. That modal names a specific
+//  recommended folder and belongs to the V1/V2 relationship; reusing it would
+//  point a V3 user at the V2 folder, which is the one folder V3 must never
+//  adopt. The proper V3 setup explanation is part of the later Profile & Sync
+//  Settings stage.]
+async function runV3FolderPicker() {
+  if (!isFsaSupported()) {
+    profileSyncV3StatusText.textContent = "This browser does not support the File System Access API.";
+    return;
+  }
+
+  let dirHandle;
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+  } catch (error) {
+    if (error && error.name === "AbortError") return; // user closed the picker — not an error
+    profileSyncV3StatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    return;
+  }
+
+  await profileSync.connectV3Folder(dirHandle);
+}
+
+// [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+// [WHY: saving persists locally and notifies sibling tabs, and that is ALL it
+//  does. It never touches Drive: the renamed directory appears when the
+//  scheduler next publishes under the writer lease. renderProfileSync() runs off
+//  ProfileStore's own subscription, so the new name is on screen immediately
+//  without a reload.]
+async function saveSyncV3DeviceName(rawValue) {
+  profileSyncV3DeviceNameSaveBtn.disabled = true;
+  profileSyncV3DeviceNameResetBtn.disabled = true;
+  try {
+    await profile.setDeviceName(rawValue);
+  } catch (error) {
+    console.warn("[SYNCV3] Could not save the Device Name.", error);
+    profileSyncV3DeviceNameStatus.textContent = "Could not save the Device Name.";
+  } finally {
+    profileSyncV3DeviceNameSaveBtn.disabled = false;
+    renderProfileSync();
+  }
+}
+
+profileSyncV3DeviceNameSaveBtn.addEventListener("click", () =>
+  saveSyncV3DeviceName(profileSyncV3DeviceNameInput.value)
+);
+// Blank or whitespace-only means "reset to the detected default" — the same rule
+// setDeviceName applies, so Save-on-empty and Reset cannot disagree.
+profileSyncV3DeviceNameResetBtn.addEventListener("click", () => saveSyncV3DeviceName(""));
+profileSyncV3DeviceNameInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    saveSyncV3DeviceName(profileSyncV3DeviceNameInput.value);
+  }
+});
+
+profileSyncV3ChooseBtn.addEventListener("click", runV3FolderPicker);
+profileSyncV3ReconnectBtn.addEventListener("click", () => profileSync.reconnectV3());
+
+profileSyncV3DisconnectBtn.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Disconnect the Sync V3 folder?\n\n" +
+      "Nothing in your Profiles is deleted, and your existing Sync V2 configuration is not touched."
+  );
+  if (!confirmed) return;
+  await profileSync.disconnectV3();
+});
+
+profileSyncV3ActivateBtn.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Activate Sync V3 on this device?\n\n" +
+      "• Sync V3 has no transport yet — nothing will be synced or written to the V3 folder.\n" +
+      "• Sync V2 becomes dormant. Its saved configuration is left completely intact.\n" +
+      "• Nothing in your local Profiles is deleted.\n\n" +
+      "You can return to Sync V2 with \"Leave V3 Mode\"."
+  );
+  if (!confirmed) return;
+
+  profileSyncV3ActivateBtn.disabled = true;
+  try {
+    await profileSync.activateSyncV3();
+  } finally {
+    profileSyncV3ActivateBtn.disabled = false;
+  }
+});
+
+profileSyncV3LeaveBtn.addEventListener("click", async () => {
+  profileSyncV3LeaveBtn.disabled = true;
+  try {
+    // Restores whatever V2's own untouched record says this installation was —
+    // see ProfileSync#deactivateSyncV3 for why that is a re-read, not a restore
+    // of remembered fields.
+    await profileSync.deactivateSyncV3();
+  } finally {
+    profileSyncV3LeaveBtn.disabled = false;
   }
   await renderSharedLibraryOptions();
 });
@@ -6848,6 +9815,126 @@ async function __iaSyncFolderShape() {
 //  that test is measuring — no sync pass, no write, no IndexedDB or Drive
 //  access, no UI state change. Peer data is whatever the LAST pass observed;
 //  if that reads as stale, run Sync Now deliberately and call this again.]
+// [MEDIA-ID / STAGE-02B / TELEMETRY]
+// window.__bgMediaIdTelemetry(options)
+//
+// The debug-only read-back of this SESSION's alias-index builds. Strictly
+// read-only: it prints what the builds already recorded and runs no build, no
+// probe, no IndexedDB read and no filesystem access, so typing it during a live
+// two-root test cannot change what that test is measuring.
+//
+// [WHY EXEMPLAR PATHS ARE OPT-IN: the aggregate report answers every Stage 02B
+//  question on its own and names no media. The bounded per-reason exemplars are
+//  the only place a real path is retained, they exist so a developer can go and
+//  LOOK at the file a refusal was about, and they are printed only when asked
+//  for by name — never in normal operation and never in the console line the app
+//  emits on every load.]
+window.__bgMediaIdTelemetry = function (options = {}) {
+  const { paths = false, all = false } = options;
+  const builds = mediaIdTelemetryHistory.entries();
+  const lines = [];
+
+  lines.push("=== MEDIA-ID PROJECTION TELEMETRY (this session, in memory only) ===");
+  lines.push(
+    `${builds.length} build(s) retained` +
+      `${mediaIdTelemetryHistory.dropped ? `, ${mediaIdTelemetryHistory.dropped} older build(s) dropped` : ""}` +
+      ` (cap ${TELEMETRY_LIMITS.SESSION_BUILDS}). Nothing here is persisted or shared between tabs.`
+  );
+
+  if (!builds.length) {
+    lines.push("");
+    lines.push("(no projection has been built yet — load a folder, then call this again)");
+    console.log(lines.join("\n"));
+    return undefined;
+  }
+
+  const shown = all ? builds : builds.slice(-5);
+  if (shown.length !== builds.length) {
+    lines.push(`(showing the last ${shown.length}; pass { all: true } for every retained build)`);
+  }
+
+  for (const build of shown) {
+    const d = build.diagnostics || {};
+    const t = d.telemetry || null;
+    lines.push("");
+    lines.push(`--- ${new Date(build.at).toLocaleTimeString()}  ${build.reason} ---`);
+    if (build.rootName) {
+      lines.push(
+        `Root: ${build.rootName}${build.scopeAction ? ` (${build.scopeAction})` : ""}` +
+          `${build.prefixFromScopeRoot !== undefined ? ` prefix ${JSON.stringify(build.prefixFromScopeRoot)}` : ""}`
+      );
+    }
+    if (!d || !t) {
+      lines.push("No index (no scope row, or a single-root scope — nothing to project).");
+      continue;
+    }
+    lines.push(
+      `Observed ${d.observed ?? "?"} item(s); ${d.factKeys ?? "?"} curated fact key(s); ` +
+        `${build.aliasedItems} item(s) aliased.`
+    );
+    lines.push(
+      `Candidates ${t.candidates.total}: admitted ${t.candidates.admitted}, ` +
+        `refused PRESENT ${t.candidates.refusedPresent}, refused UNKNOWN ${t.candidates.refusedUnknown}.`
+    );
+    lines.push(
+      `Items with candidates ${t.items.withCandidates}: aliased ${t.items.aliased}, ` +
+        `fully refused ${t.items.refused}, contested (>1 candidate key) ${t.items.contested}, ` +
+        `multi-alias (>1 admitted) ${t.items.multiAlias}.`
+    );
+
+    const bucketLines = (title, buckets) => {
+      const entries = Object.entries(buckets || {}).filter(([, count]) => count);
+      if (!entries.length) return;
+      lines.push(`${title}:`);
+      entries.sort((a, b) => b[1] - a[1]);
+      for (const [reason, count] of entries) {
+        const detail = t.details && t.details[reason];
+        const detailText = detail
+          ? ` [${Object.entries(detail)
+              .map(([value, n]) => `${value}×${n}`)
+              .join(", ")}]`
+          : "";
+        lines.push(`  ${count.toString().padStart(6)}  ${reason}${detailText}`);
+      }
+    };
+    bucketLines("Refused because a competitor was PRESENT, proven by", t.presentBy);
+    bucketLines("Refused because existence was UNKNOWN, because", t.unknownBy);
+    bucketLines("Competitors proven ABSENT by", t.absentBy);
+
+    const probes = d.probes || {};
+    lines.push(
+      `Cost: ${probes.directoryProbes ?? 0} directory probe(s), ${probes.fileProbes ?? 0} file probe(s)` +
+        `${probes.budgetExhausted ? "  *** PROBE BUDGET EXHAUSTED ***" : ""}.`
+    );
+    if (t.truncated && (t.truncated.details || t.truncated.exemplars)) {
+      lines.push(
+        `(bounded: ${t.truncated.details} detail value(s) and ${t.truncated.exemplars} exemplar(s) not retained)`
+      );
+    }
+
+    if (paths) {
+      const reasons = Object.keys(t.exemplars || {});
+      if (!reasons.length) lines.push("Exemplars: (none)");
+      for (const reason of reasons) {
+        lines.push(`Exemplars for ${reason} (max ${TELEMETRY_LIMITS.EXEMPLARS_PER_REASON}):`);
+        for (const sample of t.exemplars[reason]) {
+          lines.push(`  viewed ${JSON.stringify(sample.scopePath)}`);
+          lines.push(`    candidate key   ${JSON.stringify(sample.key)}`);
+          lines.push(`    deciding target ${JSON.stringify(sample.destination)}`);
+        }
+      }
+    }
+  }
+
+  if (!paths) {
+    lines.push("");
+    lines.push("(call __bgMediaIdTelemetry({ paths: true }) for the bounded per-reason path exemplars)");
+  }
+
+  console.log(lines.join("\n"));
+  return undefined; // a human report; nothing to act on programmatically
+};
+
 window.__bgSyncDevices = function () {
   const status = profileSync.getStatus();
   const lines = [];
@@ -6907,6 +9994,12 @@ window.__bgProfileIdentityAudit = async function (options = {}) {
   const activeProfileName = profile.getProfileName();
   const knownPaths = profile.knownPaths();
 
+  // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+  // [WHY: deliberately NOT routed through profileView. This block reports what
+  //  is STORED, keyed by the literal fact path — the projection reports what is
+  //  SHOWN. Projecting the diagnostic would hide the very divergence between
+  //  those two that a diagnostic exists to reveal, and it would report a path's
+  //  curation under a key that path does not hold.]
   const favoriteKeys = knownPaths.filter((p) => profile.isFavorite(p));
   const hiddenKeys = knownPaths.filter((p) => profile.isHidden(p));
   const taggedKeys = knownPaths.filter((p) => profile.getItemTags(p).length > 0);

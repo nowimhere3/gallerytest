@@ -40,6 +40,34 @@
 //  replacement; Stage B's job is to make it incapable of blessing an
 //  internally inconsistent generation while that replacement is built.]
 import { loadSyncConfig, saveSyncConnection, updateSyncMeta, clearSyncConfig } from "../storage/profile-sync-store.js";
+// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+// [WHY: V3's lifecycle lives in THIS class rather than a second engine, because
+//  the guarantees the module header already lists — one serialized reconcile
+//  chain, one timer, one status surface, one subscribe() the UI renders from —
+//  are properties of there being exactly one of this object. A parallel SyncV3
+//  class would give two engines the same ProfileStore and two timers the same
+//  Drive folder, which is the single failure mode this design has spent every
+//  stage avoiding. V3 is therefore a MODE, not an engine.]
+import {
+  loadV3SyncConfig,
+  saveV3SyncConnection,
+  clearV3SyncConfig,
+  loadV3ActivationState,
+  saveV3ActivationState,
+  clearV3ActivationState,
+  ACTIVATION_V3,
+  V2_ASSOCIATION_STORE,
+  V3_ASSOCIATION_STORE,
+} from "../storage/profile-sync-store.js";
+// [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+// [WHY: V3_LIVE_WRITES_ENABLED is imported here as well as consulted inside the
+//  pass, because the scheduler has to make the same decision one level up: a
+//  cadence that polls every three seconds to run a read-only pass that can never
+//  publish is pure cost. Both readings come from the ONE constant, so enabling
+//  live writes turns on the pass and its cadence together and cannot half-enable
+//  either.]
+import { runSyncV3Pass } from "./sync-v3.js";
+import { V3_LIVE_WRITES_ENABLED, createV3WriterLease } from "./sync-v3-write-policy.js";
 import { DEFAULT_PROFILE_NAME } from "./indexeddb.js";
 // [PHASE-6-SYNC-V2]
 // [STAGE-E-LIVE-INTEGRATION]
@@ -62,6 +90,17 @@ import {
 } from "./sync-v2-activation.js";
 
 const AUTO_SYNC_DEBOUNCE_MS = 3000;
+
+// [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+// [WHY: the last-resort display form for a device whose metadata this
+//  installation has never read. Deliberately NOT sync-v3-names.js's
+//  shortDisplayId - that one is for building paths, and importing it here would
+//  put a path helper on a UI code path where a future change to path formatting
+//  would silently change what users read.]
+function shortDeviceIdForDisplay(deviceId) {
+  const compact = String(deviceId).replace(/^dev-/, "").replace(/[^0-9a-zA-Z]/g, "");
+  return compact ? compact.slice(0, 8) : String(deviceId);
+}
 
 // [PHASE-6-SYNC-V2]
 // [STAGE-E-CONVERGENCE-SCHEDULER]
@@ -388,6 +427,39 @@ export class ProfileSync {
   #mode = ACTIVATION_V1;
   #activation = null;
   #lastPassInfo = null; // { mergedPeers, skippedPeers } from the most recent V2 pass
+
+  // ---- SyncV3 connection (SyncV3, Stage 01) ------------------------------
+  //
+  // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+  // [WHY: a SEPARATE handle field, never a reassignment of #dirHandle. #dirHandle
+  //  is read by #reconcileV1, #reconcileV2, activateSyncV2's migration source and
+  //  disconnect() — every one of which is V1/V2 machinery that must keep pointing
+  //  at the V1/V2 folder no matter what mode is active. Pointing #dirHandle at the
+  //  V3 folder would make "Disconnect Sync" clear the V2 row while releasing the
+  //  V3 folder, and would make a later V2 activation migrate FROM the V3 root.
+  //  Two fields cost nothing; one field that means different folders at different
+  //  times is how a transport writes into the wrong tree.]
+  #v3DirHandle = null;
+  #v3FolderName = null;
+  #v3ConnectedAt = null;
+  #v3ActivatedAt = null;
+  // "not-configured" | "permission-needed" | "ready". Tracked independently of
+  // #status so connecting a V3 folder while still running V2 cannot overwrite
+  // the V2 status line the user is reading. When mode IS v3, #status mirrors
+  // this as "v3-<value>" — see #refreshV3Connection.
+  #v3Status = "not-configured";
+  // Per-pass carry-over for the V3 pass, mirroring #passState's role for V2:
+  // what this device last successfully published, so the pass can tell "our own
+  // generation is still propagating" from "our own generation is wrong".
+  #v3PassState = {};
+  #lastV3PassInfo = null;
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: ONE lease per engine, living as long as this tab does - not one per
+  //  pass. Held here rather than inside the pass because the whole point of the
+  //  fix is that the role SURVIVES between passes; a lease owned by a pass is a
+  //  lease that is released three seconds later, which is what let both tabs
+  //  write in turn.]
+  #v3WriterLease = null;
   // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
   // [WHY: started in the CONSTRUCTOR and awaited by #reconcileImpl, so no
   //  reconcile can possibly run before this installation's transport is known.
@@ -417,6 +489,16 @@ export class ProfileSync {
 
   constructor(profileStore) {
     this.#profile = profileStore;
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: FIRST, and synchronous. From this line until #loadActivation resolves
+    //  the mode, every association read and write is held — so a V3 installation
+    //  cannot write an association into the V2 row during boot. main.js runs
+    //  `new ProfileStore()` and `new ProfileSync(profile)` in the same
+    //  synchronous block, and no user event can be dispatched between two
+    //  synchronous statements, so there is no window rather than a small one.
+    //  #applyAssociationStoreForMode, at the end of #loadActivation, is what
+    //  releases it — including for V1/V2, where the answer is simply the V2 row.]
+    if (typeof profileStore.deferAssociationStore === "function") profileStore.deferAssociationStore();
     this.#activationReady = this.#loadActivation();
     this.#installEnvironmentTriggers();
     // A single subscription drives every auto-sync trigger: favorites,
@@ -443,6 +525,80 @@ export class ProfileSync {
       console.warn("[PROFILE-SYNC] Could not read the sync activation state; staying on V1.", error);
       this.#mode = ACTIVATION_V1;
     }
+
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: THE precedence rule, stated once, here, and nowhere else. Two
+    //  persisted rows can describe the transport, so exactly one line has to
+    //  decide between them or the ambiguity spreads: V3's own row wins if and
+    //  only if it explicitly says "v3"; in every other case the V2 row decides,
+    //  byte-for-byte as it always has. This is a comparison of two explicit
+    //  values — never an inference from whether a folder was chosen or a
+    //  directory exists, which is the reading ACTIVATION_RECORD_ID's own
+    //  comment rules out.
+    //
+    //  A failure to READ the V3 row deliberately leaves the V2 answer standing.
+    //  Defaulting to V3 on an unreadable row would activate an experimental
+    //  transport because of a storage glitch.]
+    try {
+      const v3 = await loadV3ActivationState();
+      if (v3.mode === ACTIVATION_V3) {
+        this.#mode = ACTIVATION_V3;
+        this.#v3ActivatedAt = v3.activatedAt;
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not read the V3 activation state; leaving the transport as V2/V1 recorded it.", error);
+    }
+
+    // Connection metadata only — no permission call, no picker, no I/O against
+    // the folder itself. Whether that handle is actually usable is answered by
+    // #refreshV3Connection, which every entry point below runs explicitly.
+    try {
+      const config = await loadV3SyncConfig();
+      if (config && config.handle) {
+        this.#v3DirHandle = config.handle;
+        this.#v3FolderName = config.folderName || config.handle.name || "V3 Sync Folder";
+        this.#v3ConnectedAt = config.connectedAt;
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not read the saved V3 sync configuration.", error);
+    }
+
+    // Last, because it depends on the mode every branch above may have changed.
+    await this.#applyAssociationStoreForMode();
+  }
+
+  // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+  // [WHY: the ONE place that decides which association row ProfileStore uses,
+  //  and it decides it from the one place that already knows the transport mode.
+  //  ProfileStore is never told what mode is running — it is handed an adapter —
+  //  so "which row?" cannot drift apart from "which transport?" the way two
+  //  independent mode checks eventually would.
+  //
+  //  Tolerant of a store without the method so a test double, or a future
+  //  ProfileStore-shaped object, does not have to implement it to be usable.]
+  // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+  // [WHY: one place that gives up the writer role, called from every path that
+  //  stops this tab being a V3 writer - dispose, leaving V3 mode, and
+  //  disconnecting the V3 folder. The lease object itself is discarded so the
+  //  next V3 pass builds a fresh one against whatever deviceId is current.]
+  #releaseV3WriterLease() {
+    if (!this.#v3WriterLease) return;
+    try {
+      this.#v3WriterLease.release();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not release the writer lease.", error);
+    }
+    this.#v3WriterLease = null;
+  }
+
+  async #applyAssociationStoreForMode() {
+    if (!this.#profile || typeof this.#profile.setAssociationStore !== "function") return;
+    const store = this.#mode === ACTIVATION_V3 ? V3_ASSOCIATION_STORE : V2_ASSOCIATION_STORE;
+    try {
+      await this.#profile.setAssociationStore(store);
+    } catch (error) {
+      console.warn(`[SYNCV3] Could not point the association cache at "${store.id}".`, error);
+    }
   }
 
   async init() {
@@ -450,6 +606,21 @@ export class ProfileSync {
     // even allowed to write, so it is resolved before anything touches the
     // folder. Started in the constructor; merely awaited here.
     await this.#activationReady;
+
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: returns BEFORE the V1/V2 body below, which would otherwise adopt the
+    //  V2 handle, announce "connected", and run a reconcile pass — against the V2
+    //  folder, in V3 mode. Leaving early means a V3-mode installation performs no
+    //  I/O whatsoever against the V1/V2 tree at boot. The V2 connection row is
+    //  read by nothing here and therefore cannot be modified by anything here: it
+    //  survives untouched, ready for deactivateSyncV3() to restore.]
+    if (this.#mode === ACTIVATION_V3) {
+      await this.#refreshV3Connection();
+      // #shouldPoll() is false in V3 mode, so this clears any timer and arms
+      // nothing — V3 has no transport pass to schedule yet.
+      this.#armPollTimer();
+      return;
+    }
 
     let config;
     try {
@@ -569,7 +740,15 @@ export class ProfileSync {
     await this.#reconcile();
   }
 
-  /** "Disconnect Sync" — forgets the folder relationship only. Profile data itself is untouched. */
+  /**
+   * "Disconnect Sync" — forgets the folder relationship only. Profile data itself is untouched.
+   *
+   * [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+   * [WHY: deliberately NOT extended to clear anything V3. clearSyncConfig() can
+   *  only address the V2 connection row, and every field reset below is a V1/V2
+   *  field — so "V2 disconnect must not delete V3 configuration" holds by
+   *  construction rather than by a guard someone could later remove.]
+   */
   async disconnect() {
     if (this.#debounceTimer) {
       clearTimeout(this.#debounceTimer);
@@ -596,6 +775,27 @@ export class ProfileSync {
 
   /** "Sync Now" — manual trigger, bypasses the debounce and runs immediately. */
   async syncNow() {
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: "Sync Now" has nothing to do in V3 mode, and must not pretend
+    //  otherwise. Returning here rather than letting the pass reach #reconcileV3
+    //  keeps the button honest: no status flicker through "Syncing…", no
+    //  lastSyncAt refresh, no implication that a V3 sync exists yet.]
+    //
+    // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+    // [WHY: now runs the real pass instead of returning. It remains honest while
+    //  live writes are off because the PASS is what refuses to write — it reads,
+    //  merges and adopts, creates no directory, publishes nothing, and reports
+    //  publishBlocked. A manual Sync Now that adopts a peer's changes is useful;
+    //  one that silently did nothing at all was not.]
+    if (this.#mode === ACTIVATION_V3) {
+      if (!this.#v3DirHandle) return;
+      if (this.#debounceTimer) {
+        clearTimeout(this.#debounceTimer);
+        this.#debounceTimer = null;
+      }
+      await this.#reconcile();
+      return;
+    }
     if (!this.#dirHandle) return;
     if (this.#debounceTimer) {
       clearTimeout(this.#debounceTimer);
@@ -624,6 +824,18 @@ export class ProfileSync {
   async activateSyncV2() {
     await this.#activationReady;
     if (this.#mode === ACTIVATION_V2) return { ok: true, alreadyActive: true };
+
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: refuses loudly instead of half-working. Running this while V3 is
+    //  active would flip the in-memory #mode to v2 and start V2 passes, but the
+    //  V3 activation row would still say "v3" — so the very next reload would
+    //  silently revert to V3, with a V2 migration already run in between. Leaving
+    //  V3 is an explicit act (deactivateSyncV3), and it must happen first so
+    //  there is only ever one recorded transport to come back to.]
+    if (this.#mode === ACTIVATION_V3) {
+      console.warn("[SYNCV3] Refusing to activate Sync V2 while Sync V3 is active — leave V3 mode first.");
+      return { ok: false, mode: ACTIVATION_V3, blockedByV3: true };
+    }
 
     const run = async () => {
       this.#status = "syncing";
@@ -657,9 +869,200 @@ export class ProfileSync {
     return this.#reconcileChain;
   }
 
-  /** This installation's transport mode — "v1" | "v2" | "failed". */
+  /** This installation's transport mode — "v1" | "v2" | "v3" | "failed". */
   getActivation() {
     return { mode: this.#mode, ...(this.#activation || {}) };
+  }
+
+  // ---- SyncV3 lifecycle (SyncV3, Stage 01) --------------------------------
+  //
+  // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+  // [WHY: connection plumbing ONLY. Not one function in this section opens,
+  //  creates, reads or writes a single file inside the chosen folder — the V3
+  //  directory is expected to be completely empty after this stage, and a
+  //  placeholder written merely to prove the handle works would be indistinguish-
+  //  able, to the next stage's transport, from a real generation left by a peer.]
+
+  /**
+   * Re-checks whether the remembered V3 folder is currently usable and updates
+   * the V3 status. `request: true` may prompt, so it is only ever passed from a
+   * real click (reconnectV3) — every other caller is silent, matching the
+   * queryPermission-never-requestPermission rule the V1/V2 paths already follow
+   * for anything not driven by a user gesture.
+   */
+  async #refreshV3Connection({ request = false } = {}) {
+    if (!this.#v3DirHandle) {
+      this.#v3Status = "not-configured";
+    } else {
+      let permission = null;
+      try {
+        permission = await this.#v3DirHandle.queryPermission({ mode: "readwrite" });
+        if (permission !== "granted" && request) {
+          permission = await this.#v3DirHandle.requestPermission({ mode: "readwrite" });
+        }
+      } catch (error) {
+        console.warn("[SYNCV3] The saved V3 sync folder handle is no longer usable.", error);
+        permission = null;
+      }
+      this.#v3Status = permission === "granted" ? "ready" : "permission-needed";
+    }
+
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: #status is only touched while V3 is the ACTIVE transport. Connecting
+    //  a V3 folder is allowed before activating V3, and doing so must not
+    //  overwrite the V1/V2 status line describing a sync that is still really
+    //  running. The V3 panel reads #v3Status, which is always current.]
+    if (this.#mode === ACTIVATION_V3) {
+      this.#status = `v3-${this.#v3Status}`;
+      this.#message = null;
+    }
+    this.#emit();
+  }
+
+  /**
+   * Connects a freshly-picked V3 directory handle. The caller runs the picker
+   * (same division of responsibility connectNewFolder already has with main.js).
+   */
+  async connectV3Folder(dirHandle) {
+    await this.#activationReady;
+
+    this.#v3DirHandle = dirHandle;
+    this.#v3FolderName = dirHandle.name;
+    this.#v3ConnectedAt = Date.now();
+
+    try {
+      await saveV3SyncConnection(dirHandle);
+    } catch (error) {
+      // Same tolerance connectNewFolder applies: an unpersisted handle still
+      // works for this session, it just will not resume after a reload.
+      console.warn("[SYNCV3] Could not persist the V3 sync folder for future sessions.", error);
+    }
+
+    await this.#refreshV3Connection();
+  }
+
+  /** Restores access to the ALREADY-saved V3 folder. Needs a user gesture; never opens a picker. */
+  async reconnectV3() {
+    await this.#activationReady;
+    await this.#refreshV3Connection({ request: true });
+  }
+
+  /** "Disconnect V3" — forgets the V3 folder relationship. Touches no V2 record and no Profile data. */
+  async disconnectV3() {
+    await this.#activationReady;
+
+    try {
+      await clearV3SyncConfig();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not clear the saved V3 sync configuration.", error);
+    }
+
+    this.#v3DirHandle = null;
+    this.#v3FolderName = null;
+    this.#v3ConnectedAt = null;
+    this.#releaseV3WriterLease();
+    await this.#refreshV3Connection();
+  }
+
+  /**
+   * Activates SyncV3 on this installation.
+   *
+   * [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+   * [WHY: nothing like activateSyncV2's migration happens here, and that is not
+   *  an omission. V3 starts from a FRESH Drive root by decision, so there is no
+   *  prior V3 generation to recover and nothing to seed — and seeding from V2
+   *  would be exactly the "write V2's schema into V3" the design forbids. This
+   *  writes one row and re-reports status.
+   *
+   *  Queued on the same reconcile chain as every other pass so it can never
+   *  interleave with one — an activation landing mid-publish is the same hazard
+   *  activateSyncV2 documents, and the answer is the same single chain.
+   *
+   *  V2's in-memory connection is released (the ROW is left untouched) so no
+   *  V2/V1 code path can find a handle to act on while V3 is the active mode.]
+   */
+  async activateSyncV3() {
+    await this.#activationReady;
+    if (this.#mode === ACTIVATION_V3) return { ok: true, alreadyActive: true, mode: ACTIVATION_V3 };
+
+    const run = async () => {
+      const activatedAt = Date.now();
+      try {
+        await saveV3ActivationState({ activatedAt });
+      } catch (error) {
+        console.error("[SYNCV3] Could not record V3 activation.", error);
+        return { ok: false, mode: this.#mode, reason: "Could not record V3 activation." };
+      }
+
+      if (this.#debounceTimer) {
+        clearTimeout(this.#debounceTimer);
+        this.#debounceTimer = null;
+      }
+
+      this.#mode = ACTIVATION_V3;
+      this.#v3ActivatedAt = activatedAt;
+      this.#dirHandle = null;
+      this.#folderName = null;
+      this.#autoSync = false;
+      this.#baselineFingerprint = null;
+      this.#lastPassInfo = null;
+      this.#passState = {};
+      // A fresh transport gets fresh per-pass carry-over; the V2 settle state
+      // describes a different folder entirely.
+      this.#v3PassState = {};
+      this.#lastV3PassInfo = null;
+
+      // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+      // [WHY: repointed the moment the mode changes, not at the next boot. This
+      //  is the one path that flips the mode WITHOUT going through
+      //  #loadActivation, so without this line the installation would run V3 for
+      //  the rest of the session while still reading and writing the V2
+      //  association cache - the exact contamination this stage prevents, in the
+      //  one window nobody would think to test.]
+      await this.#applyAssociationStoreForMode();
+
+      await this.#refreshV3Connection();
+      // Arms the V3 cadence once live writes are enabled, and nothing while they
+      // are off - see #shouldPoll.
+      this.#armPollTimer();
+      return { ok: true, mode: ACTIVATION_V3 };
+    };
+
+    this.#reconcileChain = this.#reconcileChain.then(run, run);
+    return this.#reconcileChain;
+  }
+
+  /**
+   * Leaves V3 mode and returns the installation to whatever V2's own record says
+   * it was — v1, v2, or failed.
+   *
+   * [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+   * [WHY: re-runs #loadActivation and then the ordinary init() rather than
+   *  restoring remembered fields by hand. Those fields were deliberately dropped
+   *  on activation, and reconstructing them here would be a second, drifting copy
+   *  of boot. Re-reading the untouched rows is both shorter and the only version
+   *  that cannot disagree with what a real reload would do — which is precisely
+   *  what "V2 still behaves exactly as before" has to mean.]
+   */
+  async deactivateSyncV3() {
+    await this.#activationReady;
+
+    try {
+      await clearV3ActivationState();
+    } catch (error) {
+      console.error("[SYNCV3] Could not clear the V3 activation state.", error);
+      return { ok: false, mode: this.#mode };
+    }
+
+    this.#v3ActivatedAt = null;
+    this.#releaseV3WriterLease();
+    this.#status = "checking";
+    this.#message = null;
+    this.#emit();
+
+    this.#activationReady = this.#loadActivation();
+    await this.init();
+    return { ok: true, mode: this.#mode };
   }
 
   /**
@@ -743,7 +1146,81 @@ export class ProfileSync {
       peers: (this.#lastPassInfo ? this.#lastPassInfo.peers : []) || [],
       ownGenerationSettling: this.#lastPassInfo ? this.#lastPassInfo.ownGenerationSettling : null,
       ownGenerationReason: this.#lastPassInfo ? this.#lastPassInfo.ownGenerationReason : null,
+      // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+      // [WHY: V3's connection state rides on the SAME status object, rather than
+      //  a second getStatus()/subscribe() pair, so the temporary V3 controls and
+      //  the existing sync controls can never render from two snapshots taken at
+      //  different moments. `v3Configured` is about the folder alone; whether V3
+      //  is the active transport is `mode`, and the two are independent on
+      //  purpose — a folder may be connected before activation.]
+      v3Configured: Boolean(this.#v3DirHandle),
+      v3Status: this.#v3Status,
+      v3FolderName: this.#v3FolderName,
+      v3ConnectedAt: this.#v3ConnectedAt,
+      v3ActivatedAt: this.#v3ActivatedAt,
+      // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+      // [WHY: `v3PublishBlocked` is surfaced rather than hidden. A device that
+      //  merged peers but published nothing has done something real and something
+      //  incomplete, and a status surface unable to tell those apart is how
+      //  "connected" starts covering for a device that is silently not
+      //  contributing.]
+      v3LiveWritesEnabled: V3_LIVE_WRITES_ENABLED,
+      // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+      // [WHY: reported from the LEASE rather than inferred from the last pass
+      //  result. "Did my most recent pass publish?" and "am I the writer?" are
+      //  different questions - a writer with nothing to publish answers no to
+      //  the first - and conflating them is what would make the status flicker
+      //  between writer and reader on an idle device.]
+      v3IsWriter: Boolean(this.#v3WriterLease && this.#v3WriterLease.held),
+      // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+      // [WHY: the effective name and the FULL deviceId are exposed together, so
+      //  a surface can render one while still having the other to hand. Deriving
+      //  either from the published directory name would be reading presentation
+      //  as data - see resolveDeviceName below.]
+      deviceName: typeof this.#profile.getDeviceName === "function" ? this.#profile.getDeviceName() : null,
+      deviceDisplayName:
+        typeof this.#profile.getDeviceDisplayName === "function" ? this.#profile.getDeviceDisplayName() : null,
+      v3PublishBlocked: this.#lastV3PassInfo ? this.#lastV3PassInfo.publishBlocked : null,
+      v3MergedPeers: this.#lastV3PassInfo ? this.#lastV3PassInfo.mergedPeers : null,
+      v3SkippedPeers: (this.#lastV3PassInfo ? this.#lastV3PassInfo.skippedPeers : []) || [],
+      v3Peers: (this.#lastV3PassInfo ? this.#lastV3PassInfo.peers : []) || [],
+      v3Duplicates: (this.#lastV3PassInfo ? this.#lastV3PassInfo.duplicates : []) || [],
+      associationStoreId:
+        typeof this.#profile.getAssociationStoreId === "function" ? this.#profile.getAssociationStoreId() : null,
     };
+  }
+
+  /**
+   * Resolves a full deviceId to a human name, using validated peer metadata.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: THE seam a later Library picker uses to turn
+   *  LibraryFacts.sourceDeviceId into "Device: Chromebook Pro". It exists now,
+   *  before that UI does, so nothing is ever tempted to split
+   *  "Chromebook Pro -- c5ee4e83" on " -- " to get a name: that string is a
+   *  filesystem path, it is attacker- and accident-controlled, and Stage 02 built
+   *  content-addressed discovery precisely so no code has to trust it.
+   *
+   *  Names come from device.json via discoverDevices, which has already verified
+   *  the whole directory's hashes before this sees any of it. An unknown device -
+   *  a peer that has not published recently, or one this device has never met -
+   *  falls back to a shortened id rather than inventing a name or throwing.]
+   */
+  resolveDeviceName(deviceId) {
+    if (typeof deviceId !== "string" || !deviceId) return null;
+
+    const ownId = typeof this.#profile.getDeviceId === "function" ? this.#profile.getDeviceId() : null;
+    if (ownId && deviceId === ownId) {
+      return typeof this.#profile.getDeviceDisplayName === "function" ? this.#profile.getDeviceDisplayName() : null;
+    }
+
+    const peers = (this.#lastV3PassInfo && this.#lastV3PassInfo.peers) || [];
+    const peer = peers.find((entry) => entry && entry.deviceId === deviceId);
+    if (peer && typeof peer.label === "string" && peer.label) return peer.label;
+
+    // Never seen, or seen without a usable name: show something short and
+    // honest rather than a bare UUID or a guess.
+    return shortDeviceIdForDisplay(deviceId);
   }
 
   subscribe(listener) {
@@ -768,6 +1245,28 @@ export class ProfileSync {
     //  nothing and is how a recoverable fault recovers by itself. Only genuinely
     //  terminal conditions stop the loop: not on V2, no folder, auto-sync off,
     //  or disposed.]
+    //
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: unchanged, and already correct for V3 without an added clause — the
+    //  test is an explicit `=== ACTIVATION_V2`, not "is not V1", so a V3
+    //  installation polls nothing. That is intended while V3 has no pass to run;
+    //  the stage that introduces the V3 transport extends this predicate
+    //  deliberately rather than inheriting a cadence it never asked for.]
+    // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+    // [WHY: V3's cadence is ready and gated on the SAME constant the pass uses to
+    //  authorize a write, so the two cannot be half-enabled.]
+    //
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: deliberately NOT gated on holding the writer lease. A non-writer tab
+    //  must keep polling, because polling is how it learns about a peer's
+    //  changes at all — a reader that stopped polling would be a tab frozen at
+    //  whatever it knew when it lost the lease, which is precisely the "only one
+    //  Browser Gallery tab works" outcome this stage exists to avoid. Lease
+    //  ownership is decided per pass, inside the pass; the cadence is the same
+    //  for every tab.]
+    if (this.#mode === ACTIVATION_V3) {
+      return !this.#disposed && V3_LIVE_WRITES_ENABLED && Boolean(this.#v3DirHandle);
+    }
     return !this.#disposed && this.#mode === ACTIVATION_V2 && Boolean(this.#dirHandle) && this.#autoSync;
   }
 
@@ -827,6 +1326,12 @@ export class ProfileSync {
   /** Releases every timer and listener this instance owns. */
   dispose() {
     this.#disposed = true;
+    // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+    // [WHY: hands the writer role back explicitly. The browser would release it
+    //  when the tab closed anyway, but dispose() also runs on paths where the
+    //  page stays open, and a lease held by a disposed engine would keep the
+    //  whole installation's writer role hostage with nothing left to use it.]
+    this.#releaseV3WriterLease();
     if (this.#pollTimer) {
       clearTimeout(this.#pollTimer);
       this.#pollTimer = null;
@@ -848,6 +1353,31 @@ export class ProfileSync {
     // same subscription — skip scheduling a redundant pass for a change we
     // just made from the sync folder's own data.
     if (this.#applyingRemote) return;
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: a local edit must not schedule a pass that has nothing to run. Under
+    //  V3 the debounced pass would reach #reconcileV3 and merely re-check a
+    //  permission, so every favourite/tag click would queue pointless work three
+    //  seconds later. Checked before the handle test below because that one is
+    //  about the V1/V2 handle, which V3 mode has deliberately released.]
+    // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+    // [WHY: gated on the same constant as the scheduler and the pass itself.]
+    //
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: now live, and correct on a non-writer tab without a lease check
+    //  here. A reader's debounced pass reads and adopts and then declines to
+    //  publish — which is the right behaviour, not wasted work: the edit is
+    //  already durable in IndexedDB, and whichever tab holds the lease publishes
+    //  it on its own next pass. Checking the lease here would only move the same
+    //  decision earlier and duplicate the seam.]
+    if (this.#mode === ACTIVATION_V3) {
+      if (!V3_LIVE_WRITES_ENABLED || !this.#v3DirHandle) return;
+      if (this.#debounceTimer) clearTimeout(this.#debounceTimer);
+      this.#debounceTimer = setTimeout(() => {
+        this.#debounceTimer = null;
+        this.#reconcile().catch((error) => console.warn("[SYNCV3] Auto sync failed.", error));
+      }, AUTO_SYNC_DEBOUNCE_MS);
+      return;
+    }
     if (!this.#dirHandle || !this.#autoSync) return;
     // [PROFILE-SYNC-BASELINE] While a conflict is unresolved, Auto Sync
     // must never write over the synced copy — see resolveConflict, the
@@ -908,8 +1438,118 @@ export class ProfileSync {
       this.#emit();
       return;
     }
+    // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+    // [WHY: every arm is now named explicitly, and the fall-through default runs
+    //  NOTHING. This used to end `return this.#reconcileV1()` — an else-branch
+    //  meaning "not v2 and not failed", which silently included any mode added
+    //  later. Adding "v3" to that shape would have made a V3 installation write
+    //  V1 manifests into whatever folder it had, with no error anywhere. The
+    //  default arm is deliberately not V1: an unrecognised mode is a bug, and the
+    //  safe response to a bug about WHICH transport to run is to run none.]
+    if (this.#mode === ACTIVATION_V3) return this.#reconcileV3(options);
     if (this.#mode === ACTIVATION_V2) return this.#reconcileV2(options);
-    return this.#reconcileV1();
+    if (this.#mode === ACTIVATION_V1) return this.#reconcileV1();
+
+    console.warn(`[PROFILE-SYNC] Unrecognised sync mode "${this.#mode}" — running no transport.`);
+    this.#status = "offline";
+    this.#message = "Sync is not running. Local changes are saved.";
+    this.#emit();
+    return undefined;
+  }
+
+  // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
+  // [WHY: V3 has no transport yet, and this reports exactly that. It does NOT
+  //  fall back to V2's pass, does not touch the folder, and does not advance
+  //  lastSyncAt — a status surface that said "connected" or refreshed a sync
+  //  time here would be claiming a sync that provably never happened, which is
+  //  the same untruth Stage B removed from V1's verified publish. The only thing
+  //  a V3 pass may do in this stage is re-check that the folder is still usable.]
+  async #reconcileV3({ background = false } = {}) {
+    // Re-checks the folder first: this also updates #v3Status, which is what the
+    // V3 panel renders, and answers "is the handle still usable" before the pass
+    // spends any time on it.
+    await this.#refreshV3Connection();
+    if (!this.#v3DirHandle || this.#v3Status !== "ready") return;
+
+    // [SYNCV3 / STAGE-03B-FIX / DUAL-WRITER-DIAGNOSIS]
+    // [WHY: created lazily, on the first pass, because the deviceId is not known
+    //  at construction time and the lock name must carry the FULL deviceId. Once
+    //  created it is reused for every subsequent pass - that reuse IS the fix.]
+    if (!this.#v3WriterLease) {
+      const deviceId = typeof this.#profile.getDeviceId === "function" ? this.#profile.getDeviceId() : null;
+      if (deviceId) this.#v3WriterLease = createV3WriterLease({ deviceId });
+    }
+
+    let result;
+    try {
+      result = await runSyncV3Pass({
+        profileStore: this.#profile,
+        dirHandle: this.#v3DirHandle,
+        state: this.#v3PassState,
+        writerLease: this.#v3WriterLease,
+      });
+    } catch (error) {
+      console.error("[SYNCV3] Sync pass threw.", error);
+      this.#status = "offline";
+      this.#message = "Sync could not complete. Local changes are saved.";
+      this.#emit();
+      return;
+    }
+
+    this.#lastV3PassInfo = {
+      mergedPeers: result.mergedPeers || 0,
+      skippedPeers: result.skippedPeers || [],
+      peers: result.peers || [],
+      duplicates: result.duplicates || [],
+      published: Boolean(result.published),
+      adopted: Boolean(result.adopted),
+      publishBlocked: result.publishBlocked || null,
+      ownGenerationSettling: result.ownGenerationSettling || null,
+    };
+
+    switch (result.status) {
+      case "permission-needed":
+        this.#v3Status = "permission-needed";
+        this.#status = "v3-permission-needed";
+        this.#message = result.message || null;
+        this.#emit();
+        return;
+
+      case "verify-failed":
+        // Stage B's discipline, unchanged: nothing accepted, nothing cleaned up,
+        // local data untouched, and no claim that a sync happened.
+        this.#status = "v3-verify-failed";
+        this.#message = result.message || null;
+        this.#emit();
+        return;
+
+      case "no-device-identity":
+        this.#status = "offline";
+        this.#message = "This device has no sync identity yet. Local changes are saved.";
+        this.#emit();
+        return;
+
+      case "ok":
+        // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+        // [WHY: a pass that read and adopted but held no lease is a SUCCESS, not
+        //  a fault — the tab is doing exactly what a reader should. It is
+        //  reported through publishBlocked rather than through an error status,
+        //  so the UI can say "read-only, another tab is writing" without any
+        //  surface implying something went wrong.]
+        this.#status = "v3-ready";
+        this.#message = null;
+        // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+        // [WHY: a background pass that changed nothing observable emits nothing,
+        //  the same quietness rule #acceptV2Pass follows. At a three-second
+        //  cadence the alternative is a re-render per tick forever.]
+        if (!background || result.adopted || result.published) this.#emit();
+        return;
+
+      default:
+        this.#status = "offline";
+        this.#message = "Sync could not complete. Local changes are saved.";
+        this.#emit();
+    }
   }
 
   // [PHASE-6-SYNC-V2]

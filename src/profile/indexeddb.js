@@ -205,14 +205,38 @@ export async function loadProfileData(profileId) {
  * schema-less, so an older row simply has no `facts` key — see loadProfileData,
  * which reports that as null.
  */
-export async function saveProfileData(profileId, { items, tags, facts }) {
+/**
+ * `mergeFacts(mine, stored)` — optional. When supplied alongside `facts`, the
+ * stored row is read and merged INSIDE this transaction.
+ *
+ * [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+ * [WHY: atomicity is the whole point, and it is why this lives here rather than
+ *  as a read-then-write in ProfileStore. Same-origin tabs share this row and each
+ *  writes it whole, so two contexts saving at the same moment is an ordinary
+ *  lost-update race: both read the old row, both write, and whichever lands
+ *  second erases the other's facts. Reading and writing in ONE readwrite
+ *  transaction closes that — IndexedDB serializes overlapping readwrite
+ *  transactions on the same store, so the second one observes the first one's
+ *  result rather than the state before it.
+ *
+ *  The same get-then-put-in-one-transaction shape the `facts === undefined`
+ *  branch below already uses; this branch merges instead of preserving.]
+ */
+export async function saveProfileData(profileId, { items, tags, facts, mergeFacts }) {
   const database = await openDatabase();
 
   try {
     const transaction = database.transaction(STORE_NAME, "readwrite");
     const store = transaction.objectStore(STORE_NAME);
 
-    if (facts === undefined) {
+    if (typeof mergeFacts === "function" && facts !== undefined && facts !== null) {
+      const request = store.get(profileId);
+      request.onsuccess = () => {
+        const existing = request.result;
+        const storedFacts = existing && existing.facts && typeof existing.facts === "object" ? existing.facts : null;
+        store.put({ id: profileId, items, tags, facts: storedFacts ? mergeFacts(facts, storedFacts) : facts });
+      };
+    } else if (facts === undefined) {
       const request = store.get(profileId);
       request.onsuccess = () => {
         const existing = request.result;

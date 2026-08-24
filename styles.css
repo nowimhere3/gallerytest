@@ -4467,18 +4467,41 @@ hr {
     font-size: 0.9rem;
   }
 
-  /* `white-space: pre` is load-bearing — the frames in main.js are built as
-     fixed-width multi-line strings and rely on the browser not collapsing
-     their spaces or reflowing their line breaks. `line-height: 1.15` keeps
-     the five text rows close enough to read as one glyph, not five. */
-  .mobile-load-ascii {
-    margin: 8px 0;
-    padding: 0;
-    background: none;
-    border: none;
-    white-space: pre;
-    line-height: 1.15;
-    font-size: 0.95rem;
+  /* [V2-POLISH / MICRO-ARCADE-CANVAS] [V2-POLISH / STARFIGHTER-PROTOTYPE]
+     WHAT: replaces the old .mobile-load-ascii <pre> rule. The canvas' own
+     width/height attributes are its 128x64 drawing buffer; these are its
+     DISPLAY dimensions, and the two are deliberately different.
+     WHY the size is fixed rather than fluid: a fractional scale factor
+     resamples the buffer and produces uneven pixel widths — the exact
+     mushiness `image-rendering: pixelated` exists to avoid. 480x192 is an
+     integer 3x. `max-width: 100%` with `height: auto` is the one concession
+     for phones too narrow for that, where the alternative is horizontal
+     overflow; a browser scaling 3x down is still far better than the card
+     clipping. Fixed `aspect-ratio` keeps the reserved box a predictable
+     height whatever the width resolves to, so nothing reflows mid-load.
+     [V2-POLISH / MICRO-ARCADE-160X64] Width went 384 -> 480 and the ratio
+     128/64 -> 160/64 together, which is what keeps this widening FREE
+     vertically: 480/2.5 is the same 192px cap 384/2 was, and at every
+     narrower width the taller-ratio box is now SHORTER than the old one
+     (a 366px-wide slot renders 146px tall where it used to render 183px).
+     The reserved vertical footprint therefore never grows — which was the
+     whole condition on expanding the canvas.
+     The glow is a single restrained drop-shadow in the same #00ff00 the
+     Live Status text already uses — scanlines, phosphor persistence and the
+     flicker are all drawn INSIDE the canvas (see paintArcadeFrame), so no
+     CSS filter is fighting the pixel grid. */
+  .mobile-load-canvas {
+    display: block;
+    width: 480px;
+    max-width: 100%;
+    height: auto;
+    aspect-ratio: 160 / 64;
+    margin: 4px 0;
+    border: 1px solid rgba(0, 255, 0, 0.28);
+    border-radius: 4px;
+    background: #03140a;
+    image-rendering: pixelated;
+    filter: drop-shadow(0 0 6px rgba(0, 255, 0, 0.28));
   }
 
   .mobile-load-atmosphere-text {

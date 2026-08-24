@@ -54,7 +54,18 @@ import { SyncIdentity } from "./sync-device.js";
 //  stamps, or merge — this is the only place those two vocabularies meet, the
 //  same boundary ProfileStore already keeps between itself and indexeddb.js.]
 import * as LibraryRegistry from "../storage/library-registry.js";
-import { loadAssociationsCache, saveAssociationsCache } from "../storage/profile-sync-store.js";
+import {
+  V2_ASSOCIATION_STORE,
+  loadV3LibrariesCache,
+  saveV3LibrariesCache,
+} from "../storage/profile-sync-store.js";
+// [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+// [WHY: same-origin contexts share IndexedDB but not this object. The channel
+//  tells the others that durable state moved; it never carries the state.]
+import {
+  createLocalStateChannel,
+  LOCAL_STATE_MESSAGE_KINDS,
+} from "./local-state-channel.js";
 import {
   seedFactsFromProfileData,
   diffFactsAgainstProfileData,
@@ -131,6 +142,16 @@ function isEmptyRecord(record) {
   });
 }
 
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: how close together two "loads" have to be before the second is treated
+//  as noise from the first. Generous, because the events being collapsed - a
+//  rescan, a re-render, a permission re-check, a sync pass observing the same
+//  load - all happen within seconds of each other, while a genuine second load
+//  requires a human to navigate away and back. Erring long costs at most a
+//  slightly stale lastLoadedAt for a few seconds; erring short costs a stamp
+//  (and a Drive publish) per redundant event forever.]
+const REDUNDANT_LIBRARY_LOAD_WINDOW_MS = 30_000;
+
 export class ProfileStore {
   #recordsByPath = new Map();
   #listeners = new Set();
@@ -193,22 +214,213 @@ export class ProfileStore {
   #associations = {};
   #associationsReady;
 
-  constructor({ identity } = {}) {
+  // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+  // [WHY: WHICH persistent row backs #associations is now injected rather than
+  //  hard-coded, because a V3-mode installation must never read or write the
+  //  dormant V2 cache. This is the ONLY thing that changes: the fact model, the
+  //  merge semantics, the projection and every caller are untouched — the shared
+  //  fact is still associations[libraryId] = Fact<profileId|null>, and there is
+  //  still exactly one association authority in this class.
+  //
+  //  An injected adapter rather than a mode flag, because an adapter can only
+  //  reach the row its own two functions name. A flag would leave this class
+  //  able to write either row and relying on a branch being correct at each of
+  //  the three call sites below; the adapter makes writing the wrong row
+  //  unrepresentable.]
+  #associationStore = V2_ASSOCIATION_STORE;
+
+  // ---- Same-device tab/iframe freshness (SyncV3, Stage 03C) --------------
+  //
+  // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+  // [WHY: one channel per store, opened in the constructor so every context has
+  //  it before any mutation can happen. #localStateRefresh coalesces overlapping
+  //  refreshes: a burst of messages (a tag rename touches the registry AND the
+  //  facts row) must produce one re-read, not one per message.]
+  #localStateChannel = null;
+  #localStateRefresh = null;
+  // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+  // [WHY: the stale-row guard in #persist costs one extra IndexedDB read per
+  //  save, and - more importantly - merging storage back in during the initial
+  //  load race is redundant with #adoptFacts and perturbs ordering that V2's
+  //  tests pin down precisely. So it arms only once this context has evidence
+  //  that a sibling context exists: a message received, or no channel at all to
+  //  receive one on. A lone tab, the overwhelmingly common case, behaves exactly
+  //  as it did before this stage.
+  //
+  //  Sticky once armed: a sibling that has spoken once can speak again, and
+  //  disarming would reopen the window at the exact moment it is most likely to
+  //  matter.]
+  #peerContextObserved = false;
+
+  // ---- Shared Library catalog (SyncV3, Stage 04B) ------------------------
+  //
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: { libraryId: LibraryFacts } - the shared answer to "which Libraries
+  //  exist, what are they called, and who last opened one". Held here, beside
+  //  #associations, because it is published in the same replica and adopted by
+  //  the same pass; kept in its OWN durable row because it is a different fact
+  //  about a different thing. A Library survives its association being set to
+  //  null, so the two maps cannot share a lifetime.
+  //
+  //  Loaded unconditionally rather than only under V3. ProfileStore stays
+  //  mode-agnostic by design (Stage 03A), and a V1/V2 installation simply reads
+  //  an absent row as {} forever - nothing writes libraries-v3 there.]
+  #libraries = {};
+  #librariesReady;
+
+  // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+  // [WHY: closes the boot window Stage 03A left open. This store is constructed
+  //  before anything knows which transport is running, so it defaults to the V2
+  //  cache — which is correct for every V1/V2 installation and WRONG for a V3
+  //  one, for however long mode resolution takes. An association written in that
+  //  window lands in the V2 row on a V3 installation: contamination in exactly
+  //  the direction this whole line of work exists to prevent, and invisible
+  //  because it needs a click during boot to happen at all.
+  //
+  //  The gate makes it structural rather than improbable. While it is pending,
+  //  every association read and write waits, so there is no window to hit — not
+  //  a smaller one. It is only ever pending when something has explicitly said
+  //  "I will resolve the mode" (ProfileSync, from its constructor), so a
+  //  ProfileStore used WITHOUT a ProfileSync keeps working exactly as before
+  //  rather than hanging forever waiting for an answer nobody will give.]
+  #associationStoreGate = Promise.resolve();
+  #openAssociationStoreGate = null;
+  #associationStoreDeferred = false;
+  // Guards against an in-flight load from a superseded store landing on top of
+  // a newer one — see #loadAssociations.
+  #associationLoadGeneration = 0;
+
+  constructor({ identity, associationStore, localStateChannel } = {}) {
     // Loading is intentionally started by the store itself. Consumers keep
     // using the synchronous ProfileStore API; once saved records arrive, the
     // normal subscription mechanism refreshes any loaded media.
     this.#identity = identity || new SyncIdentity();
+    // Defaults to the V1/V2 cache: an installation that has never heard of V3 —
+    // every installation, until ProfileSync resolves its mode — behaves exactly
+    // as it did before this stage.
+    // A caller that names the row up front (tests, and any embedder that already
+    // knows its mode) has nothing to defer — the gate stays open.
+    if (associationStore) this.#associationStore = associationStore;
+    // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+    // [WHY: opened before #resolveActiveProfile so no window exists in which this
+    //  context is mutating state while deaf to its siblings. `localStateChannel`
+    //  is injectable purely so a test can put two contexts on one channel.]
+    this.#localStateChannel = localStateChannel || createLocalStateChannel();
+    // Installed unconditionally, so an INJECTED channel receives too - see
+    // setHandler's WHY in local-state-channel.js.
+    if (typeof this.#localStateChannel.setHandler === "function") {
+      this.#localStateChannel.setHandler((message) => this.#onLocalStateMessage(message));
+    }
+    // Announces this context so any sibling arms its stale-row guard before the
+    // first click, and so this one learns of siblings that are already open.
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.CONTEXT_ONLINE);
     this.#ready = this.#resolveActiveProfile();
     this.#loadSavedRecords();
     this.#associationsReady = this.#loadAssociations();
+    this.#librariesReady = this.#loadLibraries();
   }
 
   async #loadAssociations() {
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: the generation guard makes a superseded load discard its own result.
+    //  Without it, the V2 load already in flight when deferAssociationStore() is
+    //  called would land AFTER the correct V3 load and quietly replace it — the
+    //  boot bug wearing a different hat. It also makes two rapid
+    //  setAssociationStore() calls safe, which the mode-switch path can produce.]
+    const generation = ++this.#associationLoadGeneration;
+    await this.#associationStoreGate;
     try {
-      this.#associations = await loadAssociationsCache();
+      const loaded = await this.#associationStore.load();
+      if (generation !== this.#associationLoadGeneration) return;
+      this.#associations = loaded;
     } catch (error) {
-      console.warn("[SYNC-V2] Could not load library associations.", error);
+      console.warn(`[SYNC] Could not load library associations from "${this.#associationStore.id}".`, error);
     }
+  }
+
+  /**
+   * Holds every association read and write until setAssociationStore() names the
+   * row this installation should be using.
+   *
+   * [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+   * [WHY: SYNCHRONOUS, and called from ProfileSync's constructor — which main.js
+   *  runs in the same synchronous block as `new ProfileStore()`. No user event
+   *  can be dispatched between two synchronous module-scope statements, so the
+   *  gate is closed before any click could reach setLibraryAssociation(). That
+   *  is what turns "a very small race" into "not a race".
+   *
+   *  Idempotent, so a second ProfileSync over the same store cannot strand the
+   *  gate half-open.]
+   */
+  deferAssociationStore() {
+    if (this.#associationStoreDeferred) return;
+    this.#associationStoreDeferred = true;
+    this.#associations = {};
+    this.#associationStoreGate = new Promise((resolve) => {
+      this.#openAssociationStoreGate = resolve;
+    });
+    // Re-armed so the pending read waits behind the gate. The load started in
+    // the constructor is superseded by the generation guard above.
+    this.#associationsReady = this.#loadAssociations();
+  }
+
+  /** True while association access is waiting for its row to be named. Diagnostics and tests. */
+  isAssociationStorePending() {
+    return this.#associationStoreDeferred && this.#openAssociationStoreGate !== null;
+  }
+
+  /**
+   * Points this store's association cache at a different persistent row and
+   * reloads it. Called only by ProfileSync, when the installation's transport
+   * mode is resolved or changed.
+   *
+   * [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
+   * [WHY: deliberately RELOADS and never SAVES. The outgoing mode's map must not
+   *  follow the store into the incoming mode's row — that single write would
+   *  merge a dormant V2 installation's associations into V3's cache (or worse,
+   *  the reverse), which is precisely the contamination this stage exists to
+   *  prevent. #associations is cleared before the reload so a failed read leaves
+   *  an empty map rather than the previous mode's data masquerading as this
+   *  one's.]
+   */
+  async setAssociationStore(store) {
+    if (!store || typeof store.load !== "function" || typeof store.save !== "function") {
+      throw new Error("[SYNCV3] setAssociationStore requires an adapter with load() and save().");
+    }
+
+    // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+    // [WHY: opening the gate is handled BEFORE the "same store, nothing to do"
+    //  short-circuit below. A deferred store whose resolved row happens to be
+    //  the V2 default still has to be released, or a V1/V2 installation would
+    //  wait on a gate that never opens — the deadlock the deferral must not
+    //  introduce. Deliberately does not await #associationsReady first: that
+    //  promise is waiting on the very gate this branch opens.]
+    if (this.#openAssociationStoreGate) {
+      const open = this.#openAssociationStoreGate;
+      this.#openAssociationStoreGate = null;
+      this.#associationStore = store;
+      this.#associations = {};
+      this.#associationsReady = this.#loadAssociations();
+      open();
+      await this.#associationsReady;
+      this.#emit();
+      return store.id;
+    }
+
+    await this.#associationsReady;
+    if (this.#associationStore && this.#associationStore.id === store.id) return store.id;
+
+    this.#associationStore = store;
+    this.#associations = {};
+    this.#associationsReady = this.#loadAssociations();
+    await this.#associationsReady;
+    this.#emit();
+    return store.id;
+  }
+
+  /** Which association row is currently authoritative. Diagnostics and tests only. */
+  getAssociationStoreId() {
+    return this.#associationStore ? this.#associationStore.id : null;
   }
 
   /** This installation's stable device identity. Null until it resolves. */
@@ -227,6 +439,54 @@ export class ProfileStore {
     return this.#identity.deviceId;
   }
 
+  // ---- Device Name (SyncV3, Stage 05) -----------------------------------
+
+  /**
+   * What a human should see for this installation.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: a SEPARATE method from getDeviceLabel() above rather than a change to
+   *  it. getDeviceLabel() is what the V2 pass publishes, and V2's device.json
+   *  format must not change - so the custom name reaches V3's transport (which
+   *  asks for this one) and stops there. Two methods with different jobs, not
+   *  one method that quietly means different things to different transports.]
+   */
+  getDeviceDisplayName() {
+    // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+    // [WHY: degrades to the detected label for any identity-shaped object that
+    //  predates Stage 05 - an injected test double, or a future alternative
+    //  SyncIdentity. Without this the caller receives undefined and the
+    //  transport falls back to its generic "Device" placeholder, so an
+    //  installation that HAS a perfectly good detected label would publish
+    //  itself as "Device -- a31f2c4e". Silent, cosmetic, and exactly the kind of
+    //  degradation nobody notices until they are looking at their Drive.]
+    const display = this.#identity.displayName;
+    if (typeof display === "string" && display) return display;
+    return this.#identity.label;
+  }
+
+  /** The custom Device Name, or null when the user has never set one. */
+  getDeviceName() {
+    return this.#identity.deviceName;
+  }
+
+  /**
+   * Sets or clears this installation's Device Name.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: persists, tells sibling tabs, and notifies local subscribers - and
+   *  does nothing else. It does not touch deviceId, the Profile registry, the
+   *  active Profile, associations, or the Library catalog, and it never writes
+   *  Drive: the renamed directory appears when the scheduler next publishes
+   *  under the writer lease, which is the only thing allowed to write.]
+   */
+  async setDeviceName(name) {
+    const saved = await this.#identity.setDeviceName(name);
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.DEVICE_NAME_CHANGED);
+    this.#emit();
+    return saved;
+  }
+
   /**
    * Resolves once every mutation issued so far has been stamped and recorded.
    * Fact recording is queued behind the clock being ready (see #recordFact), so
@@ -242,6 +502,45 @@ export class ProfileStore {
   async whenAssociationsSettled() {
     await this.#associationsReady;
     await this.#identity.ready;
+  }
+
+  async #loadLibraries() {
+    try {
+      this.#libraries = await loadV3LibrariesCache();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not load the shared Library catalog.", error);
+    }
+  }
+
+  async whenLibrariesSettled() {
+    await this.#librariesReady;
+    await this.#identity.ready;
+  }
+
+  /** Every known shared Library fact record, detached — { libraryId: LibraryFacts }. */
+  getLibraries() {
+    return takeSnapshot(this.#libraries);
+  }
+
+  /**
+   * Every known shared Library, projected for display/ranking.
+   *
+   * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+   * [WHY: built from #libraries and #associations TOGETHER, so a Library whose
+   *  association is null still appears - with associatedProfileId: null rather
+   *  than being absent. listAssociations() cannot answer this question: it
+   *  projects only associations that currently point somewhere, which is correct
+   *  for "what is associated" and would silently erase the catalog.]
+   */
+  listLibraries() {
+    return takeSnapshot(
+      Facts.projectLibraries({
+        schemaVersion: Facts.REPLICA_SCHEMA_VERSION,
+        profiles: {},
+        associations: this.#associations,
+        libraries: this.#libraries,
+      })
+    );
   }
 
   /** Every known association fact, detached — {libraryId: Fact<profileId|null>}. */
@@ -286,9 +585,9 @@ export class ProfileStore {
     this.#associations = MergeEngine.mergeMaps(this.#associations, { [row.libraryId]: fact }, MergeEngine.mergeFact);
 
     try {
-      await saveAssociationsCache(this.#associations);
+      await this.#saveAssociationsAndAnnounce();
     } catch (error) {
-      console.warn("[SYNC-V2] Could not persist library associations.", error);
+      console.warn(`[SYNC] Could not persist library associations to "${this.#associationStore.id}".`, error);
     }
     // Best-effort: keeps the row's UI-facing `profileId` field (existing,
     // pre-Sync-V2 field — see [LIBRARY-PROFILE-ASSOCIATION] in
@@ -306,9 +605,153 @@ export class ProfileStore {
     return row.libraryId;
   }
 
+  /**
+   * Records that a shared Library was meaningfully loaded on THIS device.
+   *
+   * `localLibraryId` is library-registry.js's LOCAL row id. Returns the shared
+   * libraryId on success, or null when this row has no shared identity yet.
+   *
+   * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+   * [WHY: reads the shared libraryId, never mints one. ensureLibraryId() is
+   *  reserved for an explicit association (see setLibraryAssociation) precisely
+   *  so that merely OPENING a folder cannot give it a synchronized identity
+   *  nobody asked for - Stage D3's rule, unchanged. A folder with no shared
+   *  identity yet is simply not catalogued, and returning null says so.
+   *
+   *  Touches ONLY the Library catalog: not associations, not activeProfileId,
+   *  not any Profile's facts. "This Library was opened" and "this Library
+   *  belongs to that Profile" are independent facts and this method is the
+   *  boundary that keeps them so.
+   *
+   *  Writes locally and announces to sibling tabs; it never touches Drive.
+   *  Publishing is the scheduler's job, gated by the writer lease.]
+   */
+  async recordLibraryLoaded(localLibraryId, { name = null, at = undefined } = {}) {
+    await this.#librariesReady;
+    await this.#identity.ready;
+
+    let row;
+    try {
+      row = await LibraryRegistry.getLibraryById(localLibraryId);
+    } catch (error) {
+      console.warn(`[SYNCV3] Could not read local library "${localLibraryId}" to catalog it.`, error);
+      return null;
+    }
+    if (!row || !row.libraryId) return null;
+
+    const displayName = typeof name === "string" && name ? name : row.name || "";
+    const loadedAt = Number.isFinite(at) ? at : Date.now();
+
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: the repeated-stamping guard. lastLoadedAt must mean "a meaningful
+    //  load happened", so a rescan, a re-render, a permission re-check or a sync
+    //  pass that all describe the SAME load must produce one fact, not four.
+    //  Suppressed when nothing this device would publish has actually changed:
+    //  the name is the same, this device is already the recorded source, and the
+    //  recorded load time is within a short window. Compared against what is
+    //  already HELD rather than against a separate "last call" timestamp, so the
+    //  guard survives a reload and cannot drift out of step with the facts.]
+    const current = this.#libraries[row.libraryId];
+    if (current && this.#isRedundantLibraryLoad(current, displayName, loadedAt)) return row.libraryId;
+
+    const stamp = this.#identity.tick();
+    const next = Facts.recordLibraryLoaded(
+      { schemaVersion: Facts.REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: this.#libraries },
+      row.libraryId,
+      { name: displayName, sourceDeviceId: this.#identity.deviceId, at: loadedAt },
+      stamp
+    );
+    this.#libraries = next.libraries;
+
+    try {
+      await this.#saveLibrariesAndAnnounce();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not persist the shared Library catalog.", error);
+    }
+
+    this.#emit();
+    return row.libraryId;
+  }
+
+  // See recordLibraryLoaded's WHY. A load is redundant when every field it would
+  // stamp already says the same thing, allowing for a short window on the clock.
+  #isRedundantLibraryLoad(current, displayName, loadedAt) {
+    const heldName = current.name && typeof current.name.v === "string" ? current.name.v : null;
+    const heldSource =
+      current.sourceDeviceId && typeof current.sourceDeviceId.v === "string" ? current.sourceDeviceId.v : null;
+    const heldAt = current.lastLoadedAt && Number.isFinite(current.lastLoadedAt.v) ? current.lastLoadedAt.v : null;
+
+    if (heldName !== displayName) return false;
+    if (heldSource !== this.#identity.deviceId) return false;
+    if (heldAt === null) return false;
+    return loadedAt - heldAt < REDUNDANT_LIBRARY_LOAD_WINDOW_MS;
+  }
+
   /** The active profile's fact slice, detached. */
   getFacts() {
     return takeSnapshot(this.#facts);
+  }
+
+  /**
+   * Stamped ItemFacts for exactly these paths, for the ACTIVE profile only.
+   *
+   * [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+   * [WHY: the ONE additive seam Stage 02 needed in this class, and it is
+   *  getFacts() with a key filter — nothing more. The projection has to resolve
+   *  a disagreement between two alias paths, and only the STAMPS can do that;
+   *  the flattened #recordsByPath carries no ordering at all. But getFacts()
+   *  deep-clones the entire fact slice, and calling that on every user action in
+   *  a 20k library would be a full structural clone per click. This returns only
+   *  the handful of aliased keys the projection actually holds.
+   *
+   *  Read-only by construction: it reads #facts, calls takeSnapshot (the single
+   *  detachment boundary — see profile-snapshot.js), and touches nothing else.
+   *  No profileId parameter exists, so a foreign Profile is unreachable rather
+   *  than merely discouraged. It never touches #identity, so it cannot read a
+   *  clock or draw a stamp; it never calls a Facts.* builder, so it cannot mint
+   *  one; and it never touches #factQueue/#saveQueue/#persist, so it cannot
+   *  write or schedule a write.]
+   */
+  /**
+   * Every path the ACTIVE profile holds a stamped ItemFacts entry for.
+   *
+   * [MEDIA-ID / STAGE-02 / BP-FAIL-03]
+   * [WHY: knownPaths() cannot answer this and structurally never will.
+   *  #setRecord DELETES a record that isEmptyRecord() considers empty, and
+   *  {favorite:false} / {hidden:false} / {tags:[]} are all empty by that
+   *  definition — so a path carrying ONLY negative curation has no local record
+   *  at all. Its stamped facts are still authoritative: an un-favourite is a
+   *  fact whose stamp is what makes it beat an older favourite on a proven
+   *  alias. Driving alias DISCOVERY off knownPaths() therefore lost exactly the
+   *  removals, and the older positive value on the other alias won forever.
+   *  Proven in the real browser: child un-favourite and un-tag both persisted as
+   *  stamped facts, and MASTER still showed the Favorite after a full reload.
+   *
+   *  DISCOVERY (this) and VALUE RESOLUTION (getItemFactsForPaths) are separate
+   *  jobs, which is why this is a second, narrower accessor rather than a change
+   *  to either existing one. Object.keys() already returns a fresh array of
+   *  immutable strings, so no live reference escapes and no snapshot is needed —
+   *  cloning the whole fact slice just to enumerate its keys would be the cost
+   *  getItemFactsForPaths exists to avoid.
+   *
+   *  Read-only on the same terms as getItemFactsForPaths: active Profile only
+   *  (no profileId parameter exists), no #identity, no clock, no stamp minted,
+   *  no Facts.* builder, no #factQueue/#saveQueue/#persist.]
+   */
+  getFactPaths() {
+    return Object.keys(this.#facts.items || {});
+  }
+
+  getItemFactsForPaths(paths) {
+    const out = {};
+    if (!paths) return out;
+    const items = this.#facts.items || {};
+    for (const path of paths) {
+      if (typeof path !== "string" || !path) continue;
+      const item = items[path];
+      if (item) out[path] = item;
+    }
+    return takeSnapshot(out);
   }
 
   /**
@@ -328,9 +771,31 @@ export class ProfileStore {
   async getFullReplica() {
     await this.whenFactsSettled();
     await this.whenAssociationsSettled();
+    await this.whenLibrariesSettled();
 
     const replica = Facts.emptyReplica();
     replica.associations = this.#associations;
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: present only when it carries something, and this is a CORRECTION to
+    //  the Stage 04A audit rather than a style choice. That audit reasoned that
+    //  an always-present `libraries: {}` was harmless to V2 because V2's
+    //  transport declares the fields it publishes explicitly. True for the WRITE
+    //  - and irrelevant, because publishDeviceReplicaVerified finishes by
+    //  comparing the whole read-back replica against the whole object it was
+    //  given. V2's transport reconstructs only { schemaVersion, profiles,
+    //  associations }, so the read-back lacked a key the input had, the two
+    //  canonical forms differed by exactly one empty object, and EVERY V2 publish
+    //  failed verification - permanently, looking exactly like corruption. Three
+    //  V2 suites caught it immediately.
+    //
+    //  Omitting an empty map is the minimal fix that touches neither the V2
+    //  transport nor the V2 pass: stableStringify skips undefined keys, so a
+    //  V1/V2 installation - which never catalogues a Library, because nothing
+    //  writes libraries-v3 there - serializes byte-for-byte as it always has.
+    //  ProfileStore still asks nothing about which transport is running; it only
+    //  declines to publish a map with nothing in it.]
+    if (Object.keys(this.#libraries).length > 0) replica.libraries = this.#libraries;
+    else delete replica.libraries;
     let knownIds;
     try {
       knownIds = new Set(await listAllProfileIds());
@@ -460,7 +925,7 @@ export class ProfileStore {
 
     if (registryChanged) {
       try {
-        await saveRegistry({ activeProfileId: this.#profileId, profiles: this.#profiles });
+        await this.#saveRegistryAndAnnounce({ activeProfileId: this.#profileId, profiles: this.#profiles });
       } catch (error) {
         console.warn("[SYNC-V2] Could not save the profile registry after adopting a merged replica.", error);
       }
@@ -468,6 +933,34 @@ export class ProfileStore {
     }
 
     await this.#adoptMergedAssociations(mergedReplica.associations);
+    await this.#adoptMergedLibraries(mergedReplica.libraries);
+  }
+
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: merged, never assigned - the same discipline every other adoption in
+  //  this class follows. A libraryId this device has never seen is simply added;
+  //  one it already knows is resolved per FIELD by mergeLibraryFacts, so a peer
+  //  whose only news is a newer lastLoadedAt cannot roll back a name this device
+  //  holds more recently.
+  //
+  //  Deliberately does NOT touch library-registry.js. #adoptMergedAssociations
+  //  reconciles local rows because the local row carries a UI-facing profileId
+  //  copy that predates sync; the shared Library name has no such local mirror,
+  //  and creating one now would invent a second source of truth for a display
+  //  string. It also never touches activeProfileId: a Library record arriving
+  //  from another device says nothing about which Profile this device is on.]
+  async #adoptMergedLibraries(incoming) {
+    await this.#librariesReady;
+    const merged = MergeEngine.mergeMaps(this.#libraries, incoming || {}, MergeEngine.mergeLibraryFacts);
+    if (MergeEngine.stableStringify(merged) === MergeEngine.stableStringify(this.#libraries)) return;
+
+    this.#libraries = merged;
+    try {
+      await this.#saveLibrariesAndAnnounce();
+    } catch (error) {
+      console.warn("[SYNCV3] Could not persist the merged shared Library catalog.", error);
+    }
+    this.#emit();
   }
 
   // [PHASE-6-SYNC-V2]
@@ -488,9 +981,9 @@ export class ProfileStore {
     if (changed) {
       this.#associations = merged;
       try {
-        await saveAssociationsCache(this.#associations);
+        await this.#saveAssociationsAndAnnounce();
       } catch (error) {
-        console.warn("[SYNC-V2] Could not persist merged library associations.", error);
+        console.warn(`[SYNC] Could not persist merged library associations to "${this.#associationStore.id}".`, error);
       }
       this.#emit();
     }
@@ -761,7 +1254,7 @@ export class ProfileStore {
       profiles.push(active);
 
       try {
-        await saveRegistry({ activeProfileId: active.id, profiles });
+        await this.#saveRegistryAndAnnounce({ activeProfileId: active.id, profiles });
       } catch (error) {
         console.warn("Could not save the new profile registry entry.", error);
       }
@@ -799,7 +1292,7 @@ export class ProfileStore {
     }
 
     try {
-      await saveRegistry({ activeProfileId: this.#profileId, profiles: this.#profiles });
+      await this.#saveRegistryAndAnnounce({ activeProfileId: this.#profileId, profiles: this.#profiles });
     } catch (error) {
       console.warn("Could not save profile metadata.", error);
     }
@@ -890,7 +1383,7 @@ export class ProfileStore {
     this.#profiles.push(entry);
 
     try {
-      await saveRegistry({ activeProfileId: this.#profileId, profiles: this.#profiles });
+      await this.#saveRegistryAndAnnounce({ activeProfileId: this.#profileId, profiles: this.#profiles });
     } catch (error) {
       console.warn("Could not save the new profile.", error);
     }
@@ -960,7 +1453,7 @@ export class ProfileStore {
     }
 
     try {
-      await saveRegistry({ activeProfileId: profileId, profiles: this.#profiles });
+      await this.#saveRegistryAndAnnounce({ activeProfileId: profileId, profiles: this.#profiles });
     } catch (error) {
       console.warn("Could not save the active profile pointer.", error);
     }
@@ -1093,7 +1586,7 @@ export class ProfileStore {
     }
 
     try {
-      await saveRegistry({ activeProfileId: nextActiveId, profiles: this.#profiles });
+      await this.#saveRegistryAndAnnounce({ activeProfileId: nextActiveId, profiles: this.#profiles });
     } catch (error) {
       console.warn("Could not save the profile registry after deletion.", error);
     }
@@ -1183,7 +1676,7 @@ export class ProfileStore {
     const now = Date.now();
     this.#profiles.push({ id: profileId, name: projectedName, masterFolder: null, createdAt: now, updatedAt: now });
     try {
-      await saveRegistry({ activeProfileId: this.#profileId, profiles: this.#profiles });
+      await this.#saveRegistryAndAnnounce({ activeProfileId: this.#profileId, profiles: this.#profiles });
     } catch (error) {
       console.warn("[SYNC-V2] Could not save the profile registry after restoring a profile.", error);
     }
@@ -1362,7 +1855,7 @@ export class ProfileStore {
     }
 
     try {
-      await saveRegistry({ activeProfileId: activeId, profiles });
+      await this.#saveRegistryAndAnnounce({ activeProfileId: activeId, profiles });
     } catch (error) {
       console.warn("Could not save the synced profile registry.", error);
     }
@@ -1383,6 +1876,234 @@ export class ProfileStore {
   subscribe(listener) {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  // ---- Same-device freshness (SyncV3, Stage 03C) -------------------------
+
+  /** This page load's ephemeral context id. Diagnostics and self-echo suppression only. */
+  getContextId() {
+    return this.#localStateChannel ? this.#localStateChannel.contextId : null;
+  }
+
+  /** False when BroadcastChannel is unavailable — see refreshFromStorage's WHY. */
+  isLocalStateChannelAvailable() {
+    return Boolean(this.#localStateChannel && this.#localStateChannel.available);
+  }
+
+  /** Releases the channel. Tests and any embedder tearing a context down. */
+  closeLocalStateChannel() {
+    if (this.#localStateChannel) this.#localStateChannel.close();
+    this.#localStateChannel = null;
+  }
+
+  // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+  // [WHY: posted only AFTER the durable write has committed. Announcing before
+  //  the write lands would send peers to re-read a database that does not yet
+  //  contain the change - they would read the old row, conclude they are current,
+  //  and ignore the real change when nothing announced it a second time.]
+  #announceLocalStateChange(kind, detail = {}) {
+    if (!this.#localStateChannel) return;
+    // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+    // [WHY: the message carries the installation's deviceId so a receiver can
+    //  tell "another VIEW of my installation" from "some other installation
+    //  entirely". In a browser the distinction is academic - one origin means one
+    //  IndexedDB means one deviceId, so every context on the channel is by
+    //  definition the same installation. It stops being academic the moment
+    //  several installations share a process, which is exactly what the
+    //  multi-device test fixtures do: without this scope they cross-notify, and
+    //  one simulated device refreshes itself from another's database.]
+    this.#localStateChannel.post({
+      kind,
+      at: Date.now(),
+      deviceId: this.#identity ? this.#identity.deviceId : null,
+      ...detail,
+    });
+  }
+
+  #onLocalStateMessage(message) {
+    // Only another view of THIS installation can tell us anything about our own
+    // storage - see #announceLocalStateChange.
+    const ourDeviceId = this.#identity ? this.#identity.deviceId : null;
+    if (message.deviceId && ourDeviceId && message.deviceId !== ourDeviceId) return;
+
+    // Proof that another view of this installation is live. Arms the stale-row
+    // guard in #persist from here on.
+    this.#peerContextObserved = true;
+
+    switch (message.kind) {
+      // Presence only - nothing durable changed, so nothing needs re-reading.
+      // Answered once so the newcomer learns about THIS context too; HERE is
+      // never answered, which is what stops the handshake echoing.
+      case LOCAL_STATE_MESSAGE_KINDS.CONTEXT_ONLINE:
+        this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.CONTEXT_HERE);
+        return;
+      case LOCAL_STATE_MESSAGE_KINDS.CONTEXT_HERE:
+        return;
+      case LOCAL_STATE_MESSAGE_KINDS.PROFILE_FACTS_CHANGED:
+        // A message about a Profile this context is not showing needs no work:
+        // foreign Profiles are read from IndexedDB on demand, never cached here.
+        if (message.profileId && message.profileId !== this.#profileId) return;
+        break;
+      case LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED:
+      case LOCAL_STATE_MESSAGE_KINDS.ASSOCIATIONS_CHANGED:
+      case LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED:
+      case LOCAL_STATE_MESSAGE_KINDS.DEVICE_NAME_CHANGED:
+        break;
+      default:
+        return;
+    }
+    // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+    // [WHY: the handler REFRESHES and does nothing else. It does not stamp - the
+    //  other context already stamped this mutation, and a second stamp would make
+    //  one user action into two logical facts, the later of which could outrank a
+    //  genuine concurrent edit on a third device. It does not publish either:
+    //  what reaches Drive is decided by the scheduler and the writer lease, not
+    //  by whichever context happened to hear about a local change first.]
+    this.refreshFromStorage().catch((error) =>
+      console.warn("[SYNCV3] Could not refresh local state after a peer context changed it.", error)
+    );
+  }
+
+  /**
+   * Re-reads this context's state from IndexedDB — the local durable authority.
+   *
+   * [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+   * [WHY: safe to call at any time and from anywhere, because every step is a
+   *  MERGE rather than an assignment: facts go through #adoptFacts (LWW by
+   *  stamp), associations through mergeMaps. A refresh can therefore never lose a
+   *  local mutation that has not reached storage yet, which is what makes it safe
+   *  to run on a timer, on a message, and immediately before a publish.
+   *
+   *  The V3 pass calls this before deriving what to publish, which is why
+   *  freshness does not depend on BroadcastChannel being available: without it
+   *  peers simply become current at their next pass instead of within
+   *  milliseconds, and the writer is still never the stale one.]
+   */
+  async refreshFromStorage() {
+    if (this.#localStateRefresh) return this.#localStateRefresh;
+    this.#localStateRefresh = this.#refreshFromStorageImpl().finally(() => {
+      this.#localStateRefresh = null;
+    });
+    return this.#localStateRefresh;
+  }
+
+  async #refreshFromStorageImpl() {
+    await this.#ready;
+    let registryChanged = false;
+
+    // ---- registry (Profile create / rename / delete on a peer context) ----
+    try {
+      const registry = await loadRegistry();
+      if (registry && Array.isArray(registry.profiles)) {
+        const incoming = registry.profiles.filter((entry) => entry && typeof entry.id === "string");
+        // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+        // [WHY: the stored registry is authoritative — it has to be, or a Profile
+        //  deleted in another tab would be resurrected here on every refresh. The
+        //  ONE exception is the Profile this context is actively on: dropping it
+        //  from under a live UI mid-session is worse than briefly disagreeing
+        //  with storage, and the next registry write reconciles it anyway.]
+        const next = incoming.map((entry) => ({ ...entry }));
+        if (this.#profileId && !next.some((entry) => entry.id === this.#profileId)) {
+          const active = this.#profiles.find((entry) => entry.id === this.#profileId);
+          if (active) next.push({ ...active });
+        }
+        if (MergeEngine.stableStringify(next) !== MergeEngine.stableStringify(this.#profiles)) {
+          this.#profiles = next;
+          registryChanged = true;
+        }
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not re-read the profile registry.", error);
+    }
+
+    // ---- active profile facts ----
+    try {
+      if (this.#profileId) {
+        const stored = await loadProfileData(this.#profileId);
+        // #adoptFacts merges, applies to local records, emits when something
+        // actually changed, and persists only if it had to — so a refresh that
+        // finds nothing new is silent and free.
+        if (stored && stored.facts) await this.#adoptFacts(stored.facts);
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not re-read the active profile's facts.", error);
+    }
+
+    // ---- associations ----
+    try {
+      await this.#associationsReady;
+      const stored = await this.#associationStore.load();
+      const merged = MergeEngine.mergeMaps(this.#associations, stored || {}, MergeEngine.mergeFact);
+      if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#associations)) {
+        this.#associations = merged;
+        registryChanged = true;
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not re-read library associations.", error);
+    }
+
+    // ---- shared Library catalog ----
+    // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+    // [WHY: merged, not assigned, for the same reason every block above is - a
+    //  refresh must never discard a Library fact this context stamped but has not
+    //  yet written. This block is also what makes reload-before-publish carry
+    //  Libraries: sync-v3.js calls refreshFromStorage() generically before
+    //  deriving the replica, so a writer tab picks up a sibling tab's load here
+    //  with no change to the pass itself.]
+    try {
+      await this.#librariesReady;
+      const stored = await loadV3LibrariesCache();
+      const merged = MergeEngine.mergeMaps(this.#libraries, stored || {}, MergeEngine.mergeLibraryFacts);
+      if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#libraries)) {
+        this.#libraries = merged;
+        registryChanged = true;
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not re-read the shared Library catalog.", error);
+    }
+
+    // ---- Device Name ----
+    // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+    // [WHY: re-reads the persisted name so a sibling tab's rename becomes
+    //  visible here without a reload, and so the WRITER tab picks it up before
+    //  its next publish - reload-before-publish already calls this method, so
+    //  the renamed directory follows with no change to the pass. Reads only;
+    //  it can neither mint an identity nor write Drive.]
+    try {
+      if (typeof this.#identity.refreshDeviceName === "function") {
+        const before = this.#identity.displayName;
+        await this.#identity.refreshDeviceName();
+        if (this.#identity.displayName !== before) registryChanged = true;
+      }
+    } catch (error) {
+      console.warn("[SYNCV3] Could not re-read the Device Name.", error);
+    }
+
+    if (registryChanged) this.#emit();
+  }
+
+  // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+  // [WHY: one wrapper so every registry write announces itself. Wrapping rather
+  //  than adding a post() beside each of the seven saveRegistry call sites is
+  //  the point: a future eighth call site gets the announcement for free, and
+  //  cannot forget it.]
+  async #saveRegistryAndAnnounce(payload) {
+    await saveRegistry(payload);
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED);
+  }
+
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: announces only AFTER the durable write resolves, matching every other
+  //  announcer here. A sibling told to re-read before the row lands would read
+  //  the old catalog, conclude it was current, and never hear again.]
+  async #saveLibrariesAndAnnounce() {
+    await saveV3LibrariesCache(this.#libraries);
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED);
+  }
+
+  async #saveAssociationsAndAnnounce() {
+    await this.#associationStore.save(this.#associations);
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.ASSOCIATIONS_CHANGED);
   }
 
   #emit() {
@@ -1490,14 +2211,78 @@ export class ProfileStore {
       //  user did at that instant, whereas facts are cumulative and monotone,
       //  so the freshest set is always the correct one to store.]
       .then(() => this.#factQueue)
-      .then(() => {
+      .then(async () => {
         const profileId = targetProfileId || this.#profileId;
         if (!profileId) return;
         // Facts are only supplied for the profile still active; a save queued
         // before a profile switch passes undefined, which saveProfileData
         // treats as "preserve what is stored" rather than "erase".
         const facts = profileId === this.#profileId ? takeSnapshot(this.#facts) : undefined;
-        return saveProfileData(profileId, { ...snapshot, facts });
+        if (!facts) {
+          await saveProfileData(profileId, { ...snapshot, facts });
+          return;
+        }
+
+        // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+        // [WHY: THE stale-row guard, and it is deliberately narrow: it makes the
+        //  row's FACTS monotone and leaves the row's value representation exactly
+        //  as it has always been written.
+        //
+        //  Same-origin contexts share this row and each writes it WHOLE, so a
+        //  context holding a slightly older view would otherwise overwrite a
+        //  sibling's newer facts with its own - silently, with no version
+        //  anywhere to notice. Re-reading and merging fixes that:
+        //  mergeProfileFacts is LWW by stamp, so the facts that land are the
+        //  union regardless of which context wrote first. It is a
+        //  compare-and-merge rather than a compare-and-fail, so it never retries
+        //  and cannot livelock.
+        //
+        //  An earlier version also RECONSTRUCTED items/tags from the merged facts
+        //  before writing. That was wrong: it changed the row's value shape -
+        //  pruning records the normal path keeps, materialising fields the normal
+        //  path omits - and two V2 tests caught it immediately. Facts are what
+        //  sync publishes and what the value records are projected FROM, so
+        //  merging facts alone is sufficient; the records self-heal through
+        //  #absorbRefreshedFacts below and the persist it schedules.
+        //
+        //  Deliberately independent of BroadcastChannel: this must hold on a
+        //  browser without it, and for any message that is simply missed.]
+        // Armed by a peer message or by a peer's presence announcement, and
+        // unconditionally when there is no channel to hear one on - see
+        // #peerContextObserved.
+        const guardArmed =
+          this.#peerContextObserved || !(this.#localStateChannel && this.#localStateChannel.available);
+        if (!guardArmed) {
+          await saveProfileData(profileId, { ...snapshot, facts });
+          this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.PROFILE_FACTS_CHANGED, { profileId });
+          return;
+        }
+
+        // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+        // [WHY: the merge happens INSIDE saveProfileData's transaction, not here.
+        //  An earlier version read the row, merged, then wrote - which is not
+        //  atomic, so two contexts saving at the same instant both read the old
+        //  row and the second write still erased the first's facts. Handing the
+        //  merge to the write transaction is what actually closes that race; this
+        //  callback just supplies the algebra and captures the result.]
+        let mergedFacts = null;
+        await saveProfileData(profileId, {
+          ...snapshot,
+          facts,
+          mergeFacts: (mine, storedFacts) => {
+            mergedFacts = MergeEngine.mergeProfileFacts(mine, storedFacts);
+            return mergedFacts;
+          },
+        });
+        this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.PROFILE_FACTS_CHANGED, { profileId });
+
+        const gainedFacts =
+          Boolean(mergedFacts) && MergeEngine.stableStringify(mergedFacts) !== MergeEngine.stableStringify(facts);
+
+        // Only when storage genuinely held something this context had not seen.
+        // Terminates: the persist this schedules merges against storage, finds
+        // nothing new, and absorbs nothing.
+        if (gainedFacts && profileId === this.#profileId) this.#absorbRefreshedFacts(mergedFacts);
       })
       .catch((error) => {
         // Persistence must never make the in-memory profile unusable.
@@ -1646,6 +2431,28 @@ export class ProfileStore {
   //  survive a sync untouched — the record is only rewritten where a fact says
   //  it must be. Returns whether anything changed so callers can avoid a
   //  pointless emit/persist.]
+  // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
+  // [WHY: the memory-only half of adoption - merge, project onto local records,
+  //  notify. It exists so #persist's read-modify-write can make this context
+  //  current WITHOUT scheduling another save: the row it just wrote already
+  //  contains exactly these facts, and a second save would find the same union,
+  //  write it again, and announce it again on every mutation forever.]
+  #absorbRefreshedFacts(facts) {
+    const merged = MergeEngine.mergeProfileFacts(this.#facts, facts);
+    if (MergeEngine.stableStringify(merged) === MergeEngine.stableStringify(this.#facts)) return;
+    this.#facts = merged;
+    if (this.#profileId) {
+      this.#identity.observeReplica({ profiles: { [this.#profileId]: this.#facts }, associations: {} });
+    }
+    if (this.#applyFactsToLocal(this.#facts)) {
+      this.#emit();
+      // The value records just changed to match the newly-merged facts, so the
+      // row has to be rewritten to match. Safe from recursion: that save merges
+      // against storage, finds nothing new, and absorbs nothing.
+      this.#persist();
+    }
+  }
+
   #applyFactsToLocal(facts) {
     const diff = diffFactsAgainstProfileData(facts, {
       name: this.#profileName,

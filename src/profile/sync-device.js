@@ -22,12 +22,24 @@
 // cannot destroy it.
 
 import { HybridClock } from "./sync-merge.js";
-import { loadDeviceRecord, saveDeviceRecord, persistLastIssuedT } from "../storage/profile-sync-store.js";
+import {
+  loadDeviceRecord,
+  saveDeviceRecord,
+  persistLastIssuedT,
+  persistDeviceName,
+} from "../storage/profile-sync-store.js";
 
 // How long to coalesce clock-floor writes. The floor only has to be durable
 // before the NEXT reload, not before the next tick, so batching keeps rapid
 // tagging from producing one IndexedDB write per keystroke.
 const FLOOR_PERSIST_DEBOUNCE_MS = 750;
+
+// [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+// [WHY: a cap on the LOGICAL name, well above sync-v3-names.js's own path cap so
+//  this never becomes the effective limit on what a directory may be called -
+//  the path boundary owns that. This exists so a pasted essay cannot become a
+//  device name at all.]
+const MAX_DEVICE_NAME_LENGTH = 120;
 
 /**
  * Stable, opaque installation identity. Prefers crypto.randomUUID (available in
@@ -85,13 +97,21 @@ export class SyncIdentity {
   #ephemeral = false;
   #storage;
 
+  // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+  // [WHY: the user's chosen name for THIS installation, or null when they have
+  //  never chosen one. Held beside deviceId because it describes the same
+  //  installation - but note the asymmetry the getters below preserve: deviceId
+  //  is identity and can never change, this is presentation and is expected to.
+  //  Nothing anywhere may key, order, merge or establish ownership on it.]
+  #deviceName = null;
+
   /**
    * options.now — injectable time source, for deterministic tests.
    * options.storage — injectable persistence, for tests. Defaults to the real
    *   profile-sync store.
    */
   constructor({ now = undefined, storage = undefined } = {}) {
-    this.#storage = storage || { loadDeviceRecord, saveDeviceRecord, persistLastIssuedT };
+    this.#storage = storage || { loadDeviceRecord, saveDeviceRecord, persistLastIssuedT, persistDeviceName };
     this.#ready = this.#initialize(now);
   }
 
@@ -114,6 +134,7 @@ export class SyncIdentity {
 
     if (record && record.deviceId) {
       this.#deviceId = record.deviceId;
+      this.#deviceName = record.deviceName || null;
     } else {
       this.#deviceId = generateDeviceId();
       if (!this.#ephemeral) {
@@ -156,6 +177,94 @@ export class SyncIdentity {
    */
   get label() {
     return detectDeviceLabel();
+  }
+
+  /**
+   * The user's custom Device Name, or null if they have never set one.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: kept distinct from displayName below so callers must be explicit about
+   *  which question they are asking. "Has the user named this device?" and "what
+   *  should I show?" have different answers, and a settings field that pre-filled
+   *  itself with the detected fallback would make a user who typed nothing look
+   *  like a user who typed "Chromebook".]
+   */
+  get deviceName() {
+    return this.#deviceName;
+  }
+
+  /**
+   * What a human should see for this installation: the custom name when one is
+   * set, otherwise the detected platform label.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: THE effective-name rule, in one place. Clearing a custom name falls
+   *  back rather than leaving an empty string, so a device can never publish
+   *  itself as nameless. Still display-only, exactly as `label` is - a change
+   *  here renames nothing and re-identifies nothing.]
+   */
+  get displayName() {
+    return this.#deviceName || detectDeviceLabel();
+  }
+
+  /**
+   * Sets or clears this installation's custom Device Name.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: logical hygiene ONLY - NFC, control characters out, whitespace
+   *  collapsed, trimmed, length capped. Deliberately NOT filesystem
+   *  sanitization: that belongs to sync-v3-names.js at the path boundary and
+   *  nowhere else, so what is persisted stays the user's name rather than a
+   *  path-safe derivative of it. A name containing a slash is stored as typed
+   *  and only made safe when it becomes a directory.
+   *
+   *  Blank, whitespace-only, or null all mean "reset to the detected default" -
+   *  one rule, so a Save on an emptied field and an explicit Reset cannot
+   *  disagree.]
+   */
+  async setDeviceName(name) {
+    await this.#ready;
+
+    let next = typeof name === "string" ? name : "";
+    try {
+      next = next.normalize("NFC");
+    } catch {
+      // A string that cannot be normalized is still usable.
+    }
+    next = [...next].filter((ch) => ch.codePointAt(0) >= 32 && ch.codePointAt(0) !== 127).join("");
+    next = next.replace(/\s+/g, " ").trim();
+    if (next.length > MAX_DEVICE_NAME_LENGTH) next = [...next].slice(0, MAX_DEVICE_NAME_LENGTH).join("").trim();
+
+    this.#deviceName = next || null;
+
+    if (this.#ephemeral) return this.#deviceName;
+    try {
+      await this.#storage.persistDeviceName(this.#deviceName);
+    } catch (error) {
+      console.warn("[SYNCV3] Could not persist the Device Name.", error);
+    }
+    return this.#deviceName;
+  }
+
+  /**
+   * Re-reads the persisted Device Name.
+   *
+   * [SYNCV3 / STAGE-05 / DEVICE-NAMING]
+   * [WHY: how a sibling tab becomes current after another tab renames the
+   *  device. Reads ONLY the name - deviceId and the clock floor are untouched,
+   *  because a peer context announcing a rename says nothing about either, and
+   *  re-minting or re-observing them here would be how a display change turned
+   *  into an identity change.]
+   */
+  async refreshDeviceName() {
+    await this.#ready;
+    try {
+      const record = await this.#storage.loadDeviceRecord();
+      if (record) this.#deviceName = record.deviceName || null;
+    } catch (error) {
+      console.warn("[SYNCV3] Could not re-read the Device Name.", error);
+    }
+    return this.#deviceName;
   }
 
   /**

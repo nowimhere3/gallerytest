@@ -40,19 +40,143 @@ function makeRequest() {
   return { onsuccess: null, onerror: null, result: undefined, error: null };
 }
 
-function makeStoreProxy(store, ops, observer) {
+// [MEDIA-ID / STAGE-01] Array keyPath support.
+// [WHY: media-identity.js keys its `paths` store on the COMPOSITE
+//  [scopeId, scopeRelativePath], because that composite key is what makes one
+//  media identity per path an invariant the database enforces rather than one
+//  the code remembers. A fixture that only understood scalar keys could not
+//  exercise that guarantee at all. Map cannot compare arrays by value, so a
+//  composite key is serialized for storage while the caller keeps passing real
+//  arrays, exactly as with the real API.]
+function toMapKey(key) {
+  return Array.isArray(key) ? `\u0000arr:${JSON.stringify(key)}` : key;
+}
+
+function extractKey(store, value) {
+  if (Array.isArray(store.keyPath)) return store.keyPath.map((field) => value[field]);
+  return value[store.keyPath];
+}
+
+function makeConstraintError(store) {
+  const error = new Error(`Key already exists in "${store.name}".`);
+  error.name = "ConstraintError";
+  return error;
+}
+
+// [MEDIA-ID / STAGE-02] Index support.
+// [WHY: media-identity.js's v2 upgrade adds a `scopeId` index on `paths` and
+//  the projection build reads it with index.getAllKeys(), which returns PRIMARY
+//  keys - here the composite [scopeId, scopeRelativePath] - without
+//  deserializing a record. A fixture with no index at all could not exercise
+//  either the upgrade or the read, so the one hot path Stage 02 depends on would
+//  be untested. Counters are exposed so a performance test can assert that the
+//  hot read path performs no full-store getAll().]
+function makeStoreProxy(store, ops, observer, counters) {
+  const bump = (name) => {
+    if (counters) counters[name] = (counters[name] || 0) + 1;
+  };
   return {
+    get indexNames() {
+      return {
+        contains: (name) => store.indexes instanceof Map && store.indexes.has(name),
+      };
+    },
+    createIndex(name, keyPath, { unique = false } = {}) {
+      if (!(store.indexes instanceof Map)) store.indexes = new Map();
+      store.indexes.set(name, { name, keyPath, unique });
+      return { name, keyPath, unique };
+    },
+    index(name) {
+      const definition = store.indexes instanceof Map ? store.indexes.get(name) : null;
+      if (!definition) throw new Error(`No index named "${name}".`);
+      return {
+        getAllKeys(query) {
+          const request = makeRequest();
+          bump("getAllKeys");
+          ops.push(() => {
+            const out = [];
+            for (const row of store.rows.values()) {
+              // [MEDIA-ID / STAGE-02] Compound index keyPaths.
+              // [WHY: media-identity.js's v3 index is on [scopeId, origin] — the
+              //  projection asks for the OBSERVED population of one scope. A
+              //  fixture that only understood scalar keyPaths would silently
+              //  match nothing and hand back [], which reads as "this scope has
+              //  no observed paths" — a false ABSENT that makes the very test
+              //  guarding against it pass for the wrong reason.]
+              if (query !== undefined) {
+                const value = Array.isArray(definition.keyPath)
+                  ? definition.keyPath.map((field) => row[field])
+                  : row[definition.keyPath];
+                const wanted = Array.isArray(definition.keyPath) ? query : [query];
+                const actual = Array.isArray(definition.keyPath) ? value : [value];
+                if (actual.length !== wanted.length) continue;
+                let matches = true;
+                for (let i = 0; i < wanted.length; i++) {
+                  if (actual[i] !== wanted[i]) {
+                    matches = false;
+                    break;
+                  }
+                }
+                if (!matches) continue;
+              }
+              out.push(extractKey(store, row));
+            }
+            request.result = out;
+            if (request.onsuccess) request.onsuccess({ target: request });
+          });
+          return request;
+        },
+      };
+    },
     get(key) {
       const request = makeRequest();
       ops.push(() => {
-        const row = store.rows.get(key);
+        const row = store.rows.get(toMapKey(key));
         request.result = row === undefined ? undefined : cloneValue(row);
+        if (request.onsuccess) request.onsuccess({ target: request });
+      });
+      return request;
+    },
+    // [MEDIA-ID / STAGE-01] add() — the concurrency primitive.
+    // [WHY: unlike put(), add() FAILS when the key already exists. That failure
+    //  is what makes get-or-create atomic across tabs: two writers race, exactly
+    //  one add() succeeds, and the loser adopts the winner's row instead of
+    //  clobbering it. Faithful in the detail that matters — the error event
+    //  carries a preventDefault() the caller must invoke, because in real
+    //  IndexedDB an unhandled request error aborts the ENTIRE transaction,
+    //  taking every batched sibling write with it.]
+    add(value) {
+      const request = makeRequest();
+      const stored = cloneValue(value);
+      ops.push(() => {
+        const key = toMapKey(extractKey(store, stored));
+        if (store.rows.has(key)) {
+          request.error = makeConstraintError(store);
+          let defaultPrevented = false;
+          const event = {
+            target: request,
+            preventDefault() {
+              defaultPrevented = true;
+            },
+            stopPropagation() {},
+            get defaultPrevented() {
+              return defaultPrevented;
+            },
+          };
+          if (request.onerror) request.onerror(event);
+          if (!defaultPrevented && store.onUnhandledError) store.onUnhandledError(request.error);
+          return;
+        }
+        store.rows.set(key, stored);
+        if (observer) observer({ store: store.name, type: "add", value: cloneValue(stored) });
+        request.result = extractKey(store, stored);
         if (request.onsuccess) request.onsuccess({ target: request });
       });
       return request;
     },
     getAll() {
       const request = makeRequest();
+      bump("getAll");
       ops.push(() => {
         request.result = [...store.rows.values()].map(cloneValue);
         if (request.onsuccess) request.onsuccess({ target: request });
@@ -64,9 +188,10 @@ function makeStoreProxy(store, ops, observer) {
       // Cloned at CALL time, exactly as a real put() snapshots its argument.
       const stored = cloneValue(value);
       ops.push(() => {
-        store.rows.set(stored[store.keyPath], stored);
+        const key = extractKey(store, stored);
+        store.rows.set(toMapKey(key), stored);
         if (observer) observer({ store: store.name, type: "put", value: cloneValue(stored) });
-        request.result = stored[store.keyPath];
+        request.result = key;
         if (request.onsuccess) request.onsuccess({ target: request });
       });
       return request;
@@ -74,7 +199,7 @@ function makeStoreProxy(store, ops, observer) {
     delete(key) {
       const request = makeRequest();
       ops.push(() => {
-        store.rows.delete(key);
+        store.rows.delete(toMapKey(key));
         if (observer) observer({ store: store.name, type: "delete", key });
         if (request.onsuccess) request.onsuccess({ target: request });
       });
@@ -103,6 +228,7 @@ function drain(ops, done) {
 export function installFakeIndexedDB() {
   const databases = new Map();
   let observer = null;
+  const counters = { open: 0, getAll: 0, getAllKeys: 0 };
 
   function makeDatabaseHandle(db) {
     return {
@@ -114,9 +240,9 @@ export function installFakeIndexedDB() {
         contains: (name) => db.stores.has(name),
       },
       createObjectStore(name, { keyPath } = {}) {
-        const store = { name, keyPath, rows: new Map() };
+        const store = { name, keyPath, rows: new Map(), indexes: new Map() };
         db.stores.set(name, store);
-        return makeStoreProxy(store, [], observer);
+        return makeStoreProxy(store, [], observer, counters);
       },
       transaction(storeNames, mode = "readonly") {
         const names = Array.isArray(storeNames) ? storeNames : [storeNames];
@@ -131,7 +257,7 @@ export function installFakeIndexedDB() {
             if (!names.includes(name)) throw new Error(`Store "${name}" is not in this transaction's scope.`);
             const store = db.stores.get(name);
             if (!store) throw new Error(`No object store named "${name}".`);
-            return makeStoreProxy(store, ops, observer);
+            return makeStoreProxy(store, ops, observer, counters);
           },
         };
         drain(ops, () => {
@@ -145,6 +271,7 @@ export function installFakeIndexedDB() {
 
   globalThis.indexedDB = {
     open(name, version) {
+      counters.open += 1;
       const request = { onupgradeneeded: null, onsuccess: null, onerror: null, result: null, transaction: null };
 
       setTimeout(() => {
@@ -167,7 +294,7 @@ export function installFakeIndexedDB() {
             objectStore(storeName) {
               const store = db.stores.get(storeName);
               if (!store) throw new Error(`No object store named "${storeName}" during upgrade.`);
-              return makeStoreProxy(store, upgradeOps, observer);
+              return makeStoreProxy(store, upgradeOps, observer, counters);
             },
           };
 
@@ -189,6 +316,12 @@ export function installFakeIndexedDB() {
 
   return {
     databases,
+    counters,
+    resetCounters() {
+      counters.open = 0;
+      counters.getAll = 0;
+      counters.getAllKeys = 0;
+    },
     observe(fn) {
       observer = fn;
     },
@@ -237,10 +370,51 @@ export function createVirtualDirectory(name = "Browser Gallery Profiles", hooks 
   const root = makeDirNode(name);
   const log = [];
 
+  // [MEDIA-ID / STAGE-01] Ancestry support for the virtual directory.
+  // [WHY: wrapDirectory() mints a NEW handle object on every call, so two
+  //  handles for the same folder are never reference-equal — exactly like the
+  //  real API, where isSameEntry() exists precisely because object identity
+  //  proves nothing. Comparison therefore goes through the underlying node.]
+  function findDescendantSegments(fromNode, targetNode) {
+    if (fromNode === targetNode) return [];
+    const queue = [[fromNode, []]];
+    while (queue.length) {
+      const [node, segments] = queue.shift();
+      for (const [childName, childNode] of node.dirs) {
+        const childSegments = [...segments, childName];
+        if (childNode === targetNode) return childSegments;
+        queue.push([childNode, childSegments]);
+      }
+    }
+    return null;
+  }
+
   function wrapDirectory(node, path) {
     const handle = {
       kind: "directory",
       name: node.name,
+      // Test-double seam only; the real API exposes nothing like this.
+      __node: node,
+
+      async isSameEntry(other) {
+        return Boolean(other && other.__node === node);
+      },
+
+      // Mirrors the behaviour Stage 00B's real-browser probe confirmed:
+      // [] for self, the segment array for a descendant, null for anything
+      // else. `hooks.resolveBehavior` lets a test force the outcomes the probe
+      // could NOT prove — notably a throw, which must read as "no information"
+      // rather than as a negative result.
+      async resolve(other) {
+        if (hooks.resolveBehavior === "throw") {
+          const error = new Error("resolve() denied");
+          error.name = "NotAllowedError";
+          throw error;
+        }
+        if (hooks.resolveBehavior === "absent") throw new Error("resolve is not a function");
+        if (!other || !other.__node) return null;
+        return findDescendantSegments(node, other.__node);
+      },
 
       async queryPermission() {
         return hooks.permission || "granted";
@@ -346,6 +520,87 @@ export function createVirtualDirectory(name = "Browser Gallery Profiles", hooks 
         if (!node) return undefined;
       }
       return node.files.get(parts[parts.length - 1]);
+    },
+    /**
+     * Deletes straight out of the virtual folder, bypassing the handle API - the
+     * mirror of writeFile above. Additive: nothing that existed before this
+     * behaves differently.
+     *
+     * [SYNCV3 / STAGE-02 / CONTENT-ADDRESSED-DEVICE-DISCOVERY]
+     * [WHY: needed to stage the states this stage has to survive but no correct
+     *  writer ever produces - a folder renamed underneath the app, a manifest
+     *  committed before its data files landed. Both are things Drive does to a
+     *  folder, not things the transport does, so they have to be staged from
+     *  outside the transport's own API.]
+     */
+    removeFile(filePath) {
+      const parts = filePath.split("/");
+      let node = root;
+      for (const part of parts.slice(0, -1)) {
+        node = node.dirs.get(part);
+        if (!node) return false;
+      }
+      return node.files.delete(parts[parts.length - 1]);
+    },
+    /** Removes a whole directory subtree by path. Same purpose as removeFile. */
+    removeDirectory(dirPath) {
+      const parts = dirPath.split("/");
+      let node = root;
+      for (const part of parts.slice(0, -1)) {
+        node = node.dirs.get(part);
+        if (!node) return false;
+      }
+      return node.dirs.delete(parts[parts.length - 1]);
+    },
+  };
+}
+
+// ---- Web Locks double ------------------------------------------------------
+//
+// [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
+// [WHY: models the ONE property the writer lease depends on - that a name can be
+//  held by at most one holder at a time, per origin, and is released when the
+//  holder's callback settles however it settles. Several managers can be created
+//  over ONE shared namespace, which is what makes two "tabs" in this harness
+//  genuinely contend rather than each quietly winning its own private lock.
+//
+//  Only `ifAvailable: true` is implemented, deliberately: that is the only mode
+//  production uses, and a double that silently supported waiting would let a
+//  future change adopt blocking semantics without any test noticing the tabs had
+//  started serializing.]
+
+/** A lock namespace shared by every manager created over it - i.e. one origin. */
+export function createLockNamespace() {
+  return new Map();
+}
+
+export function createFakeLockManager(namespace = createLockNamespace()) {
+  return {
+    namespace,
+    /** Names currently held. Diagnostics for tests. */
+    heldNames() {
+      return [...namespace.keys()].sort();
+    },
+    async request(name, optionsOrCallback, maybeCallback) {
+      const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
+      const options = typeof optionsOrCallback === "function" ? {} : optionsOrCallback || {};
+
+      if (typeof callback !== "function") throw new TypeError("request() requires a callback");
+      if (!options.ifAvailable) {
+        throw new Error("[test-env] The fake lock manager only implements { ifAvailable: true }.");
+      }
+
+      if (namespace.has(name)) return callback(null);
+
+      const token = { name, mode: "exclusive" };
+      namespace.set(name, token);
+      try {
+        return await callback(token);
+      } finally {
+        // Released whether the callback returned or threw - the property the
+        // production code relies on for "a crashed pass never strands the lock".
+        if (namespace.get(name) === token) namespace.delete(name);
+      }
     },
   };
 }
