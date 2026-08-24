@@ -1308,6 +1308,46 @@
         </div>
 
         <div class="profile-settings-group">
+          <!-- [SYNCV3 / STAGE-08 / LINK-UI]
+               [WHY: This Folder owns the device-local physical-folder link;
+                This Library below continues to own the shared Profile association.] -->
+          <h3 class="profile-group-heading">This Folder</h3>
+          <p id="profile-folder-link-summary" class="product-status product-status-muted">No folder loaded.</p>
+          <button
+            id="profile-folder-link-btn"
+            class="secondary hidden"
+            type="button"
+            aria-expanded="false"
+            aria-controls="profile-folder-link-row"
+            disabled
+          >Link to a Library</button>
+          <div id="profile-folder-link-row" class="profile-folder-link-row hidden">
+            <label for="profile-folder-link-select">This folder is my copy of</label>
+            <select
+              id="profile-folder-link-select"
+              class="field-control"
+              aria-describedby="profile-folder-link-conflict profile-folder-link-help"
+            ></select>
+            <div class="profile-folder-link-actions">
+              <button id="profile-folder-link-save-btn" class="secondary" type="button" aria-describedby="profile-folder-link-conflict">Save Link</button>
+              <button id="profile-folder-unlink-btn" class="secondary hidden" type="button">Unlink</button>
+              <button id="profile-folder-link-cancel-btn" class="secondary" type="button">Cancel</button>
+            </div>
+            <!-- [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
+                 [WHY: a storage-level claimant refusal is safety-critical and
+                  must be visually distinct from ordinary explanatory text.] -->
+            <div id="profile-folder-link-conflict" class="profile-folder-link-conflict hidden" role="status" aria-live="polite">
+              <strong id="profile-folder-link-conflict-heading"></strong>
+              <p id="profile-folder-link-conflict-detail"></p>
+              <p id="profile-folder-link-conflict-action"></p>
+            </div>
+            <p id="profile-folder-link-help" class="hint">Linking only tells Browser Gallery which Library this folder is.</p>
+            <p class="hint">Your media files stay on this device — nothing is uploaded or copied.</p>
+          </div>
+          <p id="profile-folder-link-result" class="hint" role="status"></p>
+        </div>
+
+        <div class="profile-settings-group">
           <h3 class="profile-group-heading">This Library</h3>
           <p id="profile-library-association-text" class="product-status product-status-muted">No folder loaded.</p>
           <button
@@ -1531,24 +1571,6 @@
               <button id="profile-sync-v3-activate-btn" class="secondary" type="button">Activate Sync V3</button>
               <button id="profile-sync-v3-leave-btn" class="secondary hidden" type="button">Leave V3 Mode</button>
             </div>
-          </div>
-
-          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
-               [WHY: the second device's ONLY way to say "this local folder is
-                that shared library". A dropdown of ids the user must pick from
-                deliberately — no name matching, no signature matching, no
-                pre-selection. Linking attaches identity only; it never moves
-                curation between Profiles.] -->
-          <div id="profile-sync-link-panel" class="profile-sync-link-panel hidden">
-            <p class="hint">
-              Link the currently loaded folder to a library another device already shares.
-              This only matches up identity — no Profile content is moved.
-            </p>
-            <div class="control-stack">
-              <select id="profile-sync-link-select" class="field-control" aria-label="Shared library to link the loaded folder to"></select>
-              <button id="profile-sync-link-btn" class="secondary" type="button">Link Loaded Folder</button>
-            </div>
-            <p id="profile-sync-link-status" class="hint" role="status"></p>
           </div>
 
           <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]

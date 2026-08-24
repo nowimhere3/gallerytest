@@ -9,13 +9,7 @@ import {
   addLegacyLibrary,
   updateLegacyLibrarySignature,
   getLibraryById,
-  // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
-  // [WHY: linkLocalLibraryToSharedId is the ONLY way a second device attaches
-  //  its own physical folder to an already-shared library, and it is reachable
-  //  from exactly one explicit user action (see the Link Shared Library
-  //  controls) — never from a folder open, a name match, or a signature match.]
   getLibraryByLibraryId,
-  linkLocalLibraryToSharedId,
 } from "./storage/library-registry.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
@@ -59,6 +53,7 @@ import { createProfileProjectionView } from "./profile/profile-projection-view.j
 import { ProfileSync } from "./profile/profile-sync.js";
 import { mapSyncStatusCopy } from "./profile/sync-status-copy.js";
 import { mapAssociationCopy } from "./profile/association-copy.js";
+import { mapLinkState } from "./profile/link-state.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
@@ -187,6 +182,18 @@ const profileAssociationSelect = document.getElementById("profile-association-se
 const profileAssociationSaveBtn = document.getElementById("profile-association-save-btn");
 const profileAssociationCancelBtn = document.getElementById("profile-association-cancel-btn");
 const profileAssociationResult = document.getElementById("profile-association-result");
+const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
+const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
+const profileFolderLinkRow = document.getElementById("profile-folder-link-row");
+const profileFolderLinkSelect = document.getElementById("profile-folder-link-select");
+const profileFolderLinkSaveBtn = document.getElementById("profile-folder-link-save-btn");
+const profileFolderUnlinkBtn = document.getElementById("profile-folder-unlink-btn");
+const profileFolderLinkCancelBtn = document.getElementById("profile-folder-link-cancel-btn");
+const profileFolderLinkConflict = document.getElementById("profile-folder-link-conflict");
+const profileFolderLinkConflictHeading = document.getElementById("profile-folder-link-conflict-heading");
+const profileFolderLinkConflictDetail = document.getElementById("profile-folder-link-conflict-detail");
+const profileFolderLinkConflictAction = document.getElementById("profile-folder-link-conflict-action");
+const profileFolderLinkResult = document.getElementById("profile-folder-link-result");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
@@ -229,10 +236,6 @@ const profileSyncV3ActivateBtn = document.getElementById("profile-sync-v3-activa
 const profileSyncV3LeaveBtn = document.getElementById("profile-sync-v3-leave-btn");
 const profileSyncV3DisconnectBtn = document.getElementById("profile-sync-v3-disconnect-btn");
 const profileSyncProductStatus = document.getElementById("profile-sync-product-status");
-const profileSyncLinkPanel = document.getElementById("profile-sync-link-panel");
-const profileSyncLinkSelect = document.getElementById("profile-sync-link-select");
-const profileSyncLinkBtn = document.getElementById("profile-sync-link-btn");
-const profileSyncLinkStatus = document.getElementById("profile-sync-link-status");
 const profileSyncConflictPanel = document.getElementById("profile-sync-conflict-panel");
 const profileSyncUseSyncedBtn = document.getElementById("profile-sync-use-synced-btn");
 const profileSyncKeepLocalBtn = document.getElementById("profile-sync-keep-local-btn");
@@ -671,6 +674,11 @@ let isLoadingFiles = false;
 // second source of truth for the association itself, which — for FSA —
 // always lives in IndexedDB via library-registry.js.
 let activeLibraryRecord = null;
+// [SYNCV3 / STAGE-08 / LINK-STATE]
+// Permission is presentation state, never identity. Losing it must leave the
+// durable local row and its shared Library link untouched.
+let currentFolderPermissionState = "granted";
+let pendingFolderLinkClaimant = null;
 // [SYNCV3 / STAGE-06 / ASSOCIATION-SUMMARY]
 // Presentation-only name for a loaded legacy folder that does not have a
 // registry record yet. Association truth remains entirely in the record/state
@@ -774,7 +782,14 @@ function getCurrentAssociationUiState() {
   const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded folder";
   const usesDurableRecord =
     currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
-  const associatedProfileId = usesDurableRecord && activeLibraryRecord ? activeLibraryRecord.profileId : null;
+  const sharedCatalogEntry = activeLibraryRecord?.libraryId
+    ? profile.listLibraries().find((library) => library.id === activeLibraryRecord.libraryId)
+    : null;
+  const associatedProfileId = usesDurableRecord && activeLibraryRecord
+    ? sharedCatalogEntry
+      ? sharedCatalogEntry.associatedProfileId
+      : activeLibraryRecord.profileId
+    : null;
   return mapAssociationCopy({
     sourceKind: currentSourceKind,
     legacyHasDurableIdentity,
@@ -840,6 +855,7 @@ function syncAssociateButtonVisibility() {
   // purpose — the compact header mirrors that function's output, so it must
   // read the row only once the row is current.
   syncMobileContextSummary();
+  renderFolderLinkState();
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -4338,6 +4354,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   activeLibraryRecord = null;
   activeLibraryDisplayName = rootName || (isFolderPick ? "Loaded folder" : "Selected files");
   currentSourceKind = "legacy";
+  currentFolderPermissionState = "granted";
   // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
   // fingerprint) participates in durable identity — "Choose Files" keeps
   // the old ephemeral, ununrecognizable-on-reload behavior unchanged (see
@@ -4558,6 +4575,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   activeLibraryRecord = libraryRecord || null;
   activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded folder";
   currentSourceKind = "fsa";
+  currentFolderPermissionState = "granted";
   // [LIBRARY-PROFILE-UX / Phase 8.5] Same reset as loadFiles() — a new
   // load starting means any pending Associate/Change-Profile navigation
   // intent from a PREVIOUS load no longer applies.
@@ -5170,6 +5188,249 @@ profileAssociationRow.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   event.preventDefault();
   closeAssociationEditor();
+});
+
+const NEW_SHARED_LIBRARY_VALUE = "__new_shared_library__";
+
+// [SYNCV3 / STAGE-08 / LINK-UI]
+// [WHY: This is the single adapter from current local-folder state and the
+// shared catalog into the pure L0-L7 model. Library names remain presentation;
+// every selection and write is keyed by the catalog id.]
+function getCurrentFolderLinkUiState({ selectedLibraryId = null, selectedClaimant = null } = {}) {
+  return mapLinkState({
+    sourceKind: currentSourceKind,
+    legacyHasDurableIdentity,
+    folderName: activeLibraryRecord?.name || activeLibraryDisplayName || "Loaded folder",
+    localLibraryId: activeLibraryRecord?.id || null,
+    sharedLibraryId: activeLibraryRecord?.libraryId || null,
+    sharedLibraries: profile.listLibraries(),
+    permissionState: currentFolderPermissionState,
+    selectedLibraryId,
+    selectedClaimant,
+  });
+}
+
+function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pendingFolderLinkClaimant } = {}) {
+  if (!profileFolderLinkSummary) return null;
+  const linkUi = getCurrentFolderLinkUiState({ selectedLibraryId, selectedClaimant });
+  profileFolderLinkSummary.textContent = linkUi.summary;
+  profileFolderLinkBtn.textContent = linkUi.actionLabel || "Link to a Library";
+  profileFolderLinkBtn.classList.toggle("hidden", !linkUi.showAction);
+  profileFolderLinkBtn.disabled = !linkUi.showAction;
+
+  if (!linkUi.showAction && !profileFolderLinkRow.classList.contains("hidden")) {
+    closeFolderLinkEditor({ returnFocus: false });
+  }
+  if (!profileFolderLinkRow.classList.contains("hidden")) {
+    // [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
+    // [WHY: a storage-level claimant refusal is safety-critical and must be
+    // visually distinct from ordinary explanatory text. Keep the select focused
+    // and explain the disabled Save inline through its existing described-by id.]
+    const showClaimantWarning = Boolean(selectedClaimant);
+    // [SYNCV3 / STAGE-08 / DIRECT-RELINK-WARNING]
+    // [WHY: direct Library relinking is intentionally forbidden until the
+    // current folder is explicitly unlinked; this identity-safety refusal must
+    // be as visually obvious as a claimant collision. It shares presentation,
+    // not semantics, with the claimant guard immediately above.]
+    const showDirectRelinkWarning = Boolean(
+      !showClaimantWarning &&
+      activeLibraryRecord?.libraryId &&
+      selectedLibraryId &&
+      selectedLibraryId !== activeLibraryRecord.libraryId
+    );
+    const showSafetyWarning = showClaimantWarning || showDirectRelinkWarning;
+    const selectedLibrary = selectedLibraryId && selectedLibraryId !== NEW_SHARED_LIBRARY_VALUE
+      ? profile.listLibraries().find((library) => library.id === selectedLibraryId)
+      : null;
+    const libraryName = selectedLibrary?.name || "That Library";
+    const folderName = selectedClaimant?.name || "another folder";
+    const currentFolderName = activeLibraryRecord?.name || activeLibraryDisplayName || "This folder";
+    const targetLibraryName = selectedLibrary?.name || "a new Library";
+    profileFolderLinkConflict.classList.toggle("hidden", !showSafetyWarning);
+    profileFolderLinkConflictHeading.textContent = showClaimantWarning
+      ? "⚠ Already linked on this device"
+      : showDirectRelinkWarning
+        ? "⚠ Unlink this folder first"
+        : "";
+    profileFolderLinkConflictDetail.textContent = showClaimantWarning
+      ? `“${libraryName}” is already linked to the folder “${folderName}”.`
+      : showDirectRelinkWarning
+        ? `“${currentFolderName}” is already linked to another Library.`
+        : "";
+    profileFolderLinkConflictAction.textContent = showClaimantWarning
+      ? `Unlink ${folderName} before linking this one.`
+      : showDirectRelinkWarning
+        ? `Unlink this folder before linking it to “${targetLibraryName}”.`
+        : "";
+    profileFolderLinkSaveBtn.disabled =
+      selectedLibraryId === NEW_SHARED_LIBRARY_VALUE ? Boolean(activeLibraryRecord?.libraryId) : !linkUi.saveEnabled;
+    profileFolderUnlinkBtn.classList.toggle("hidden", !activeLibraryRecord?.libraryId);
+  }
+  return linkUi;
+}
+
+function sharedLibraryOptionLabel(library) {
+  const name = library.name || "Unnamed Library";
+  const device = library.sourceDeviceName || library.deviceName || "";
+  return [name, device, `${library.id.slice(0, 8)}…`].filter(Boolean).join(" · ");
+}
+
+function populateFolderLinkPicker({ preservePending = false } = {}) {
+  const pendingValue = preservePending ? profileFolderLinkSelect.value : "";
+  const catalog = profile.listLibraries();
+  const linkedId = activeLibraryRecord?.libraryId || "";
+  profileFolderLinkSelect.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose a shared Library…";
+  profileFolderLinkSelect.appendChild(placeholder);
+
+  const createOption = document.createElement("option");
+  createOption.value = NEW_SHARED_LIBRARY_VALUE;
+  createOption.textContent = "— Share as a new Library —";
+  profileFolderLinkSelect.appendChild(createOption);
+
+  for (const library of catalog) {
+    const option = document.createElement("option");
+    option.value = library.id;
+    option.textContent = sharedLibraryOptionLabel(library);
+    profileFolderLinkSelect.appendChild(option);
+  }
+
+  if (linkedId && !catalog.some((library) => library.id === linkedId)) {
+    const pending = document.createElement("option");
+    pending.value = linkedId;
+    pending.textContent = `Linked Library · ${linkedId.slice(0, 8)}…`;
+    profileFolderLinkSelect.appendChild(pending);
+  }
+
+  const values = new Set([...profileFolderLinkSelect.options].map((option) => option.value));
+  if (preservePending && values.has(pendingValue)) profileFolderLinkSelect.value = pendingValue;
+  else if (linkedId) profileFolderLinkSelect.value = linkedId;
+  else if (catalog.length === 0) profileFolderLinkSelect.value = NEW_SHARED_LIBRARY_VALUE;
+  else profileFolderLinkSelect.value = "";
+}
+
+async function refreshFolderLinkSelection() {
+  const selected = profileFolderLinkSelect.value;
+  pendingFolderLinkClaimant = null;
+  if (selected && selected !== NEW_SHARED_LIBRARY_VALUE && activeLibraryRecord?.id) {
+    const claimant = await getLibraryByLibraryId(selected);
+    if (profileFolderLinkSelect.value !== selected) return;
+    if (claimant && claimant.id !== activeLibraryRecord.id) pendingFolderLinkClaimant = claimant;
+  }
+  renderFolderLinkState({ selectedLibraryId: selected, selectedClaimant: pendingFolderLinkClaimant });
+}
+
+async function refreshCurrentFolderPermission() {
+  const recordId = activeLibraryRecord?.id;
+  if (currentSourceKind !== "fsa" || !activeLibraryRecord?.handle?.queryPermission) {
+    currentFolderPermissionState = "granted";
+    renderFolderLinkState();
+    return;
+  }
+  try {
+    currentFolderPermissionState = await activeLibraryRecord.handle.queryPermission({ mode: "read" });
+  } catch (_error) {
+    currentFolderPermissionState = "prompt";
+  }
+  if (activeLibraryRecord?.id === recordId) renderFolderLinkState();
+}
+
+function openFolderLinkEditor() {
+  const linkUi = getCurrentFolderLinkUiState();
+  if (linkUi.reconnectNeeded) {
+    resumeLibrary(activeLibraryRecord);
+    return false;
+  }
+  if (!linkUi.showAction || !activeLibraryRecord?.id) return false;
+  pendingFolderLinkClaimant = null;
+  populateFolderLinkPicker();
+  profileFolderLinkResult.textContent = "";
+  profileFolderLinkRow.classList.remove("hidden");
+  profileFolderLinkBtn.setAttribute("aria-expanded", "true");
+  refreshFolderLinkSelection().then(() => profileFolderLinkSelect.focus());
+  return true;
+}
+
+function closeFolderLinkEditor({ returnFocus = true } = {}) {
+  profileFolderLinkRow.classList.add("hidden");
+  profileFolderLinkBtn.setAttribute("aria-expanded", "false");
+  pendingFolderLinkClaimant = null;
+  profileFolderLinkConflict.classList.add("hidden");
+  profileFolderLinkConflictHeading.textContent = "";
+  profileFolderLinkConflictDetail.textContent = "";
+  profileFolderLinkConflictAction.textContent = "";
+  if (returnFocus) profileFolderLinkBtn.focus();
+}
+
+profileFolderLinkBtn.addEventListener("click", () => {
+  refreshCurrentFolderPermission().then(() => {
+    if (profileFolderLinkRow.classList.contains("hidden")) openFolderLinkEditor();
+    else closeFolderLinkEditor();
+  });
+});
+profileFolderLinkSelect.addEventListener("change", () => refreshFolderLinkSelection());
+profileFolderLinkCancelBtn.addEventListener("click", () => closeFolderLinkEditor());
+profileFolderLinkRow.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  closeFolderLinkEditor();
+});
+
+profileFolderLinkSaveBtn.addEventListener("click", async () => {
+  const selected = profileFolderLinkSelect.value;
+  if (!selected || !activeLibraryRecord?.id) return;
+  profileFolderLinkSaveBtn.disabled = true;
+  try {
+    let result;
+    if (selected === NEW_SHARED_LIBRARY_VALUE) {
+      result = await profile.promoteLibraryToShared(activeLibraryRecord.id, { name: activeLibraryRecord.name });
+    } else if (selected === activeLibraryRecord.libraryId) {
+      result = activeLibraryRecord;
+    } else {
+      result = await profile.linkLocalLibraryToShared(activeLibraryRecord.id, selected);
+    }
+    if (result?.ok === false && result.reason === "claimed") {
+      pendingFolderLinkClaimant = result.by;
+      renderFolderLinkState({ selectedLibraryId: selected, selectedClaimant: result.by });
+      return;
+    }
+    if (!result) {
+      profileFolderLinkResult.textContent = "Could not save the link. Try again.";
+      return;
+    }
+    activeLibraryRecord = await getLibraryById(activeLibraryRecord.id) || result;
+    profileFolderLinkResult.textContent = "Folder link saved.";
+    await renderRecentLibraries();
+    syncAssociateButtonVisibility();
+    closeFolderLinkEditor();
+  } catch (error) {
+    console.warn("[SYNCV3 / STAGE-08 / LINK-AND-SYNC] Could not save folder link.", error);
+    profileFolderLinkResult.textContent = "Could not save the link. Try again.";
+  } finally {
+    if (!pendingFolderLinkClaimant) profileFolderLinkSaveBtn.disabled = false;
+  }
+});
+
+profileFolderUnlinkBtn.addEventListener("click", async () => {
+  if (!activeLibraryRecord?.id || !activeLibraryRecord.libraryId) return;
+  profileFolderUnlinkBtn.disabled = true;
+  try {
+    const unlinked = await profile.unlinkLocalLibraryFromShared(activeLibraryRecord.id);
+    if (!unlinked) throw new Error("Local Library row was unavailable.");
+    activeLibraryRecord = unlinked;
+    profileFolderLinkResult.textContent = "This folder is no longer linked to a shared Library.";
+    await renderRecentLibraries();
+    syncAssociateButtonVisibility();
+    closeFolderLinkEditor();
+  } catch (error) {
+    console.warn("[SYNCV3 / STAGE-08 / UNLINK] Could not unlink folder.", error);
+    profileFolderLinkResult.textContent = "Could not unlink this folder. Try again.";
+  } finally {
+    profileFolderUnlinkBtn.disabled = false;
+  }
 });
 
 function setLoadingState(isLoading, total) {
@@ -7860,6 +8121,7 @@ clearBtn.addEventListener("click", () => {
   activeLibraryRecord = null;
   activeLibraryDisplayName = null;
   currentSourceKind = "none";
+  currentFolderPermissionState = "granted";
   legacySessionAssociated = false;
   legacyHasDurableIdentity = false;
   pendingLegacySignature = null;
@@ -8867,6 +9129,11 @@ async function refreshCurrentAssociationFromRegistry() {
   if (!profileAssociationRow.classList.contains("hidden")) {
     populateAssociationPicker({ preservePending: true });
   }
+  if (!profileFolderLinkRow.classList.contains("hidden")) {
+    populateFolderLinkPicker({ preservePending: true });
+    await refreshFolderLinkSelection();
+  }
+  refreshCurrentFolderPermission().catch(() => undefined);
 }
 
 profileSelect.addEventListener("change", async () => {
@@ -8966,6 +9233,10 @@ profile.subscribe(() => {
   syncAssociateButtonVisibility();
   if (!profileAssociationRow.classList.contains("hidden")) {
     populateAssociationPicker({ preservePending: true });
+  }
+  if (!profileFolderLinkRow.classList.contains("hidden")) {
+    populateFolderLinkPicker({ preservePending: true });
+    refreshFolderLinkSelection().catch(() => undefined);
   }
   // Existing ASSOCIATIONS_CHANGED adoption updates the registry projection
   // before emitting. Re-read only the current local row so another tab's
@@ -9231,7 +9502,6 @@ function renderProfileSync() {
     "hidden",
     isV2 || isV3 || !status.configured || status.status === "syncing"
   );
-  profileSyncLinkPanel.classList.toggle("hidden", !isV2 || !status.configured);
 
   if (!status.configured || isV3) {
     profileSyncManagePanel.classList.add("hidden");
@@ -9585,7 +9855,6 @@ profileSyncActivateBtn.addEventListener("click", async () => {
   } finally {
     profileSyncActivateBtn.disabled = false;
   }
-  await renderSharedLibraryOptions();
 });
 
 // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
@@ -9688,89 +9957,10 @@ profileSyncV3LeaveBtn.addEventListener("click", async () => {
   } finally {
     profileSyncV3LeaveBtn.disabled = false;
   }
-  await renderSharedLibraryOptions();
-});
-
-// [PHASE-6-SYNC-V2]
-// [STAGE-E-LIVE-INTEGRATION]
-// [WHY: the list is built from association FACTS this device has merged — i.e.
-//  libraries some device has actually shared — never from local folder names,
-//  and never pre-selected. The user has to choose a specific shared id, which
-//  is the whole point: matching a physical folder to a logical library is a
-//  judgement only they can make safely.]
-async function renderSharedLibraryOptions() {
-  if (!profileSyncLinkSelect) return;
-  const associations = profile.listAssociations();
-  const ids = Object.keys(associations);
-
-  // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
-  // [WHY: this now runs on every ProfileSync emit, and the scheduler makes
-  //  those routine. Rebuilding the <select> unconditionally would discard the
-  //  user's in-progress choice underneath them mid-interaction, so the DOM is
-  //  only touched when the option set has genuinely changed.]
-  const signature = ids.map((id) => `${id}:${associations[id]}`).join("|");
-  if (profileSyncLinkSelect.dataset.signature === signature) return;
-  profileSyncLinkSelect.dataset.signature = signature;
-
-  profileSyncLinkSelect.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = ids.length ? "Choose a shared library…" : "No shared libraries known yet";
-  profileSyncLinkSelect.appendChild(placeholder);
-
-  for (const libraryId of ids) {
-    const option = document.createElement("option");
-    option.value = libraryId;
-    const associatedProfile = profile.listProfiles().find((entry) => entry.id === associations[libraryId]);
-    // Enough context to choose safely: which Profile it belongs to, plus the
-    // id itself so two libraries on the same Profile are still distinguishable.
-    option.textContent = `${associatedProfile ? associatedProfile.name : "Unknown Profile"} · ${libraryId.slice(0, 8)}…`;
-    profileSyncLinkSelect.appendChild(option);
-  }
-
-  profileSyncLinkBtn.disabled = ids.length === 0;
-}
-
-profileSyncLinkBtn.addEventListener("click", async () => {
-  const sharedLibraryId = profileSyncLinkSelect.value;
-  if (!sharedLibraryId) {
-    profileSyncLinkStatus.textContent = "Choose a shared library first.";
-    return;
-  }
-  if (!activeLibraryRecord || !activeLibraryRecord.id) {
-    profileSyncLinkStatus.textContent = "Load the folder you want to link first.";
-    return;
-  }
-
-  profileSyncLinkBtn.disabled = true;
-  try {
-    const linked = await linkLocalLibraryToSharedId(activeLibraryRecord.id, sharedLibraryId);
-    if (!linked) {
-      profileSyncLinkStatus.textContent =
-        "Could not link this folder — it is already linked to a different shared library.";
-      return;
-    }
-    activeLibraryRecord = linked;
-    // The next pass reconciles this row's Profile pointer from the association
-    // fact; nothing is copied or moved here.
-    await profileSync.syncNow();
-    profileSyncLinkStatus.textContent = `Linked "${linked.name}" to the shared library.`;
-    await renderRecentLibraries();
-    syncAssociateButtonVisibility();
-  } catch (error) {
-    console.warn("[SYNC-V2] Could not link this folder to a shared library.", error);
-    profileSyncLinkStatus.textContent = "Could not link this folder. Try again.";
-  } finally {
-    profileSyncLinkBtn.disabled = false;
-  }
 });
 
 profileSync.subscribe(renderProfileSync);
-profileSync.subscribe(() => {
-  renderSharedLibraryOptions().catch(() => undefined);
-});
 renderProfileSync();
-renderSharedLibraryOptions().catch(() => undefined);
 
 // ---- Boot ---------------------------------------------------------------
 

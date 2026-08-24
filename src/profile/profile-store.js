@@ -683,6 +683,48 @@ export class ProfileStore {
     return row.libraryId;
   }
 
+  /**
+   * [SYNCV3 / STAGE-08 / PROMOTE-LIBRARY]
+   * [WHY: promoting a durable local folder creates/publishes shared Library
+   * identity without creating a Profile association or switching Active Profile.]
+   */
+  async promoteLibraryToShared(localLibraryId, { name = null } = {}) {
+    await this.#librariesReady;
+    await this.#identity.ready;
+
+    let row;
+    try {
+      row = await LibraryRegistry.ensureLibraryId(localLibraryId);
+    } catch (error) {
+      console.warn(`[SYNCV3] Could not promote local Library "${localLibraryId}".`, error);
+      return null;
+    }
+    if (!row) return null;
+
+    // recordLibraryLoaded owns the catalog stamp, durable cache write, and
+    // write-then-LIBRARIES_CHANGED announcement. It touches no association.
+    return this.recordLibraryLoaded(localLibraryId, { name: name || row.name || null });
+  }
+
+  // [SYNCV3 / STAGE-08 / LINK-AND-SYNC]
+  // Sanctioned local-link writes. The registry commits first; only then does
+  // LIBRARIES_CHANGED invalidate sibling tabs. No shared fact is stamped here.
+  async linkLocalLibraryToShared(localLibraryId, sharedLibraryId) {
+    const result = await LibraryRegistry.linkLocalLibraryToSharedId(localLibraryId, sharedLibraryId);
+    if (!result || result.ok === false) return result;
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED);
+    this.#emit();
+    return result;
+  }
+
+  async unlinkLocalLibraryFromShared(localLibraryId) {
+    const result = await LibraryRegistry.unlinkLocalLibraryFromSharedId(localLibraryId);
+    if (!result) return null;
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED);
+    this.#emit();
+    return result;
+  }
+
   // See recordLibraryLoaded's WHY. A load is redundant when every field it would
   // stamp already says the same thing, allowing for a short window on the clock.
   #isRedundantLibraryLoad(current, displayName, loadedAt) {
@@ -1969,9 +2011,19 @@ export class ProfileStore {
     //  genuine concurrent edit on a third device. It does not publish either:
     //  what reaches Drive is decided by the scheduler and the writer lease, not
     //  by whichever context happened to hear about a local change first.]
-    this.refreshFromStorage().catch((error) =>
-      console.warn("[SYNCV3] Could not refresh local state after a peer context changed it.", error)
-    );
+    const localLibraryLinkChanged = message.kind === LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED;
+    this.refreshFromStorage()
+      .then((durableSharedStateChanged) => {
+        // [SYNCV3 / STAGE-08 / MULTITAB-LINK-REFRESH]
+        // [WHY: sibling tabs must re-read durable local Library link state after
+        // write-then-announce, rather than trusting stale UI state. A local-only
+        // link can leave every shared cache byte unchanged, so force one emit
+        // only when refreshFromStorage did not already emit for shared changes.]
+        if (localLibraryLinkChanged && !durableSharedStateChanged) this.#emit();
+      })
+      .catch((error) =>
+        console.warn("[SYNCV3] Could not refresh local state after a peer context changed it.", error)
+      );
   }
 
   /**
@@ -2095,6 +2147,7 @@ export class ProfileStore {
     }
 
     if (registryChanged) this.#emit();
+    return registryChanged;
   }
 
   // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]

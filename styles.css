@@ -947,7 +947,8 @@ button:not(:disabled):hover,
 /* [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
    Reuses the existing field/button language and naturally wraps on the same
    narrow layouts as the surrounding Profile settings controls. */
-.profile-association-row {
+.profile-association-row,
+.profile-folder-link-row {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -956,18 +957,45 @@ button:not(:disabled):hover,
   max-width: 620px;
 }
 
-.profile-association-row .field-control {
+.profile-association-row .field-control,
+.profile-folder-link-row .field-control {
   width: 100%;
 }
 
-.profile-association-actions {
+.profile-association-actions,
+.profile-folder-link-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
 }
 
-.profile-association-row .hint {
+.profile-association-row .hint,
+.profile-folder-link-row .hint {
   margin: 0;
+}
+
+/* [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
+   [WHY: a storage-level claimant refusal is safety-critical and must be
+   visually distinct from ordinary explanatory text.] Reuses the app's danger
+   color and inset-card geometry without turning the inline refusal into a modal. */
+.profile-folder-link-conflict {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ffb4bc;
+}
+
+.profile-folder-link-conflict strong {
+  display: block;
+  color: #fecaca;
+}
+
+.profile-folder-link-conflict p {
+  margin: 6px 0 0;
+  color: var(--text);
 }
 
 .product-status {
@@ -1145,8 +1173,7 @@ button:not(:disabled):hover,
     linking are ordinary forward actions, so they take the neutral surface
     treatment, NOT the amber the recovery panel uses to mark an exceptional
     choice.] */
-.profile-sync-activate-panel,
-.profile-sync-link-panel {
+.profile-sync-activate-panel {
   margin-top: 10px;
   padding: 12px;
   border: 1px solid var(--border);
@@ -1154,17 +1181,8 @@ button:not(:disabled):hover,
   background: rgba(255, 255, 255, 0.03);
 }
 
-.profile-sync-activate-panel .hint,
-.profile-sync-link-panel .hint {
+.profile-sync-activate-panel .hint {
   margin: 0 0 10px;
-}
-
-.profile-sync-link-panel .hint:last-child {
-  margin: 10px 0 0;
-}
-
-.profile-sync-link-panel select {
-  width: 100%;
 }
 
 /* Import / Export demoted to an advanced/manual disclosure — styled like
