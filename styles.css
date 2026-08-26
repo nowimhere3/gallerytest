@@ -947,13 +947,21 @@ button:not(:disabled):hover,
 /* [SYNCV3 / STAGE-09 / THIS-DEVICE-LABEL-SPACING]
    [WHY: a <label> in a settings group captions the control directly beneath it,
    so it needs the same breathing room under it that .profile-group-heading
-   already gives (margin: 0 0 8px) above Create Profile's input. The general
-   .profile-settings-group > .hint rule ends in `0`, which is right for a
-   trailing helper paragraph and wrong for a leading caption — leaving "Name this
-   device" flush against its input. Scoped to a direct-child label so trailing
-   .hint paragraphs and the Advanced Settings label (inside
-   .advanced-playback-section, not a settings group) are untouched. */
+   already gives (margin: 0 0 8px) above Create Profile's input.
+
+   `display: block` is the load-bearing half. A <label> is display:inline by
+   default, and vertical margins have NO layout effect on an inline
+   non-replaced box — so both the general `.profile-settings-group > .hint`
+   margin and the margin-bottom below were silently ignored, leaving "Name this
+   device" separated from its input by line-height alone. This is the same
+   block-label treatment `.form-row label` already uses.
+
+   Scoped to a direct-child label so trailing .hint paragraphs keep their
+   `margin: 8px 0 0`, and the Advanced Settings label (inside
+   .advanced-playback-section, which spaces via its own .field-control instead)
+   is untouched. */
 .profile-settings-group > label.hint {
+  display: block;
   margin-bottom: 8px;
 }
 
