@@ -944,6 +944,99 @@ button:not(:disabled):hover,
   margin: 8px 0 0;
 }
 
+/* [SYNCV3 / STAGE-10 / CHECKPOINT-1-SYNC-SPACING]
+   The Sync reassurance is a block <p>, so its bottom margin participates in
+   layout and creates the same 8px separation used by nearby captions. */
+#profile-sync-media-safety {
+  margin-bottom: 8px;
+}
+
+/* [SYNCV3 / STAGE-10 / PERSISTENT-HELP]
+   A compact native disclosure: discoverable before the identity flow without
+   competing with THIS FOLDER or adding permanent mobile height. */
+.profile-sync-help {
+  max-width: 620px;
+  margin-top: 12px;
+}
+
+.profile-sync-help summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.profile-sync-help[open] summary {
+  margin-bottom: 12px;
+  color: var(--text);
+}
+
+.profile-sync-help-content {
+  display: grid;
+  gap: 12px;
+  max-width: 620px;
+}
+
+.profile-sync-help-content section,
+.profile-sync-help-content h3,
+.profile-sync-help-content p {
+  margin: 0;
+}
+
+.profile-sync-help-replay {
+  margin-top: 12px;
+}
+
+/* [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
+   Inline, compact, and naturally stacked at narrow widths; no modal or
+   viewport overlay interrupts the Folder-first product flow. */
+.profile-sync-intro {
+  max-width: 620px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.profile-sync-intro-progress,
+.profile-sync-intro h3,
+.profile-sync-intro > p {
+  margin: 0;
+}
+
+.profile-sync-intro-progress {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.profile-sync-intro h3 {
+  margin-top: 4px;
+}
+
+.profile-sync-intro > p:last-of-type {
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.profile-sync-intro-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.profile-sync-help-content h3 {
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.profile-sync-help-content p {
+  margin-top: 4px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 /* [SYNCV3 / STAGE-09 / THIS-DEVICE-LABEL-SPACING]
    [WHY: a <label> in a settings group captions the control directly beneath it,
    so it needs the same breathing room under it that .profile-group-heading

@@ -39,6 +39,7 @@ import {
   savePlaybackPreferences,
   savePresentationPreferences,
   saveMicroArcadePreferences,
+  saveOnboardingPreferences,
   DEFAULT_GHOST_OPACITY_PERCENT,
 } from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
@@ -54,6 +55,12 @@ import { ProfileSync } from "./profile/profile-sync.js";
 import { mapSyncStatusCopy } from "./profile/sync-status-copy.js";
 import { mapAssociationCopy } from "./profile/association-copy.js";
 import { mapLinkState } from "./profile/link-state.js";
+import { applyProductStatusTone } from "./profile/status-tone.js";
+import {
+  PROFILE_SYNC_INTRO_STEPS,
+  createContextualFirstUseState,
+  transitionContextualFirstUse,
+} from "./profile/contextual-first-use.js";
 import { createAssociationWriteSuppression } from "./profile/association-write-suppression.js";
 import { createAmbientProfileObserver } from "./profile/ambient-profile-observer.js";
 import { applyLoadTimeProfileRestoration } from "./profile/load-time-profile-restoration.js";
@@ -217,10 +224,12 @@ const ambientProfileOfferClose = document.getElementById("ambient-profile-offer-
 const ambientProfileOfferResult = document.getElementById("ambient-profile-offer-result");
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
+const profileFolderActionHelp = document.getElementById("profile-folder-action-help");
 const profileFolderLinkRow = document.getElementById("profile-folder-link-row");
 const profileFolderLinkSelect = document.getElementById("profile-folder-link-select");
 const profileFolderLinkSaveBtn = document.getElementById("profile-folder-link-save-btn");
 const profileFolderUnlinkBtn = document.getElementById("profile-folder-unlink-btn");
+const profileFolderUnlinkHelp = document.getElementById("profile-folder-unlink-help");
 const profileFolderLinkCancelBtn = document.getElementById("profile-folder-link-cancel-btn");
 const profileFolderLinkConflict = document.getElementById("profile-folder-link-conflict");
 const profileFolderLinkConflictHeading = document.getElementById("profile-folder-link-conflict-heading");
@@ -240,6 +249,15 @@ const profileImportCopyBtn = document.getElementById("profile-import-copy-btn");
 const profileImportCopyInput = document.getElementById("profile-import-copy-input");
 const profileSkipMissingInput = document.getElementById("profile-skip-missing-input");
 const profileStatusText = document.getElementById("profile-status-text");
+const profileSyncIntro = document.getElementById("profile-sync-intro");
+const profileSyncIntroProgress = document.getElementById("profile-sync-intro-progress");
+const profileSyncIntroTitle = document.getElementById("profile-sync-intro-title");
+const profileSyncIntroBody = document.getElementById("profile-sync-intro-body");
+const profileSyncIntroBack = document.getElementById("profile-sync-intro-back");
+const profileSyncIntroNext = document.getElementById("profile-sync-intro-next");
+const profileSyncIntroDone = document.getElementById("profile-sync-intro-done");
+const profileSyncIntroSkip = document.getElementById("profile-sync-intro-skip");
+const profileSyncIntroReplay = document.getElementById("profile-sync-intro-replay");
 
 // [PROFILE-SYNC] DOM refs for the compact Profile Sync block — see
 // index.html's own [PROFILE-SYNC] comment on `.profile-sync-section`.
@@ -474,7 +492,66 @@ const WORKSPACES = [
 
 let activeWorkspace = "gallery";
 
-function setActiveWorkspace(name, { focusTab = false } = {}) {
+let profileSyncIntroState = createContextualFirstUseState();
+let profileSyncIntroPreferencesReady = false;
+let pendingIntentionalProfileSyncEntry = false;
+
+function renderProfileSyncIntroduction() {
+  const step = PROFILE_SYNC_INTRO_STEPS[profileSyncIntroState.stepIndex];
+  profileSyncIntro.classList.toggle("hidden", !profileSyncIntroState.visible);
+  profileSyncIntroProgress.textContent = `Step ${profileSyncIntroState.stepIndex + 1} of ${PROFILE_SYNC_INTRO_STEPS.length}`;
+  profileSyncIntroTitle.textContent = step.title;
+  profileSyncIntroBody.textContent = step.body;
+  profileSyncIntro.dataset.helpConcepts = step.concepts.join(" ");
+  profileSyncIntroBack.classList.toggle("hidden", profileSyncIntroState.stepIndex === 0);
+  profileSyncIntroNext.classList.toggle(
+    "hidden",
+    profileSyncIntroState.stepIndex === PROFILE_SYNC_INTRO_STEPS.length - 1,
+  );
+  profileSyncIntroDone.classList.toggle(
+    "hidden",
+    profileSyncIntroState.stepIndex !== PROFILE_SYNC_INTRO_STEPS.length - 1,
+  );
+}
+
+function dispatchProfileSyncIntroduction(event) {
+  const transition = transitionContextualFirstUse(profileSyncIntroState, event);
+  profileSyncIntroState = transition.state;
+  renderProfileSyncIntroduction();
+  if (transition.effect === "persist-seen") {
+    // The in-memory state remains seen even if this device-local write fails;
+    // a later reload may offer the introduction again instead of falsely
+    // claiming the durable preference was saved.
+    saveOnboardingPreferences({ profileSyncIntroSeen: true });
+  }
+}
+
+function handleIntentionalProfileSyncEntry() {
+  if (!profileSyncIntroPreferencesReady) {
+    pendingIntentionalProfileSyncEntry = true;
+    return;
+  }
+  dispatchProfileSyncIntroduction({ type: "enter-profile-sync", intentional: true });
+}
+
+// [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
+// [WHY: the navigation caller must explicitly identify intentional Profile &
+// Sync entry. Boot uses the same workspace renderer without this flag, so DOM
+// existence, background refresh, and automatic Profile restoration can never
+// consume or display the introduction.]
+function initializeProfileSyncIntroduction(onboarding) {
+  profileSyncIntroState = createContextualFirstUseState({
+    seen: onboarding?.profileSyncIntroSeen,
+  });
+  profileSyncIntroPreferencesReady = true;
+  renderProfileSyncIntroduction();
+  if (pendingIntentionalProfileSyncEntry) {
+    pendingIntentionalProfileSyncEntry = false;
+    handleIntentionalProfileSyncEntry();
+  }
+}
+
+function setActiveWorkspace(name, { focusTab = false, intentionalProfileSync = false } = {}) {
   const target = WORKSPACES.find((entry) => entry.name === name);
   if (!target) return;
 
@@ -519,6 +596,10 @@ function setActiveWorkspace(name, { focusTab = false } = {}) {
   // Anything that needs to MUTATE state on workspace activation still
   // belongs in its own subscriber, not here.
   syncNowPlayingStrip();
+
+  if (target.name === "settings" && intentionalProfileSync) {
+    handleIntentionalProfileSyncEntry();
+  }
 }
 
 // [UI-REDESIGN / Stage 1A]
@@ -601,7 +682,7 @@ function syncNowPlayingStrip(state = runtime.getState()) {
 // [UI-REDESIGN / Stage 1C]
 // WHAT: The same hand-off for the Settings workspace, which is where the
 // Profile section now lives.
-// WHY: The rail's "Associate with Profile" / "Change Profile" shortcut has
+// WHY: The rail's "Choose/Change Profile for This Library" shortcut has
 // always been navigation-only — it opens the Profile disclosure, scrolls to
 // it, and focuses a control inside it. Now that the section sits in a
 // hidden panel, both scrollIntoView() and focus() would silently do
@@ -610,8 +691,12 @@ function syncNowPlayingStrip(state = runtime.getState()) {
 // FUTURE: This is the ONLY sanctioned route from the rail to Profile
 // management. Do not answer a future "the rail should let me switch
 // profiles" request by adding a second selector to the rail.
-function ensureSettingsWorkspaceVisible() {
-  if (activeWorkspace !== "settings") setActiveWorkspace("settings");
+function ensureSettingsWorkspaceVisible({ intentionalProfileSync = false } = {}) {
+  if (activeWorkspace !== "settings") {
+    setActiveWorkspace("settings", { intentionalProfileSync });
+  } else if (intentionalProfileSync) {
+    handleIntentionalProfileSyncEntry();
+  }
 }
 
 WORKSPACES.forEach((entry, index) => {
@@ -647,7 +732,7 @@ WORKSPACES.forEach((entry, index) => {
       returnToGalleryAndFocusPlayer();
       return;
     }
-    setActiveWorkspace(entry.name);
+    setActiveWorkspace(entry.name, { intentionalProfileSync: entry.name === "settings" });
   });
 
   entry.tab.addEventListener("keydown", (event) => {
@@ -661,8 +746,29 @@ WORKSPACES.forEach((entry, index) => {
 
     if (nextIndex === null) return;
     event.preventDefault();
-    setActiveWorkspace(WORKSPACES[nextIndex].name, { focusTab: true });
+    setActiveWorkspace(WORKSPACES[nextIndex].name, {
+      focusTab: true,
+      intentionalProfileSync: WORKSPACES[nextIndex].name === "settings",
+    });
   });
+});
+
+profileSyncIntroBack.addEventListener("click", () => {
+  dispatchProfileSyncIntroduction({ type: "back" });
+});
+profileSyncIntroNext.addEventListener("click", () => {
+  dispatchProfileSyncIntroduction({ type: "next" });
+});
+profileSyncIntroDone.addEventListener("click", () => {
+  dispatchProfileSyncIntroduction({ type: "done" });
+});
+profileSyncIntroSkip.addEventListener("click", () => {
+  dispatchProfileSyncIntroduction({ type: "skip" });
+});
+profileSyncIntroReplay.addEventListener("click", () => {
+  // [WHY: replay deliberately does not alter profileSyncIntroSeen. It is a
+  // manual view of the same material, never a request to auto-open it again.]
+  dispatchProfileSyncIntroduction({ type: "replay" });
 });
 
 // Redundant with the static markup (Gallery already ships selected), but
@@ -862,13 +968,14 @@ function updateAssociatedStatusRow() {
   // [WHY: this is the third render target of this function's existing single
   // association computation; it never reads registry or Profile state itself.]
   profileLibraryAssociationText.textContent = associationUi.productLine;
+  applyProductStatusTone(profileLibraryAssociationText, associationUi.tone);
   return associationUi;
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
 // WHAT: Shows/hides the Associate/Change button AND sets its label — one
-// button, "Associate with Profile" when the current load has no
-// association, "Change Profile" once it does (see the button's own HTML
+// button, "Choose Profile for This Library" when the current load has no
+// Profile, "Change Profile for This Library" once it does (see the button's own HTML
 // comment for why this is deliberately one element, not two). Also
 // refreshes the green Associated: row every time, since both are driven
 // by the exact same underlying state.
@@ -885,8 +992,8 @@ function syncAssociateButtonVisibility() {
   profileAssociateBtn.disabled = !shouldShow;
   if (shouldShow) {
     fsaAssociateBtnLabel.textContent = ["S2", "S3"].includes(associationUi.state)
-      ? "Change Profile"
-      : "Associate with Profile";
+      ? "Change Profile for This Library"
+      : "Choose Profile for This Library";
     profileAssociateBtn.textContent = associationUi.actionLabel;
   } else if (!profileAssociationRow.classList.contains("hidden")) {
     profileAssociationRow.classList.add("hidden");
@@ -911,7 +1018,7 @@ function syncAssociateButtonVisibility() {
 function expandAndScrollToProfileSection() {
   // [UI-REDESIGN / Stage 1C] Must come first — everything below acts on an
   // element inside the Settings workspace.
-  ensureSettingsWorkspaceVisible();
+  ensureSettingsWorkspaceVisible({ intentionalProfileSync: true });
   if (profileSectionDetails && !profileSectionDetails.open) {
     profileSectionDetails.open = true;
   }
@@ -5111,11 +5218,11 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
         const targetProfileName = getProfileNameById(targetProfileId);
         fsaStatusText.textContent = targetProfileName
           ? `Now remembered with ${targetProfileName}. It should be recognized next time you pick the same folder here.`
-          : "This Library is no longer linked to a Profile.";
+          : "This Library now has No Profile.";
         return true;
       } catch (error) {
         console.warn("[LEGACY-IDENTITY] Could not save this legacy library association.", error);
-        fsaStatusText.textContent = "Could not save the association. Try again.";
+        fsaStatusText.textContent = "Could not save the Profile for this Library. Try again.";
         return false;
       } finally {
         fsaAssociateBtn.disabled = false;
@@ -5133,7 +5240,7 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
     if (targetProfileId !== profile.getProfileId()) return false;
     legacySessionAssociated = true;
     syncAssociateButtonVisibility();
-    fsaStatusText.textContent = `Associated the current folder with "${profile.getProfileName()}" for this session.`;
+    fsaStatusText.textContent = `This folder is remembered with "${profile.getProfileName()}" for this session.`;
     return true;
   }
 
@@ -5149,12 +5256,12 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
     const targetProfileName = getProfileNameById(targetProfileId);
     fsaStatusText.textContent = targetProfileName
       ? `Now remembered with ${targetProfileName}.`
-      : "This Library is no longer linked to a Profile.";
+      : "This Library now has No Profile.";
     await renderRecentLibraries();
     return true;
   } catch (error) {
     console.warn("[LIBRARY-REGISTRY] Could not associate this library with the current profile.", error);
-    fsaStatusText.textContent = "Could not save the association. Try again.";
+    fsaStatusText.textContent = "Could not save the Profile for this Library. Try again.";
     return false;
   } finally {
     fsaAssociateBtn.disabled = false;
@@ -5163,7 +5270,7 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
-// WHAT: "Associate with Profile" / "Change Profile" — navigation only. No
+// WHAT: "Choose/Change Profile for This Library" — navigation only. No
 // longer persists anything itself.
 // WHY: Section 4/5 — clicking this must never write a profile association
 // directly; it hands off to the Profile section, where the user can choose
@@ -5257,7 +5364,7 @@ profileAssociationSaveBtn.addEventListener("click", async () => {
     }
     profileAssociationResult.textContent = selectedProfileName
       ? `Now remembered with ${selectedProfileName}.`
-      : "This Library is no longer linked to a Profile.";
+      : "This Library now has No Profile.";
     syncAssociateButtonVisibility();
     closeAssociationEditor();
   } catch (error) {
@@ -5301,9 +5408,12 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   if (!profileFolderLinkSummary) return null;
   const linkUi = getCurrentFolderLinkUiState({ selectedLibraryId, selectedClaimant });
   profileFolderLinkSummary.textContent = linkUi.summary;
+  applyProductStatusTone(profileFolderLinkSummary, linkUi.tone);
   profileFolderLinkBtn.textContent = linkUi.actionLabel || "Link to a Library";
   profileFolderLinkBtn.classList.toggle("hidden", !linkUi.showAction);
   profileFolderLinkBtn.disabled = !linkUi.showAction;
+  profileFolderActionHelp.textContent = linkUi.actionHelp;
+  profileFolderActionHelp.classList.toggle("hidden", !linkUi.actionHelp);
 
   if (!linkUi.showAction && !profileFolderLinkRow.classList.contains("hidden")) {
     closeFolderLinkEditor({ returnFocus: false });
@@ -5351,7 +5461,9 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
         : "";
     profileFolderLinkSaveBtn.disabled =
       selectedLibraryId === NEW_SHARED_LIBRARY_VALUE ? Boolean(activeLibraryRecord?.libraryId) : !linkUi.saveEnabled;
-    profileFolderUnlinkBtn.classList.toggle("hidden", !activeLibraryRecord?.libraryId);
+    const canUnlink = Boolean(activeLibraryRecord?.libraryId);
+    profileFolderUnlinkBtn.classList.toggle("hidden", !canUnlink);
+    profileFolderUnlinkHelp.classList.toggle("hidden", !canUnlink);
   }
   return linkUi;
 }
@@ -9863,14 +9975,7 @@ function renderProfileSync() {
   // neither renderer performs another getStatus() read or subscription.]
   const productStatus = mapSyncStatusCopy(status);
   profileSyncProductStatus.textContent = productStatus.line;
-  profileSyncProductStatus.classList.remove(
-    "product-status-muted",
-    "product-status-active",
-    "product-status-success",
-    "product-status-warning",
-    "product-status-danger"
-  );
-  profileSyncProductStatus.classList.add(`product-status-${productStatus.tone}`);
+  applyProductStatusTone(profileSyncProductStatus, productStatus.tone);
 
   // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
   // [WHY: every V1/V2 control below is additionally gated on `!isV3`. Under V3
@@ -10326,8 +10431,8 @@ profileSyncV3ReconnectBtn.addEventListener("click", () => profileSync.reconnectV
 
 profileSyncV3DisconnectBtn.addEventListener("click", async () => {
   const confirmed = window.confirm(
-    "Disconnect the Sync V3 folder?\n\n" +
-      "Nothing in your Profiles is deleted, and your existing Sync V2 configuration is not touched."
+    "Disconnect this Sync Folder?\n\n" +
+      "Syncing stops on this device. Your local Browser Gallery information and the files already in the Sync Folder are kept."
   );
   if (!confirmed) return;
   await profileSync.disconnectV3();
@@ -10409,7 +10514,9 @@ function applyLoadedPreferences(preferences) {
   applyGhostOpacity(Number(ghostOpacityInput.value));
 }
 
-applyLoadedPreferences(await loadPreferences());
+const loadedPreferences = await loadPreferences();
+applyLoadedPreferences(loadedPreferences);
+initializeProfileSyncIntroduction(loadedPreferences.onboarding);
 
 syncVideoLoopControl();
 resetLoopRuleToDefault();

@@ -20,16 +20,16 @@ export function mapLinkState({
     : null;
 
   if (sourceKind === "none") {
-    return base("L0", "No folder loaded.");
+    return base("L0", "No folder loaded.", "muted");
   }
 
   if (!durable || !localLibraryId) {
-    return base("L1", `${folderName} is available for this session only.`);
+    return base("L1", `${folderName} is available for this session only.`, "muted");
   }
 
   if (sourceKind === "fsa" && permissionState !== "granted") {
     return {
-      ...base("L7", `${folderName} needs permission again. Its Library link is safe.`),
+      ...base("L7", `${folderName} needs permission again. Its Library link is safe.`, "warning"),
       actionLabel: "Reconnect Folder",
       showAction: true,
       reconnectNeeded: true,
@@ -41,8 +41,9 @@ export function mapLinkState({
     const libraryName = selectedLibrary ? selectedLibrary.name : "That Library";
     const otherFolder = selectedClaimant.name || "another folder";
     return {
-      ...base("L6", `${libraryName} is already linked to ${otherFolder} on this device.`),
+      ...base("L6", `${libraryName} is already linked to ${otherFolder} on this device.`, "danger"),
       actionLabel: "Link to a Library",
+      actionHelp: linkActionHelp(),
       showAction: true,
       allowPicker: true,
       saveEnabled: false,
@@ -57,10 +58,12 @@ export function mapLinkState({
       ...base(
         hasCatalog ? "L3" : "L2",
         hasCatalog
-          ? `${folderName} is not linked to a shared Library.`
-          : `${folderName} is ready to become a shared Library.`
+          ? `${folderName} is not linked to a Library yet.`
+          : `${folderName} is ready to become a Library.`,
+        "muted"
       ),
       actionLabel: hasCatalog ? "Link to a Library" : "Share this Library",
+      actionHelp: hasCatalog ? linkActionHelp() : shareActionHelp(),
       showAction: true,
       allowPicker: hasCatalog,
       saveEnabled: Boolean(selectedLibraryId),
@@ -71,8 +74,8 @@ export function mapLinkState({
 
   if (selectedLibraryId && selectedLibraryId !== sharedLibraryId) {
     return {
-      ...base("L4", "Unlink this folder before linking it to a different Library."),
-      actionLabel: "Change or Unlink",
+      ...base("L4", "Unlink this folder before linking it to a different Library.", "danger"),
+      actionLabel: "Change link",
       showAction: true,
       allowPicker: true,
       saveEnabled: false,
@@ -85,8 +88,8 @@ export function mapLinkState({
   const linkedLibrary = catalog.find((library) => library.id === sharedLibraryId) || null;
   if (!linkedLibrary) {
     return {
-      ...base("L5", "This folder is linked to a Library your devices haven't shared yet."),
-      actionLabel: "Change or Unlink",
+      ...base("L5", "This folder is linked to a Library that Browser Gallery cannot find yet.", "active"),
+      actionLabel: "Change link",
       showAction: true,
       allowPicker: true,
       saveEnabled: false,
@@ -96,8 +99,8 @@ export function mapLinkState({
   }
 
   return {
-    ...base("L4", `${folderName} is your copy of ${linkedLibrary.name}.`),
-    actionLabel: "Change or Unlink",
+    ...base("L4", `${folderName} is your copy of ${linkedLibrary.name}.`, "success"),
+    actionLabel: "Change link",
     showAction: true,
     allowPicker: true,
     saveEnabled: true,
@@ -107,11 +110,13 @@ export function mapLinkState({
   };
 }
 
-function base(state, summary) {
+function base(state, summary, tone) {
   return {
     state,
     summary,
+    tone,
     actionLabel: "",
+    actionHelp: "",
     showAction: false,
     allowPicker: false,
     saveEnabled: false,
@@ -120,4 +125,12 @@ function base(state, summary) {
     conflict: "",
     sharedLibraryId: null,
   };
+}
+
+function linkActionHelp() {
+  return "Have this media collection on another device? Link this folder to the same Library. That tells Browser Gallery both folders are the same collection. Your photos and videos are not uploaded or moved.";
+}
+
+function shareActionHelp() {
+  return "Have this media collection on another device, or plan to move it there? Share this Library so the other device can link its copy to the same collection. Your photos and videos are not uploaded or moved.";
 }

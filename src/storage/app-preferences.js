@@ -1,6 +1,7 @@
 // [APP-PREFERENCES] Global application preferences — Playback (interval,
-// shuffle, skip duplicates, loop playlist, fill panel), Micro-Arcade, and Presentation's
-// Ghost Opacity "remember" state/value. These are NOT Profile curation
+// shuffle, skip duplicates, loop playlist, fill panel), Micro-Arcade,
+// Presentation's Ghost Opacity "remember" state/value, and local onboarding.
+// These are NOT Profile curation
 // data: they stay constant across Profile switches, are never part of
 // Profile export/import/merge/replace, and deliberately live in their own
 // tiny database rather than piggybacking on ProfileStore's or the FSA
@@ -51,6 +52,10 @@ const DEFAULT_PRESENTATION = {
 const DEFAULT_MICRO_ARCADE = {
   // [PLAYBACK / MICRO-ARCADE / ANIMATION-ORDER]
   animationOrder: "true-random",
+};
+
+const DEFAULT_ONBOARDING = {
+  profileSyncIntroSeen: false,
 };
 
 // Exposed so main.js can apply the same built-in fallback when
@@ -135,6 +140,7 @@ function normalizeRecord(raw) {
   const playbackSource = source.playback && typeof source.playback === "object" ? source.playback : {};
   const presentationSource = source.presentation && typeof source.presentation === "object" ? source.presentation : {};
   const microArcadeSource = source.microArcade && typeof source.microArcade === "object" ? source.microArcade : {};
+  const onboardingSource = source.onboarding && typeof source.onboarding === "object" ? source.onboarding : {};
 
   return {
     id: RECORD_ID,
@@ -157,6 +163,13 @@ function normalizeRecord(raw) {
     },
     microArcade: {
       animationOrder: arcadeAnimationOrder(microArcadeSource.animationOrder, microArcadeSource.shuffle),
+    },
+    // [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
+    // [WHY: introduction progress is a preference of this browser/device, not
+    // Profile or Library data. Keeping it in app preferences makes it durable
+    // without allowing it into any SyncV3 replica or shared identity store.]
+    onboarding: {
+      profileSyncIntroSeen: bool(onboardingSource.profileSyncIntroSeen, DEFAULT_ONBOARDING.profileSyncIntroSeen),
     },
   };
 }
@@ -219,7 +232,7 @@ async function writeRecord(database, record) {
 }
 
 // Read-modify-write against a single named section (`playback`, `presentation`,
-// or `microArcade`) so saving one preference can never erase a sibling
+// `microArcade`, or `onboarding`) so saving one preference can never erase a sibling
 // preference (in the same section or the other one) that this call didn't
 // touch.
 function savePartial(section, partial) {
@@ -254,4 +267,8 @@ export function savePresentationPreferences(partial) {
 
 export function saveMicroArcadePreferences(partial) {
   return savePartial("microArcade", partial);
+}
+
+export function saveOnboardingPreferences(partial) {
+  return savePartial("onboarding", partial);
 }

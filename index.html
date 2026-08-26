@@ -183,7 +183,7 @@
         <hr />
 
         <!-- [UI-REDESIGN / Stage 2]
-             WHAT: The Associated Profile summary. Both of its live parts are
+             WHAT: The Profile for This Library summary. Both of its live parts are
              EXISTING elements moved here, not new ones: #associated-text
              came out of the .status-box below, and #fsa-associate-btn came
              out of the Libraries block above.
@@ -199,7 +199,7 @@
              Settings, and the whole point of the shortcut is to go there.
              See the button's own note below. -->
         <div class="rail-profile-summary">
-          <p class="rail-profile-summary-label">Associated Profile</p>
+          <p class="rail-profile-summary-label">Profile for This Library</p>
           <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
                WHAT: Live Library<->Profile association state for whatever
                is CURRENTLY LOADED — not the globally active profile name.
@@ -220,8 +220,8 @@
           <p class="rail-profile-summary-value"><span id="associated-text">—</span></p>
           <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
                WHAT: One button, shown whenever a library/folder is loaded —
-               reads "Associate with Profile" when the current load has no
-               association yet, "Change Profile" once it does.
+               reads "Choose Profile for This Library" when the current load
+               has no Profile yet, "Change Profile for This Library" once it does.
                WHY: Section 5 rule — a wrong association must be fixable
                without deleting/recreating the library, and there is
                deliberately no separate second button/UI for that; same
@@ -234,7 +234,7 @@
                control inside it. See syncAssociateButtonVisibility()/
                expandAndScrollToProfileSection() in main.js. -->
           <button id="fsa-associate-btn" class="button-like secondary fsa-associate-btn hidden" type="button" disabled>
-            <span id="fsa-associate-btn-label">Associate with Profile</span>
+            <span id="fsa-associate-btn-label">Choose Profile for This Library</span>
           </button>
         </div>
 
@@ -1284,30 +1284,64 @@
         <details class="profile-section" open>
         <summary>Profile &amp; Sync</summary>
 
-        <p class="hint">
-          Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
-        </p>
+        <p class="hint">Profiles keep your Favorites, Hidden items and Tags together.</p>
 
-        <!-- [SYNCV3 / STAGE-06 / PROFILE-SYNC-IA] -->
-        <div class="profile-settings-group">
-          <h3 class="profile-group-heading">Active Profile</h3>
-          <div class="profile-current-row">
-            <label for="profile-select" class="profile-select-label">Active Profile on this device</label>
-            <select id="profile-select" class="field-control"></select>
+        <!-- [SYNCV3 / STAGE-10 / PERSISTENT-HELP]
+             [WHY: this is the canonical owner of the six concept definitions.
+              The shorter introduction references these concepts rather than
+              maintaining a second full Folder/Library/Profile glossary.] -->
+        <details id="profile-sync-help" class="profile-sync-help">
+          <summary>? Help with Profile &amp; Sync</summary>
+          <div id="profile-sync-help-content" class="profile-sync-help-content">
+            <section data-help-concept="folder">
+              <h3>Folder</h3>
+              <p>The folder on this device that contains your photos and videos. Each device uses its own local folder.</p>
+            </section>
+            <section data-help-concept="library">
+              <h3>Library</h3>
+              <p>Have the same media collection on another device? Link both folders to the same Library. That tells Browser Gallery, “These folders are the same collection.” Then choose a Profile for that Library. With Sync, the other device can use that Profile's Favorites, Hidden items and Tags.</p>
+            </section>
+            <section data-help-concept="profile">
+              <h3>Profile</h3>
+              <p>A Profile is a unique set of Favorites, Hidden items and Tags. Use the same Profile on another device to use the same Favorites, Hidden items and Tags there.</p>
+            </section>
+            <section data-help-concept="active-profile">
+              <h3>Active Profile</h3>
+              <p>The Profile this device is using right now. Its Favorites, Hidden items and Tags are the ones Browser Gallery uses while you browse your media. When you open a Library, Browser Gallery may switch to the Profile that Library remembers, or ask you first.</p>
+            </section>
+            <section data-help-concept="profile-for-library">
+              <h3>Profile for This Library</h3>
+              <p>The Profile Browser Gallery remembers for this Library. If another device opens the same Library, Browser Gallery can ask if you want to use that Profile there too.</p>
+            </section>
+            <section data-help-concept="sync">
+              <h3>Sync</h3>
+              <p>Sync lets your devices use the same Libraries and Profiles. Your photos and videos stay where they are.</p>
+            </section>
           </div>
-          <p class="hint">Other devices can use a different active Profile.</p>
-          <p id="profile-active-status-text" class="hint" role="status"></p>
-        </div>
+          <button id="profile-sync-intro-replay" class="secondary profile-sync-help-replay" type="button">Replay introduction</button>
+        </details>
 
-        <div class="profile-settings-group">
-          <h3 class="profile-group-heading">Create Profile</h3>
-          <div class="profile-create-row">
-            <input id="profile-create-input" class="field-control" type="text" placeholder="New profile name" maxlength="60" />
-            <button id="profile-create-btn" class="secondary" type="button">Create Profile</button>
+        <!-- [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
+             [WHY: this stays inline and hidden until intentional Profile & Sync
+              entry, preserving Choose folder -> work while keeping education
+              beside the canonical Help definitions it summarizes.] -->
+        <section id="profile-sync-intro" class="profile-sync-intro hidden" aria-labelledby="profile-sync-intro-title">
+          <p id="profile-sync-intro-progress" class="profile-sync-intro-progress"></p>
+          <h3 id="profile-sync-intro-title"></h3>
+          <p id="profile-sync-intro-body"></p>
+          <div class="profile-sync-intro-actions">
+            <button id="profile-sync-intro-back" class="secondary" type="button">Back</button>
+            <button id="profile-sync-intro-next" class="secondary" type="button">Next</button>
+            <button id="profile-sync-intro-done" type="button">Done</button>
+            <button id="profile-sync-intro-skip" class="secondary" type="button">Skip</button>
           </div>
-        </div>
+        </section>
 
-        <div class="profile-settings-group">
+        <!-- [SYNCV3 / STAGE-10 / NARRATIVE-HIERARCHY]
+             [WHY: DOM, reading, and keyboard order establish physical Folder
+              and shared Library identity before asking for this device's
+              active Profile choice. Existing controls move intact.] -->
+        <div id="profile-folder-group" class="profile-settings-group">
           <!-- [SYNCV3 / STAGE-08 / LINK-UI]
                [WHY: This Folder owns the device-local physical-folder link;
                 This Library below continues to own the shared Profile association.] -->
@@ -1321,6 +1355,7 @@
             aria-controls="profile-folder-link-row"
             disabled
           >Link to a Library</button>
+          <p id="profile-folder-action-help" class="hint hidden"></p>
           <div id="profile-folder-link-row" class="profile-folder-link-row hidden">
             <label for="profile-folder-link-select">This folder is my copy of</label>
             <select
@@ -1330,9 +1365,14 @@
             ></select>
             <div class="profile-folder-link-actions">
               <button id="profile-folder-link-save-btn" class="secondary" type="button" aria-describedby="profile-folder-link-conflict">Save Link</button>
-              <button id="profile-folder-unlink-btn" class="secondary hidden" type="button">Unlink</button>
+              <button id="profile-folder-unlink-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-unlink-help">Unlink</button>
               <button id="profile-folder-link-cancel-btn" class="secondary" type="button">Cancel</button>
             </div>
+            <!-- [SYNCV3 / STAGE-10 / SAFETY-REASSURANCE]
+                 [WHY: unlink removes only this device's Folder -> Library
+                  identity link. It is not deletion of media, shared identity,
+                  Profile state, or curation.] -->
+            <p id="profile-folder-unlink-help" class="hint hidden">Unlinking only disconnects this folder from the Library on this device. Your media, shared Library, Profile, Favorites, Hidden items and Tags are not deleted.</p>
             <!-- [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
                  [WHY: a storage-level claimant refusal is safety-critical and
                   must be visually distinct from ordinary explanatory text.] -->
@@ -1341,13 +1381,15 @@
               <p id="profile-folder-link-conflict-detail"></p>
               <p id="profile-folder-link-conflict-action"></p>
             </div>
-            <p id="profile-folder-link-help" class="hint">Linking only tells Browser Gallery which Library this folder is.</p>
-            <p class="hint">Your media files stay on this device — nothing is uploaded or copied.</p>
+            <!-- [SYNCV3 / STAGE-10 / SAFETY-REASSURANCE]
+                 [WHY: sharing/linking publishes identity metadata only; it
+                  never moves, copies, or uploads the physical media collection.] -->
+            <p id="profile-folder-link-help" class="hint">Choose the Library this folder belongs to. Your photos and videos are not uploaded or moved.</p>
           </div>
           <p id="profile-folder-link-result" class="hint" role="status"></p>
         </div>
 
-        <div class="profile-settings-group">
+        <div id="profile-library-group" class="profile-settings-group">
           <h3 class="profile-group-heading">This Library</h3>
           <p id="profile-library-association-text" class="product-status product-status-muted">No folder loaded.</p>
           <!-- [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
@@ -1383,7 +1425,7 @@
             aria-expanded="false"
             aria-controls="profile-association-row"
             disabled
-          >Associate Current Library</button>
+          >Choose a Profile for this Library</button>
 
           <!-- [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
                [WHY: association is shared state while active Profile is a
@@ -1393,16 +1435,33 @@
             <label for="profile-association-select">Remember this Library with</label>
             <select id="profile-association-select" class="field-control"></select>
             <div class="profile-association-actions">
-              <button id="profile-association-save-btn" class="secondary" type="button">Save Association</button>
+              <button id="profile-association-save-btn" class="secondary" type="button">Save Profile for this Library</button>
               <button id="profile-association-cancel-btn" class="secondary" type="button">Cancel</button>
             </div>
-            <p class="hint">Only the link changes. Favorites, Hidden and Tags stay in their own Profiles.</p>
-            <p class="hint">This link is shared with your other devices. Your active Profile stays on this device.</p>
+            <p class="hint">Only the Profile remembered for this Library changes. Favorites, Hidden items and Tags stay in their own Profiles.</p>
+            <p class="hint">This choice is shared with your other devices. Your active Profile stays on this device.</p>
           </div>
           <p id="profile-association-result" class="hint" role="status"></p>
         </div>
 
-        <div class="profile-settings-group">
+        <!-- [SYNCV3 / STAGE-06 / PROFILE-SYNC-IA] -->
+        <div id="profile-active-group" class="profile-settings-group">
+          <h3 class="profile-group-heading">Active Profile on This Device</h3>
+          <div class="profile-current-row">
+            <label for="profile-select" class="profile-select-label">Active Profile on this device</label>
+            <select id="profile-select" class="field-control"></select>
+          </div>
+          <p class="hint">Other devices can use a different active Profile.</p>
+          <p id="profile-active-status-text" class="hint" role="status"></p>
+          <!-- The existing creation controls are intentionally subordinate to
+               the active choice; creation behavior and vocabulary are unchanged. -->
+          <div class="profile-create-row">
+            <input id="profile-create-input" class="field-control" type="text" placeholder="New profile name" maxlength="60" />
+            <button id="profile-create-btn" class="secondary" type="button">Create Profile</button>
+          </div>
+        </div>
+
+        <div id="profile-device-group" class="profile-settings-group">
           <h3 class="profile-group-heading">This Device</h3>
           <label for="profile-sync-v3-device-name" class="hint">Name this device</label>
           <div class="profile-device-row">
@@ -1420,9 +1479,13 @@
           <p id="profile-sync-v3-device-name-status" class="hint" role="status"></p>
         </div>
 
-        <div class="profile-settings-group">
+        <div id="profile-sync-group" class="profile-settings-group">
           <h3 class="profile-group-heading">Sync</h3>
           <p id="profile-sync-product-status" class="product-status product-status-muted" role="status">Not syncing — no sync folder chosen</p>
+          <!-- [SYNCV3 / STAGE-10 / SAFETY-REASSURANCE]
+               [WHY: SyncV3 transports Browser Gallery Profile, association,
+                and Library facts; it never transports the media collection.] -->
+          <p id="profile-sync-media-safety" class="hint">Sync lets your devices use the same Libraries and Profiles. Your photos and videos stay where they are.</p>
           <div class="control-stack">
             <button id="profile-sync-v3-choose-btn" class="secondary" type="button">Choose Sync Folder</button>
             <button id="profile-sync-v3-reconnect-btn" class="secondary hidden" type="button">Reconnect Sync Folder</button>
@@ -1465,10 +1528,16 @@
         <p id="profile-status-text" class="hint" role="status"></p>
         </details>
 
-        <div class="profile-settings-group profile-delete-group">
-          <h3 class="profile-group-heading">Delete Profile</h3>
-          <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
-        </div>
+        <!-- [SYNCV3 / STAGE-10 / NARRATIVE-HIERARCHY]
+             [WHY: destructive administration remains discoverable but no
+              longer competes with current setup status. Native details keeps
+              keyboard/disclosure behavior without a parallel UI system.] -->
+        <details class="profile-import-export-section profile-delete-section">
+          <summary>Delete Profile</summary>
+          <div class="control-stack">
+            <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
+          </div>
+        </details>
 
         </details>
 

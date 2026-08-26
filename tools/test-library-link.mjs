@@ -56,6 +56,10 @@ assert(promotedAgain === promotedId, "second promotion preserves the same shared
 assert((await Registry.getLibraryById(promotedFolder.id)).libraryId === promotedId, "promotion persists the local link");
 assert(store.listLibraries().some((library) => library.id === promotedId), "promotion adds the Library to the shared catalog");
 assert(JSON.stringify(store.getAssociations()) === associationsBefore, "promotion writes no association fact");
+assert((await store.unlinkLocalLibraryFromShared(promotedFolder.id)).libraryId === null,
+  "unlink removes only the promoted folder's local shared-Library link");
+assert(store.listLibraries().some((library) => library.id === promotedId),
+  "unlink does not delete the promoted shared Library from the catalog");
 assert(store.getProfileId() === activeProfileBefore, "promotion leaves Active Profile unchanged");
 
 // [SYNCV3 / STAGE-08 / LINK-AND-SYNC]
@@ -94,6 +98,8 @@ const mediaScopeAfter = await resolveScopeForRoot({
   knownRootHandles: [],
 });
 assert(store.getProfileId() === invariantBefore.activeProfileId, "link transitions preserve Active Profile ID");
+assert(store.listProfiles().some((entry) => entry.id === invariantBefore.activeProfileId),
+  "link transitions do not delete the active Profile record");
 assert(store.isFavorite("proof.jpg") === invariantBefore.favorite, "link transitions preserve Favorite truth");
 assert(store.isHidden("proof.jpg") === invariantBefore.hidden, "link transitions preserve Hidden truth");
 assert(JSON.stringify(store.getItemTags("proof.jpg")) === invariantBefore.tags, "link transitions preserve Tags truth");
