@@ -155,6 +155,12 @@ const REDUNDANT_LIBRARY_LOAD_WINDOW_MS = 30_000;
 export class ProfileStore {
   #recordsByPath = new Map();
   #listeners = new Set();
+  // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+  // [WHY: kept separate from #listeners. #emit() means "durable state this class
+  //  owns has changed"; an ambient decision is a local-only row owned elsewhere,
+  //  and routing it through #emit() would re-render every Profile surface for a
+  //  change none of them reflect.]
+  #ambientDecisionListeners = new Set();
   #saveQueue = Promise.resolve();
   #changedBeforeLoad = new Set();
   #replaceBeforeLoad = false;
@@ -576,8 +582,10 @@ export class ProfileStore {
   // `localLibraryId` is library-registry.js's LOCAL row id (NOT the shared
   // libraryId — that's minted/preserved here via ensureLibraryId).
   // `profileId: null` disassociates explicitly. Returns the shared libraryId
-  // on success, or null if the local library id isn't known.
-  async setLibraryAssociation(localLibraryId, profileId) {
+  // on success, or null if the local library id isn't known. Stage 09's narrow
+  // `includeAuthoredFact` option instead returns { libraryId, authoredFact };
+  // existing callers retain the original string contract.
+  async setLibraryAssociation(localLibraryId, profileId, { includeAuthoredFact = false } = {}) {
     await this.#associationsReady;
     await this.#identity.ready;
 
@@ -592,6 +600,13 @@ export class ProfileStore {
 
     const stamp = this.#identity.tick();
     const fact = MergeEngine.makeFact(profileId || null, stamp);
+    // [SYNCV3 / STAGE-09 / SELF-WRITE-SUPPRESSION-RACE-AUDIT]
+    // [WHY: return THIS immutable snapshot when requested, not whichever fact
+    // is current after the awaits below. Association persistence, same-device
+    // refresh, or SyncV3 adoption can merge a newer remote fact while this
+    // method is suspended. Re-reading #associations after resolution would then
+    // misclassify that remote fact as authored by this tab and suppress it.]
+    const authoredFact = includeAuthoredFact ? takeSnapshot(fact) : null;
     this.#associations = MergeEngine.mergeMaps(this.#associations, { [row.libraryId]: fact }, MergeEngine.mergeFact);
 
     try {
@@ -612,7 +627,7 @@ export class ProfileStore {
     }
 
     this.#emit();
-    return row.libraryId;
+    return includeAuthoredFact ? { libraryId: row.libraryId, authoredFact } : row.libraryId;
   }
 
   /**
@@ -1942,6 +1957,23 @@ export class ProfileStore {
     return Boolean(this.#localStateChannel && this.#localStateChannel.available);
   }
 
+  // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+  // [WHY: a thin pass-through over the ONE local-state channel this class owns.
+  //  Adding a second BroadcastChannel elsewhere would create a parallel
+  //  notification system for the same origin. Nothing about ambient decisions is
+  //  stored, cached, or interpreted here - the announcement carries no payload
+  //  and the receiver re-reads the decision store, which stays authoritative.]
+  announceAmbientProfileDecisionChanged() {
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.AMBIENT_DECISION_CHANGED);
+  }
+
+  /** Subscribes to sibling-context ambient decision announcements. Returns an unsubscribe. */
+  subscribeAmbientProfileDecisionChanged(listener) {
+    if (typeof listener !== "function") return () => {};
+    this.#ambientDecisionListeners.add(listener);
+    return () => this.#ambientDecisionListeners.delete(listener);
+  }
+
   /** Releases the channel. Tests and any embedder tearing a context down. */
   closeLocalStateChannel() {
     if (this.#localStateChannel) this.#localStateChannel.close();
@@ -2001,6 +2033,22 @@ export class ProfileStore {
       case LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.DEVICE_NAME_CHANGED:
         break;
+      // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+      // [WHY: returns WITHOUT refreshFromStorage(). A sibling's ambient
+      //  decision changed a local-only row that this class neither owns nor
+      //  caches; re-reading shared Profile/association/Library storage would be
+      //  pure waste and would imply shared state moved when none did. This class
+      //  owns the one channel, so it demultiplexes the kind and hands it on -
+      //  it stores nothing about ambient decisions and interprets nothing.]
+      case LOCAL_STATE_MESSAGE_KINDS.AMBIENT_DECISION_CHANGED:
+        for (const listener of this.#ambientDecisionListeners) {
+          try {
+            listener();
+          } catch (error) {
+            console.warn("[SYNCV3 / STAGE-09] An ambient decision listener failed.", error);
+          }
+        }
+        return;
       default:
         return;
     }

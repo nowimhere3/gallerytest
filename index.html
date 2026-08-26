@@ -1350,6 +1350,32 @@
         <div class="profile-settings-group">
           <h3 class="profile-group-heading">This Library</h3>
           <p id="profile-library-association-text" class="product-status product-status-muted">No folder loaded.</p>
+          <!-- [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
+               [WHY: static, non-modal markup beside the relationship it
+                explains. Visibility follows the observer's single pending
+                offer; appearing ambiently never steals focus.] -->
+          <section
+            id="ambient-profile-offer"
+            class="ambient-profile-offer hidden"
+            aria-labelledby="ambient-profile-offer-heading"
+          >
+            <div class="ambient-profile-offer-header">
+              <h4 id="ambient-profile-offer-heading">This Library changed Profiles</h4>
+              <button
+                id="ambient-profile-offer-close"
+                class="ambient-profile-offer-close"
+                type="button"
+                aria-label="Decide later"
+              >×</button>
+            </div>
+            <p id="ambient-profile-offer-text" aria-live="polite"></p>
+            <div class="ambient-profile-offer-actions">
+              <button id="ambient-profile-offer-yes" class="secondary" type="button">Use Profile</button>
+              <button id="ambient-profile-offer-no" class="secondary" type="button">Keep Current Profile</button>
+              <button id="ambient-profile-offer-later" class="secondary" type="button">Later</button>
+            </div>
+          </section>
+          <p id="ambient-profile-offer-result" class="hint" role="status" aria-live="polite"></p>
           <button
             id="profile-associate-btn"
             class="secondary hidden"

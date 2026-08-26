@@ -54,6 +54,18 @@ import { ProfileSync } from "./profile/profile-sync.js";
 import { mapSyncStatusCopy } from "./profile/sync-status-copy.js";
 import { mapAssociationCopy } from "./profile/association-copy.js";
 import { mapLinkState } from "./profile/link-state.js";
+import { createAssociationWriteSuppression } from "./profile/association-write-suppression.js";
+import { createAmbientProfileObserver } from "./profile/ambient-profile-observer.js";
+import { applyLoadTimeProfileRestoration } from "./profile/load-time-profile-restoration.js";
+import {
+  buildAmbientProfileOfferView,
+  performAmbientProfileAction,
+} from "./profile/ambient-profile-action.js";
+import {
+  deleteAmbientProfileDecision,
+  loadAmbientProfileDecision,
+  saveAmbientProfileDecision,
+} from "./profile/indexeddb.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 
 const provider = new LocalFileInputProvider();
@@ -86,6 +98,20 @@ const profileView = createProfileProjectionView({ profile });
 // interact, that almost certainly means the boundary is being crossed by
 // mistake — re-read profile-sync.js's header first.
 const profileSync = new ProfileSync(profile);
+// [SYNCV3 / STAGE-09 / SELF-WRITE-SUPPRESSION]
+// [WHY: Stage 07's intentional association write emits before its local
+// Library projection is refreshed. Keep that ordering race in one ephemeral
+// coordinator so the future ambient observer cannot turn our own click into a
+// remote-change prompt. Closing an intent schedules a fresh authoritative read;
+// a genuinely different remote fact that landed during the window is therefore
+// delayed, never discarded.]
+const associationWriteSuppression = createAssociationWriteSuppression({
+  onIntentClosed: () => refreshCurrentAssociationFromRegistry().catch(() => undefined),
+});
+const ambientProfileObserver = createAmbientProfileObserver({
+  loadDecision: loadAmbientProfileDecision,
+  deleteDecision: deleteAmbientProfileDecision,
+});
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
 // The runtime uses exactly subscribe/isFavorite/isHidden/toggleFavorite/
 // toggleHidden, all of which the projection view implements, so media-runtime.js
@@ -182,6 +208,13 @@ const profileAssociationSelect = document.getElementById("profile-association-se
 const profileAssociationSaveBtn = document.getElementById("profile-association-save-btn");
 const profileAssociationCancelBtn = document.getElementById("profile-association-cancel-btn");
 const profileAssociationResult = document.getElementById("profile-association-result");
+const ambientProfileOffer = document.getElementById("ambient-profile-offer");
+const ambientProfileOfferText = document.getElementById("ambient-profile-offer-text");
+const ambientProfileOfferYes = document.getElementById("ambient-profile-offer-yes");
+const ambientProfileOfferNo = document.getElementById("ambient-profile-offer-no");
+const ambientProfileOfferLater = document.getElementById("ambient-profile-offer-later");
+const ambientProfileOfferClose = document.getElementById("ambient-profile-offer-close");
+const ambientProfileOfferResult = document.getElementById("ambient-profile-offer-result");
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
 const profileFolderLinkRow = document.getElementById("profile-folder-link-row");
@@ -690,6 +723,14 @@ let activeLibraryDisplayName = null;
 // thing association-button visibility is computed from. See
 // syncAssociateButtonVisibility() below.
 let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
+// [SYNCV3 / STAGE-09 / STALE-LOAD-GUARD]
+// [WHY: file loading is normally serialized by isLoadingFiles, but Clear Media
+// can supersede a load while its new decision-store await is suspended. This
+// monotonic token prevents that stale continuation from switching, deleting,
+// or arming an offer after its Library context has gone away.]
+let libraryLoadGeneration = 0;
+let ambientProfileOfferRenderedKey = null;
+let ambientProfileActionPending = false;
 
 // [P1-DIAGNOSTIC / TEMPORARY] See the DevTools-callable probe block at the
 // bottom of this file. Holds the most recently loaded FSA root handle (and
@@ -4324,6 +4365,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   if (!total || isLoadingFiles) return;
 
   isLoadingFiles = true;
+  const loadToken = ++libraryLoadGeneration;
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] A fresh attempt
   // clears any failure the PREVIOUS attempt left showing.
   lastMobileLoadFailed = false;
@@ -4352,6 +4394,9 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
   activeLibraryRecord = null;
+  associationWriteSuppression.setLoadedLibrary(null);
+  ambientProfileObserver.clearContext();
+  renderAmbientProfileOffer();
   activeLibraryDisplayName = rootName || (isFolderPick ? "Loaded folder" : "Selected files");
   currentSourceKind = "legacy";
   currentFolderPermissionState = "granted";
@@ -4375,6 +4420,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // only set when a legacy re-pick actually causes a Profile switch, so
   // the note below appears exactly for that case.
   let recognizedProfileName = null;
+  let deferredLoadTimeOffer = null;
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -4409,21 +4455,31 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
           // preserving id/profileId.
           const refreshed = await updateLegacyLibrarySignature(matchResult.record.id, signature);
           activeLibraryRecord = refreshed || matchResult.record;
+          associationWriteSuppression.setLoadedLibrary(activeLibraryRecord.id);
+          establishAmbientProfileContext(activeLibraryRecord);
           pendingLegacySignature = null;
 
-          if (activeLibraryRecord.profileId) {
-            const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
-            if (knownProfileIds.has(activeLibraryRecord.profileId)) {
-              if (activeLibraryRecord.profileId !== profile.getProfileId()) {
-                await profile.switchProfile(activeLibraryRecord.profileId);
-              }
+          const restoration = await restoreProfileForLoadedLibrary(activeLibraryRecord, loadToken);
+          if (restoration && !restoration.stale) {
+            const alreadyActive = restoration.result?.reason === "shared-target-already-active"
+              || restoration.result?.reason === "local-row-already-active";
+            if (restoration.switched || alreadyActive) {
               recognizedProfileName = profile.getProfileName();
-              logLegacyIdentity("associated profile id", { profileId: activeLibraryRecord.profileId });
-            } else {
+              logLegacyIdentity("associated profile id", { profileId: profile.getProfileId() });
+            }
+            if (restoration.result?.action === "skip-and-ask") {
+              deferredLoadTimeOffer = {
+                id: activeLibraryRecord.id,
+                libraryId: restoration.libraryId,
+                currentFactValue: restoration.currentFactValue,
+              };
+            }
+            if (restoration.result?.reason === "shared-target-unusable" && restoration.currentFactValue) {
               // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
-              // Preserve the shared association projection for S4 recovery.
-              // No Profile switch occurs; the user can explicitly replace or
-              // clear the missing target from This Library after load.
+              // Preserve S4 when authoritative shared truth names a Profile
+              // this device does not yet have; never fall back to a stale row.
+              console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
+            } else if (restoration.result?.reason === "local-row-unusable" && activeLibraryRecord.profileId) {
               console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
             }
           }
@@ -4434,10 +4490,12 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
           // record if the user proceeds.
           logLegacyIdentity("ambiguous — refusing to guess", { candidateIds: matchResult.candidateIds });
           activeLibraryRecord = null;
+          associationWriteSuppression.setLoadedLibrary(null);
           pendingLegacySignature = signature;
         } else {
           logLegacyIdentity("no match — new/unrecognized library");
           activeLibraryRecord = null;
+          associationWriteSuppression.setLoadedLibrary(null);
           pendingLegacySignature = signature;
         }
       } catch (error) {
@@ -4445,11 +4503,13 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
         // worst case, this folder just isn't recognized this time.
         console.warn("[LEGACY-IDENTITY] Could not resolve legacy folder identity.", error);
         activeLibraryRecord = null;
+        associationWriteSuppression.setLoadedLibrary(null);
         pendingLegacySignature = null;
       }
     }
 
     finishLoadingItems(items);
+    await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the legacy provider out from under it.
     __p1LegacySnapshot = [...items];
@@ -4542,6 +4602,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
   isLoadingFiles = true;
+  const loadToken = ++libraryLoadGeneration;
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Same reset as
   // loadFiles() above — covers a fresh pick AND every remembered-library
   // resume call into this same function.
@@ -4573,6 +4634,8 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // at all requires either the FSA folder-picker round trip or a Recent
   // Libraries click, both far slower than one IndexedDB open.
   activeLibraryRecord = libraryRecord || null;
+  associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
+  establishAmbientProfileContext(activeLibraryRecord);
   activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded folder";
   currentSourceKind = "fsa";
   currentFolderPermissionState = "granted";
@@ -4588,26 +4651,32 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // Library resumed and switched profiles. A newly registered folder is
   // not described as recognized merely because it has a record now.
   let recognizedProfileName = null;
+  let deferredLoadTimeOffer = null;
 
-  if (activeLibraryRecord && activeLibraryRecord.id && activeLibraryRecord.profileId) {
-    const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
-
-    if (knownProfileIds.has(activeLibraryRecord.profileId)) {
-      const switchedProfiles = activeLibraryRecord.profileId !== profile.getProfileId();
-      if (switchedProfiles) {
-        await profile.switchProfile(activeLibraryRecord.profileId);
-      }
-      if (activeLibraryRecord.wasExisting || switchedProfiles) {
+  if (activeLibraryRecord && activeLibraryRecord.id) {
+    const restoration = await restoreProfileForLoadedLibrary(activeLibraryRecord, loadToken);
+    if (restoration && !restoration.stale) {
+      const alreadyActive = restoration.result?.reason === "shared-target-already-active"
+        || restoration.result?.reason === "local-row-already-active";
+      if (restoration.switched || (activeLibraryRecord.wasExisting && alreadyActive)) {
         recognizedProfileName = profile.getProfileName();
       }
-    } else {
-      // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
-      // Never guess or switch when the shared target is unavailable. Keep its
-      // id in the local projection so the single association renderer exposes
-      // S4 and offers an explicit replacement or shared null clear.
-      console.warn(
-        `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" is associated with a Profile that is unavailable.`
-      );
+      if (restoration.result?.action === "skip-and-ask") {
+        deferredLoadTimeOffer = {
+          id: activeLibraryRecord.id,
+          libraryId: restoration.libraryId,
+          currentFactValue: restoration.currentFactValue,
+        };
+      }
+      if ((restoration.result?.reason === "shared-target-unusable" && restoration.currentFactValue)
+        || (restoration.result?.reason === "local-row-unusable" && activeLibraryRecord.profileId)) {
+        // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+        // Never guess when the authoritative shared target (or Rule 0 local
+        // fallback) is unavailable. Preserve S4/local identity for recovery.
+        console.warn(
+          `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" is associated with a Profile that is unavailable.`
+        );
+      }
     }
   }
 
@@ -4700,6 +4769,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     await applyProjectionWithinBudget(mediaIdentityReady);
 
     finishLoadingItems(result.items);
+    await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the FSA provider out from under it.
     __p1FsaSnapshot = [...result.items];
@@ -4994,9 +5064,24 @@ async function renderRecentLibraries() {
 //  itself a synced tombstone, so the association fact correctly keeps naming
 //  it — and an explicit Restore brings both back together.]
 async function associateThroughSyncV2(localLibraryId, targetProfileId) {
-  const sharedLibraryId = await profile.setLibraryAssociation(localLibraryId, targetProfileId);
-  if (!sharedLibraryId) return null;
-  return getLibraryByLibraryId(sharedLibraryId);
+  // [SYNCV3 / STAGE-09 / SELF-WRITE-SUPPRESSION]
+  // [WHY: setLibraryAssociation announces its durable fact before this module
+  // updates activeLibraryRecord. The explicit token spans that exact await and
+  // is always cleared in finally. On success, the exact locally minted (t,d)
+  // identity returned by the write boundary lets later refreshes suppress only
+  // our fact, not whichever newer fact may be current when this await resumes.]
+  const intent = associationWriteSuppression.beginIntent(localLibraryId);
+  try {
+    const writeResult = await profile.setLibraryAssociation(localLibraryId, targetProfileId, {
+      includeAuthoredFact: true,
+    });
+    if (!writeResult) return null;
+    const { libraryId: sharedLibraryId, authoredFact } = writeResult;
+    associationWriteSuppression.captureAuthoredFact(intent, sharedLibraryId, authoredFact);
+    return getLibraryByLibraryId(sharedLibraryId);
+  } finally {
+    associationWriteSuppression.endIntent(intent);
+  }
 }
 
 // [SYNCV3 / STAGE-07 / ASSOCIATION-WRITE]
@@ -5019,6 +5104,7 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
 
         const updated = await associateThroughSyncV2(record.id, targetProfileId);
         activeLibraryRecord = updated || { ...record, profileId: targetProfileId };
+        establishAmbientProfileContext(activeLibraryRecord);
         pendingLegacySignature = null;
         logLegacyIdentity("associated profile id", { profileId: targetProfileId, libraryId: activeLibraryRecord.id });
         syncAssociateButtonVisibility();
@@ -5058,6 +5144,7 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
   try {
     const updated = await associateThroughSyncV2(activeLibraryRecord.id, targetProfileId);
     activeLibraryRecord = updated || { ...activeLibraryRecord, profileId: targetProfileId };
+    establishAmbientProfileContext(activeLibraryRecord);
     syncAssociateButtonVisibility();
     const targetProfileName = getProfileNameById(targetProfileId);
     fsaStatusText.textContent = targetProfileName
@@ -5402,6 +5489,7 @@ profileFolderLinkSaveBtn.addEventListener("click", async () => {
       return;
     }
     activeLibraryRecord = await getLibraryById(activeLibraryRecord.id) || result;
+    establishAmbientProfileContext(activeLibraryRecord);
     profileFolderLinkResult.textContent = "Folder link saved.";
     await renderRecentLibraries();
     syncAssociateButtonVisibility();
@@ -5421,6 +5509,7 @@ profileFolderUnlinkBtn.addEventListener("click", async () => {
     const unlinked = await profile.unlinkLocalLibraryFromShared(activeLibraryRecord.id);
     if (!unlinked) throw new Error("Local Library row was unavailable.");
     activeLibraryRecord = unlinked;
+    establishAmbientProfileContext(activeLibraryRecord);
     profileFolderLinkResult.textContent = "This folder is no longer linked to a shared Library.";
     await renderRecentLibraries();
     syncAssociateButtonVisibility();
@@ -8105,6 +8194,7 @@ nowPlayingReturnBtn.addEventListener("click", (event) => {
 // pause half, and #now-playing-stop-btn above.
 
 clearBtn.addEventListener("click", () => {
+  libraryLoadGeneration += 1;
   bumpGalleryGeneration();
   runtime.clear();
   provider.dispose();
@@ -8119,6 +8209,9 @@ clearBtn.addEventListener("click", () => {
   // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
+  associationWriteSuppression.setLoadedLibrary(null);
+  ambientProfileObserver.clearContext();
+  renderAmbientProfileOffer();
   activeLibraryDisplayName = null;
   currentSourceKind = "none";
   currentFolderPermissionState = "granted";
@@ -9118,13 +9211,196 @@ function renderProfileSelector() {
   profileDeleteBtn.textContent = activeId && activeName ? `Delete ${activeName}` : "Delete Profile";
 }
 
+function establishAmbientProfileContext(libraryRecord) {
+  const localLibraryId = libraryRecord?.id || null;
+  const libraryId = libraryRecord?.libraryId || null;
+  if (!localLibraryId || !libraryId) {
+    ambientProfileObserver.clearContext();
+    renderAmbientProfileOffer();
+    return;
+  }
+  const currentFactValue = profile.getAssociations()[libraryId]?.v || null;
+  const targetKnown = Boolean(currentFactValue
+    && profile.listProfiles().some((entry) => entry.id === currentFactValue));
+  ambientProfileObserver.setContext({ localLibraryId, libraryId, currentFactValue, targetKnown });
+  renderAmbientProfileOffer();
+}
+
+function getCurrentAmbientProfileContext() {
+  const durable = currentSourceKind === "fsa"
+    || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
+  if (!durable || !activeLibraryRecord?.id || !activeLibraryRecord.libraryId) return null;
+  return {
+    localLibraryId: activeLibraryRecord.id,
+    libraryId: activeLibraryRecord.libraryId,
+  };
+}
+
+function renderAmbientProfileOffer() {
+  const pendingOffer = ambientProfileObserver.getSnapshot().pendingOffer;
+  const context = getCurrentAmbientProfileContext();
+  const targetName = pendingOffer ? getProfileNameById(pendingOffer.observedValue) : null;
+  const view = buildAmbientProfileOfferView({
+    pendingOffer,
+    currentContext: context,
+    libraryName: activeLibraryRecord?.name || activeLibraryDisplayName || "This Library",
+    targetName,
+    activeProfileName: profile.getProfileName() || "my current Profile",
+  });
+
+  if (!view.visible) {
+    ambientProfileOffer.classList.add("hidden");
+    ambientProfileOfferRenderedKey = null;
+    return;
+  }
+
+  const key = `${pendingOffer.localLibraryId}\u0000${pendingOffer.libraryId}\u0000${pendingOffer.observedValue}`;
+  if (ambientProfileOfferRenderedKey !== key) ambientProfileOfferResult.textContent = "";
+  ambientProfileOfferRenderedKey = key;
+
+  ambientProfileOfferText.textContent = view.text;
+  ambientProfileOfferYes.textContent = view.yesLabel;
+  ambientProfileOfferNo.textContent = view.noLabel;
+  ambientProfileOfferLater.textContent = view.laterLabel;
+  for (const button of [ambientProfileOfferYes, ambientProfileOfferNo, ambientProfileOfferLater, ambientProfileOfferClose]) {
+    button.disabled = ambientProfileActionPending;
+  }
+  // [SYNCV3 / STAGE-09 / AMBIENT-NO-FOCUS-STEAL]
+  // [WHY: sync may surface this while the user is editing elsewhere. Showing a
+  // static card without focus() preserves their task while leaving every real
+  // button reachable in ordinary tab order.]
+  ambientProfileOffer.classList.remove("hidden");
+}
+
+function isLibraryLoadCurrent(loadToken, libraryRecord) {
+  return libraryLoadGeneration === loadToken
+    && Boolean(activeLibraryRecord)
+    && activeLibraryRecord.id === libraryRecord?.id
+    && (activeLibraryRecord.libraryId || null) === (libraryRecord?.libraryId || null);
+}
+
+async function restoreProfileForLoadedLibrary(libraryRecord, loadToken) {
+  try {
+    const outcome = await applyLoadTimeProfileRestoration({
+      libraryRecord,
+      getAssociations: () => profile.getAssociations(),
+      getKnownProfileIds: () => profile.listProfiles().map((entry) => entry.id),
+      getActiveProfileId: () => profile.getProfileId(),
+      loadDecision: loadAmbientProfileDecision,
+      deleteDecision: deleteAmbientProfileDecision,
+      switchProfile: (target) => profile.switchProfile(target),
+      isCurrent: () => isLibraryLoadCurrent(loadToken, libraryRecord),
+    });
+    if (outcome.decisionDeleteError) {
+      console.warn("[SYNCV3 / STAGE-09] Could not clear a stale local association decision.", outcome.decisionDeleteError);
+    }
+    return outcome;
+  } catch (error) {
+    // Decision storage failure must not make an otherwise valid folder fail to
+    // load. Conservatively preserve Active Profile rather than guessing past a
+    // decision that could not be read.
+    console.warn("[SYNCV3 / STAGE-09] Could not resolve load-time Profile policy.", error);
+    return null;
+  }
+}
+
+async function armDeferredLoadTimeOffer(deferredOffer, loadToken) {
+  if (!deferredOffer || !isLibraryLoadCurrent(loadToken, deferredOffer)) return false;
+  let decision;
+  try {
+    decision = await loadAmbientProfileDecision(deferredOffer.libraryId);
+  } catch (error) {
+    console.warn("[SYNCV3 / STAGE-09] Could not re-read LATER before arming its load-time offer.", error);
+    return false;
+  }
+  if (!isLibraryLoadCurrent(loadToken, deferredOffer)) return false;
+  const associations = profile.getAssociations();
+  const hasSharedFact = Object.prototype.hasOwnProperty.call(associations, deferredOffer.libraryId);
+  const currentFactValue = hasSharedFact ? associations[deferredOffer.libraryId]?.v ?? null : null;
+  const targetKnown = Boolean(currentFactValue
+    && profile.listProfiles().some((entry) => entry.id === currentFactValue));
+  if (decision?.kind !== "later"
+    || decision.observedValue !== currentFactValue
+    || currentFactValue !== deferredOffer.currentFactValue
+    || !targetKnown
+    || currentFactValue === profile.getProfileId()) return false;
+
+  // [SYNCV3 / STAGE-09 / LOAD-TIME-LATER-REASK]
+  // [WHY: LATER explicitly asks once on a later successful load. Arm Slice 3's
+  // existing pending slot after re-reading both decision and fact; do not fake
+  // an ambient transition and do not create a parallel prompt mechanism.]
+  const armed = ambientProfileObserver.armLoadTimeOffer({
+    localLibraryId: deferredOffer.id,
+    libraryId: deferredOffer.libraryId,
+    currentFactValue,
+  });
+  renderAmbientProfileOffer();
+  return armed;
+}
+
 async function refreshCurrentAssociationFromRegistry() {
   const localLibraryId = activeLibraryRecord && activeLibraryRecord.id;
   const durable = currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
-  if (!durable || !localLibraryId) return;
+  if (!durable || !localLibraryId) {
+    ambientProfileObserver.clearContext();
+    renderAmbientProfileOffer();
+    return;
+  }
+  // [SYNCV3 / STAGE-09 / NO-DECISION-REARM-BUG]
+  // [WHY: the local row projection is deliberately NOT fed into the ambient
+  // observer. It is reconciliation/display state, never association policy
+  // authority — and it necessarily lags here, because
+  // ProfileStore#adoptMergedAssociations emits before reconciling rows. The
+  // shared fact read below is the only ambient association authority.]
   const refreshed = await getLibraryById(localLibraryId);
   if (!refreshed || !activeLibraryRecord || activeLibraryRecord.id !== localLibraryId) return;
+  const sharedLibraryId = refreshed.libraryId || null;
+  const currentFact = sharedLibraryId ? profile.getAssociations()[sharedLibraryId] || null : null;
+  // [SYNCV3 / STAGE-09 / SELF-WRITE-SUPPRESSION]
+  // [WHY: `(t,d)` is used only to classify exact authorship here. The ambient
+  // model receives only the fact VALUE, because a restamp has no user-facing
+  // association meaning. Keeping both purposes at this seam prevents either
+  // stamp metadata or the local row projection from becoming target authority.]
+  const selfWriteSuppressed = associationWriteSuppression.shouldSuppress({
+    localLibraryId,
+    libraryId: sharedLibraryId,
+    fact: currentFact,
+  });
   activeLibraryRecord = refreshed;
+
+  // [SYNCV3 / STAGE-09 / INITIAL-LOAD-BASELINE]
+  // [WHY: a newly loaded, linked, promoted, or unlinked Library context starts
+  // a baseline; it is not an ambient transition. Slice 3B will own load-time
+  // NO/LATER behavior. Reset here as a safety net for a shared-link change that
+  // reached this async seam before its explicit Stage 08 handler completed.]
+  if (!sharedLibraryId) {
+    ambientProfileObserver.clearContext();
+  } else if (!ambientProfileObserver.matchesContext(localLibraryId, sharedLibraryId)) {
+    establishAmbientProfileContext(refreshed);
+  } else {
+    const currentFactValue = currentFact?.v || null;
+    const targetKnown = Boolean(currentFactValue
+      && profile.listProfiles().some((entry) => entry.id === currentFactValue));
+    // [SYNCV3 / STAGE-09 / ZERO-AUTO-SWITCH-AMBIENT]
+    // [WHY: this path records only an internal, stale-prone offer. It contains
+    // no switchProfile call and no association write; Slice 4 must re-read the
+    // authoritative fact before acting on any future user response.]
+    await ambientProfileObserver.observe({
+      localLibraryId,
+      libraryId: sharedLibraryId,
+      currentFactValue,
+      activeProfileId: profile.getProfileId(),
+      targetKnown,
+      selfWriteSuppressed,
+    });
+    // [SYNCV3 / STAGE-09 / ASYNC-CONTEXT-GUARD]
+    // The observer checks generation and both identities after every decision
+    // store await. Recheck the main context too before continuing UI refreshes.
+    if (!activeLibraryRecord
+      || activeLibraryRecord.id !== localLibraryId
+      || (activeLibraryRecord.libraryId || null) !== sharedLibraryId) return;
+  }
+  renderAmbientProfileOffer();
   syncAssociateButtonVisibility();
   if (!profileAssociationRow.classList.contains("hidden")) {
     populateAssociationPicker({ preservePending: true });
@@ -9134,7 +9410,135 @@ async function refreshCurrentAssociationFromRegistry() {
     await refreshFolderLinkSelection();
   }
   refreshCurrentFolderPermission().catch(() => undefined);
+  return {
+    selfWriteSuppressed,
+    currentFact,
+    ambientObservation: ambientProfileObserver.getSnapshot(),
+  };
 }
+
+async function handleAmbientProfileOfferAction(kind) {
+  if (ambientProfileActionPending) return;
+  const pendingOffer = ambientProfileObserver.getSnapshot().pendingOffer;
+  if (!pendingOffer) return;
+
+  ambientProfileActionPending = true;
+  ambientProfileOfferResult.textContent = "";
+  renderAmbientProfileOffer();
+  try {
+    const result = await performAmbientProfileAction({
+      kind,
+      pendingOffer,
+      getCurrentContext: getCurrentAmbientProfileContext,
+      getAssociations: () => profile.getAssociations(),
+      getKnownProfileIds: () => profile.listProfiles().map((entry) => entry.id),
+      getActiveProfileId: () => profile.getProfileId(),
+      switchProfile: (target) => profile.switchProfile(target),
+      saveDecision: saveAmbientProfileDecision,
+    });
+
+    if (result.status === "applied") {
+      ambientProfileObserver.dismissPendingOffer(pendingOffer);
+      ambientProfileOfferResult.textContent = "";
+      // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+      // [WHY: announced only AFTER the decision row is durably saved, matching
+      // every other write-then-announce in this app. A sibling told to re-read
+      // before the row lands would read the old store, conclude it was current,
+      // and never hear again. The message carries no payload.]
+      profile.announceAmbientProfileDecisionChanged();
+    } else if (result.status === "stale") {
+      // A newer pending offer is protected by expected identity/value matching.
+      ambientProfileObserver.dismissPendingOffer(pendingOffer);
+      await refreshCurrentAssociationFromRegistry();
+    } else if (result.status === "switch-failed") {
+      ambientProfileOfferResult.textContent = "Could not switch Profiles. Try again.";
+    } else if (result.status === "stale-after-switch") {
+      ambientProfileObserver.dismissPendingOffer(pendingOffer);
+      await refreshCurrentAssociationFromRegistry();
+      ambientProfileOfferResult.textContent = "Profile changed, but the Library association changed before this choice could be remembered.";
+    } else if (result.status === "persistence-failed") {
+      if (result.switched) {
+        ambientProfileObserver.dismissPendingOffer(pendingOffer);
+        ambientProfileOfferResult.textContent = "Profile changed, but this choice could not be remembered on this device.";
+      } else {
+        // NO/LATER have no effect without durable persistence. Keep the exact
+        // current offer visible so retrying is honest and safe.
+        ambientProfileOfferResult.textContent = "Could not remember this choice on this device. Try again.";
+      }
+    }
+  } finally {
+    ambientProfileActionPending = false;
+    renderAmbientProfileOffer();
+  }
+}
+
+ambientProfileOfferYes.addEventListener("click", () => {
+  handleAmbientProfileOfferAction("yes").catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient YES failed.", error);
+    ambientProfileActionPending = false;
+    ambientProfileOfferResult.textContent = "Could not apply this choice. Try again.";
+    renderAmbientProfileOffer();
+  });
+});
+
+ambientProfileOfferNo.addEventListener("click", () => {
+  handleAmbientProfileOfferAction("no").catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient NO failed.", error);
+    ambientProfileActionPending = false;
+    ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+    renderAmbientProfileOffer();
+  });
+});
+
+function chooseAmbientProfileLater() {
+  return handleAmbientProfileOfferAction("later");
+}
+
+// [SYNCV3 / STAGE-09 / ESCAPE-CLOSE-IS-LATER]
+// [WHY: X and Escape are not transient dismissals. Both route through the
+// exact durable LATER action so reload behavior cannot depend on how the card
+// was closed.]
+ambientProfileOfferLater.addEventListener("click", () => {
+  chooseAmbientProfileLater().catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient LATER failed.", error);
+    ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+  });
+});
+ambientProfileOfferClose.addEventListener("click", () => {
+  chooseAmbientProfileLater().catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient close/LATER failed.", error);
+    ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+  });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+  if (ambientProfileOffer.classList.contains("hidden") || ambientProfileActionPending) return;
+  // Existing Fill, drawer, popover, association editor, and native dialog
+  // Escape handlers have priority and preventDefault before this late listener.
+  if (fillModeActive || document.querySelector("dialog[open]")) return;
+  event.preventDefault();
+  chooseAmbientProfileLater().catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient Escape/LATER failed.", error);
+    ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+  });
+});
+
+// [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+// [WHY: sibling tabs may each show the same offer, which is acceptable — but
+// once ANY context on this device decides, the others must stop asking. The
+// announcement is invalidation only; this re-reads the durable decision store
+// and retires a now-decided offer without acting on it. No Profile is switched
+// and no shared association is written on this path.]
+profile.subscribeAmbientProfileDecisionChanged(() => {
+  ambientProfileObserver.reconcilePendingOfferWithDecision()
+    .then((state) => {
+      if (state.dismissed) renderAmbientProfileOffer();
+    })
+    .catch((error) => {
+      console.warn("[SYNCV3 / STAGE-09] Could not reconcile a sibling ambient decision.", error);
+    });
+});
 
 profileSelect.addEventListener("change", async () => {
   const targetId = profileSelect.value;

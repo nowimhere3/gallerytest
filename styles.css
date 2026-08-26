@@ -944,6 +944,19 @@ button:not(:disabled):hover,
   margin: 8px 0 0;
 }
 
+/* [SYNCV3 / STAGE-09 / THIS-DEVICE-LABEL-SPACING]
+   [WHY: a <label> in a settings group captions the control directly beneath it,
+   so it needs the same breathing room under it that .profile-group-heading
+   already gives (margin: 0 0 8px) above Create Profile's input. The general
+   .profile-settings-group > .hint rule ends in `0`, which is right for a
+   trailing helper paragraph and wrong for a leading caption — leaving "Name this
+   device" flush against its input. Scoped to a direct-child label so trailing
+   .hint paragraphs and the Advanced Settings label (inside
+   .advanced-playback-section, not a settings group) are untouched. */
+.profile-settings-group > label.hint {
+  margin-bottom: 8px;
+}
+
 /* [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
    Reuses the existing field/button language and naturally wraps on the same
    narrow layouts as the surrounding Profile settings controls. */
@@ -972,6 +985,73 @@ button:not(:disabled):hover,
 .profile-association-row .hint,
 .profile-folder-link-row .hint {
   margin: 0;
+}
+
+/* [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
+   A lightweight inline decision card in This Library. Flex wrapping gives the
+   same DOM a safe narrow/mobile layout without a second prompt implementation. */
+.ambient-profile-offer {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 620px;
+  margin: 10px 0 12px;
+  padding: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.ambient-profile-offer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ambient-profile-offer h4,
+.ambient-profile-offer p {
+  margin: 0;
+}
+
+.ambient-profile-offer p {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.ambient-profile-offer-close {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ambient-profile-offer-close:hover,
+.ambient-profile-offer-close:focus-visible {
+  color: var(--text);
+}
+
+.ambient-profile-offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ambient-profile-offer-actions button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+@media (max-width: 980px) {
+  .ambient-profile-offer-actions button {
+    flex: 1 1 180px;
+  }
 }
 
 /* [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
