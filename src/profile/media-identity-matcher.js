@@ -137,15 +137,16 @@ export function corroborate(candidatePaths, storedByPath, observedByPath) {
  *   4. >= MIN_CORROBORATED_MATCHES corroborated sizes
  *   5. ZERO size mismatches  <- veto, not a penalty
  */
-export function proposeStructuralMembership({ observedPaths, observedByPath, candidates }) {
+export function proposeStructuralMembership({ observedPaths, observedByPath, observedItemCount = observedPaths.length, candidates }) {
   const scored = [];
 
   for (const candidate of candidates) {
     const projected = observedPaths.map((path) => `${candidate.subtreePrefix || ""}${path}`);
     const ratio = overlapRatio(projected, candidate.storedPaths);
+    const candidateCount = Number.isFinite(candidate.itemCount) ? candidate.itemCount : candidate.storedPaths.size;
     const drift =
-      Math.abs(projected.length - candidate.storedPaths.size) /
-      Math.max(projected.length, candidate.storedPaths.size, 1);
+      Math.abs(observedItemCount - candidateCount) /
+      Math.max(observedItemCount, candidateCount, 1);
 
     if (ratio < STRONG_OVERLAP_MIN || drift > STRONG_COUNT_DRIFT_MAX) continue;
 

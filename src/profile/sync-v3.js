@@ -79,6 +79,7 @@ function asV3Replica(replica) {
     //  replica to its own schema, and neither has to know about the other's.]
     associations: replica.associations || {},
     libraries: replica.libraries || {},
+    structure: replica.structure || {},
   };
 }
 

@@ -24,6 +24,7 @@ import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-l
 import { resolveScopeForRoot } from "./storage/media-scope.js";
 import { listRoots } from "./storage/media-identity.js";
 import { runSeedingPass } from "./storage/media-seeding.js";
+import { buildPortableStructureSample } from "./storage/portable-structure-evidence.js";
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
 // [WHY: Stage 02 is the first stage that READS MEDIA-ID back into what the user
 //  sees. It projects Favorite / favoritedAt / Hidden / Tags across
@@ -4509,6 +4510,14 @@ async function handleReverseCurationSuggestionAction(kind) {
   }
 }
 
+async function recordPortableStructureForLoad(localLibraryId, items) {
+  // N5 belongs only to SyncV3. Keeping the mode gate here prevents a V1/V2
+  // transport from ever receiving a replica key it does not serialize.
+  if (profileSync.getStatus().mode !== "v3" || !localLibraryId || !Array.isArray(items)) return null;
+  const sample = buildPortableStructureSample(items);
+  return profile.recordLibraryStructure(localLibraryId, sample);
+}
+
 /**
  * Resolves the media scope structurally, then builds this load's alias index.
  *
@@ -5035,8 +5044,9 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     if (activeLibraryRecord && activeLibraryRecord.id) {
       try {
         await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: activeLibraryRecord.name || rootName });
+        await recordPortableStructureForLoad(activeLibraryRecord.id, items);
       } catch (error) {
-        console.warn("[SYNCV3] Could not record this legacy Library load in the shared catalog.", error);
+        console.warn("[SYNCV3] Could not record this legacy Library load/evidence in shared state.", error);
       }
 
       // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
@@ -5312,8 +5322,9 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       if (!result.incomplete) {
         try {
           await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: dirHandle.name });
+          await recordPortableStructureForLoad(activeLibraryRecord.id, result.items);
         } catch (error) {
-          console.warn("[SYNCV3] Could not record this Library load in the shared catalog.", error);
+          console.warn("[SYNCV3] Could not record this Library load/evidence in shared state.", error);
         }
       }
 

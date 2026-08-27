@@ -53,7 +53,7 @@ export const REPLICA_SCHEMA_VERSION = 2;
 // Fact<V>   { v: V, t: number, d: deviceId }
 
 export function emptyReplica() {
-  return { schemaVersion: REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: {} };
+  return { schemaVersion: REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: {}, structure: {} };
 }
 
 function emptyProfileFacts() {
@@ -248,6 +248,23 @@ export function recordLibraryLoaded(replica, libraryId, { name, sourceDeviceId, 
   };
 }
 
+// ---- Portable structure evidence ----------------------------------------
+
+export function setLibraryStructureSample(replica, libraryId, sample, stamp) {
+  const current = (replica.structure || {})[libraryId] || { children: {} };
+  return {
+    ...replica,
+    structure: {
+      ...(replica.structure || {}),
+      [libraryId]: {
+        ...current,
+        children: current.children || {},
+        sample: put(current.sample, sample, stamp),
+      },
+    },
+  };
+}
+
 // ---- Projection ----------------------------------------------------------
 //
 // [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
@@ -425,11 +442,12 @@ function isTrue(fact) {
 //  anything published a Library. The allow-list stays an ALLOW-list: nothing is
 //  relaxed elsewhere to make Libraries pass.]
 const ALLOWED = {
-  replica: new Set(["schemaVersion", "profiles", "associations", "libraries"]),
+  replica: new Set(["schemaVersion", "profiles", "associations", "libraries", "structure"]),
   profile: new Set(["name", "deleted", "items", "tags"]),
   item: new Set(["favorite", "hidden", "tags"]),
   tag: new Set(["name", "deleted"]),
   library: new Set(["name", "sourceDeviceId", "lastLoadedAt"]),
+  structure: new Set(["children", "sample"]),
 };
 
 /**
@@ -523,6 +541,52 @@ export function findSessionStateLeaks(replica) {
       checkFact(library.lastLoadedAt, `${libraryBase}.lastLoadedAt`);
       if (isFact(library.lastLoadedAt) && !Number.isFinite(library.lastLoadedAt.v)) {
         leaks.push(`${libraryBase}.lastLoadedAt (value is not a finite number)`);
+      }
+    }
+  }
+
+  // [NORTH-STAR / N5 / PORTABLE-STRUCTURE-EVIDENCE]
+  // Structure has its own strict shape in the same edit that admits the
+  // top-level key. Local capability/evidence fields therefore remain leaks.
+  for (const [libraryId, structure] of Object.entries(replica.structure || {})) {
+    const base = `structure[${libraryId}]`;
+    if (!structure || typeof structure !== "object" || Array.isArray(structure)) {
+      leaks.push(`${base} (not an object)`);
+      continue;
+    }
+    for (const key of Object.keys(structure)) {
+      if (!ALLOWED.structure.has(key)) leaks.push(`${base}.${key}`);
+    }
+    if (structure.sample !== undefined) {
+      checkFact(structure.sample, `${base}.sample`);
+      const value = structure.sample?.v;
+      const valid = value && value.v === 1
+        && Number.isInteger(value.count) && value.count >= 0
+        && Number.isFinite(value.totalSize) && value.totalSize >= 0
+        && Array.isArray(value.entries)
+        && value.entries.every((entry) => entry
+          && typeof entry === "object" && !Array.isArray(entry)
+          && Object.keys(entry).every((key) => key === "path" || key === "size")
+          && typeof entry.path === "string" && entry.path
+          && !entry.path.startsWith("/") && !entry.path.startsWith("\\")
+          && !/^[A-Za-z]:[\\/]/.test(entry.path)
+          && !entry.path.split(/[\\/]/).includes("..")
+          && Number.isFinite(entry.size) && entry.size >= 0);
+      if (isFact(structure.sample) && !valid) leaks.push(`${base}.sample (invalid portable sample)`);
+    }
+    const children = structure.children || {};
+    if (!children || typeof children !== "object" || Array.isArray(children)) {
+      leaks.push(`${base}.children (not an object)`);
+    } else {
+      for (const [prefix, fact] of Object.entries(children)) {
+        if (!prefix || prefix.startsWith("/") || prefix.startsWith("\\")
+          || /^[A-Za-z]:[\\/]/.test(prefix) || prefix.split(/[\\/]/).includes("..")) {
+          leaks.push(`${base}.children[${prefix}] (invalid relative prefix)`);
+        }
+        checkFact(fact, `${base}.children[${prefix}]`);
+        if (isFact(fact) && fact.v !== null && (typeof fact.v !== "string" || !fact.v)) {
+          leaks.push(`${base}.children[${prefix}] (value is not a library id or null)`);
+        }
       }
     }
   }

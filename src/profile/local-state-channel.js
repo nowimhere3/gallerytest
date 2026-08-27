@@ -34,6 +34,7 @@ export const LOCAL_STATE_MESSAGE_KINDS = Object.freeze({
   //  merely wasteful today, and becomes wrong the moment a future stage wants to
   //  react to one and not the other.]
   LIBRARIES_CHANGED: "libraries-changed",
+  STRUCTURE_CHANGED: "structure-changed",
   // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
   // [WHY: the Device Name lives on the device record, which no other message
   //  kind causes a sibling to re-read. Without its own kind a rename in one tab

@@ -85,8 +85,8 @@ function profileFacts(name, { favorites = [] } = {}) {
 //  stale, not a weakened check. A test comparing a read-back replica against a
 //  hand-built one that omits a field the model now defines is testing the
 //  fixture's age, not the transport.]
-function replicaOf(profiles, associations = {}, libraries = {}) {
-  return { schemaVersion: 3, profiles, associations, libraries };
+function replicaOf(profiles, associations = {}, libraries = {}, structure = {}) {
+  return { schemaVersion: 3, profiles, associations, libraries, structure };
 }
 
 async function devicesDirOf(dir) {
@@ -429,6 +429,35 @@ await test("A failed publish does not strand its own directory - the retry reuse
 
   const discovered = await Transport.discoverDevices(devicesDir, { ownDeviceId: DEVICE_B });
   assertEqual(discovered.peers.length, 1, "and it reads back as one healthy device");
+});
+
+// ---- N5 portable structure is an independently verified generation file ----
+
+await test("Portable structure is content-addressed and tampering is refused (N5)", async () => {
+  const dir = createVirtualDirectory("V3 Sync");
+  const devicesDir = await devicesDirOf(dir);
+  const sample = { v: 1, count: 3, totalSize: 60, entries: [
+    { path: "a.jpg", size: 10 }, { path: "Clips/c.mp4", size: 30 }, { path: "Favorites/b.jpg", size: 20 },
+  ] };
+  const structure = { "library-beast": { children: {}, sample: fact(sample) } };
+  const replica = replicaOf({}, {}, {}, structure);
+  const published = await Transport.publishOwnReplicaVerified(devicesDir, { deviceId: DEVICE_A, label: "Chromebook", replica });
+  assertEqual(published.ok, true, "structure generation publishes successfully");
+
+  const manifest = readManifest(dir, published.directoryName);
+  assertEqual(manifest.structureFile, Transport.STRUCTURE_FILE_NAME, "manifest declares the dedicated structure file");
+  assert(typeof manifest.structureHash === "string" && manifest.structureHash.length > 0, "manifest hashes portable structure");
+  const read = await Transport.readDeviceDirectory(devicesDir, published.directoryName);
+  assertEqual(read.status, "valid", "hashed portable structure reads back valid");
+  assertEqual(read.replica.structure["library-beast"].sample.v.count, 3, "portable evidence survives transport");
+
+  const structurePath = devicePath(published.directoryName, Transport.STRUCTURE_FILE_NAME);
+  const structureFile = JSON.parse(dir.readFile(structurePath));
+  structureFile.structure["library-beast"].sample.v.entries[0].size = 999;
+  dir.writeFile(structurePath, JSON.stringify(structureFile));
+  const tampered = await Transport.readDeviceDirectory(devicesDir, published.directoryName);
+  assertEqual(tampered.status, "invalid", "tampered structure is refused");
+  assertEqual(tampered.reason, "structure-hash-mismatch", "refusal identifies structure integrity failure");
 });
 
 // ---- Filenames are never identity (10, 11, 12) -----------------------------

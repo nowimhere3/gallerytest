@@ -63,11 +63,13 @@ export const ASSOCIATIONS_FILE_NAME = "associations.json";
 //  is renamed? when two share a name?) and belongs to whichever stage builds
 //  the Library UI - not to the stage that first gives a Library a name at all.]
 export const LIBRARIES_FILE_NAME = "libraries.json";
+export const STRUCTURE_FILE_NAME = "structure.json";
 
 const DEVICE_KIND = "gallery-profile-sync-v3-device";
 const PROFILE_FACTS_KIND = "gallery-profile-sync-v3-facts";
 const ASSOCIATIONS_KIND = "gallery-profile-sync-v3-associations";
 const LIBRARIES_KIND = "gallery-profile-sync-v3-libraries";
+const STRUCTURE_KIND = "gallery-profile-sync-v3-structure";
 export const SCHEMA_VERSION = 3;
 
 /** Shown for a device whose manifest carries no label. */
@@ -119,7 +121,8 @@ export async function currentHashAlgo() {
 
 /** Two replicas are equal iff their canonical form is byte-identical. */
 export function replicasEqual(a, b) {
-  return stableStringify(a) === stableStringify(b);
+  const normalize = (replica) => ({ ...replica, structure: replica?.structure || {} });
+  return stableStringify(normalize(a)) === stableStringify(normalize(b));
 }
 
 // ---- Directory navigation --------------------------------------------------
@@ -386,6 +389,33 @@ export async function readDeviceDirectory(devicesDir, directoryName) {
     libraries = librariesParsed.libraries;
   }
 
+  // N5 is additive. A pre-N5 manifest has no structure hash and remains a
+  // complete valid generation with an empty portable-evidence map.
+  let structure = {};
+  if (typeof manifest.structureHash === "string") {
+    let structureText;
+    try {
+      const handle = await deviceDir.getFileHandle(STRUCTURE_FILE_NAME);
+      structureText = await (await handle.getFile()).text();
+    } catch {
+      return { status: "invalid", directoryName, reason: "structure-missing" };
+    }
+    const actual = await hashText(structureText);
+    if (actual.value !== manifest.structureHash) {
+      return { status: "invalid", directoryName, reason: "structure-hash-mismatch" };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(structureText);
+    } catch {
+      return { status: "invalid", directoryName, reason: "structure-malformed" };
+    }
+    if (!isPlainObject(parsed) || parsed.kind !== STRUCTURE_KIND || !isPlainObject(parsed.structure)) {
+      return { status: "invalid", directoryName, reason: "structure-shape" };
+    }
+    structure = parsed.structure;
+  }
+
   return {
     status: "valid",
     directoryName,
@@ -398,6 +428,7 @@ export async function readDeviceDirectory(devicesDir, directoryName) {
       profiles,
       associations: associationsParsed.associations,
       libraries,
+      structure,
     },
   };
 }
@@ -613,6 +644,19 @@ async function writeLibrariesFile(deviceDir, libraries) {
   return hashText(text);
 }
 
+async function writeStructureFile(deviceDir, structure) {
+  const handle = await deviceDir.getFileHandle(STRUCTURE_FILE_NAME, { create: true });
+  const writable = await handle.createWritable();
+  const text = JSON.stringify(
+    { schemaVersion: SCHEMA_VERSION, kind: STRUCTURE_KIND, structure: structure || {} },
+    null,
+    2
+  );
+  await writable.write(text);
+  await writable.close();
+  return hashText(text);
+}
+
 async function writeDeviceManifest(deviceDir, manifest) {
   const handle = await deviceDir.getFileHandle(DEVICE_FILE_NAME, { create: true });
   const writable = await handle.createWritable();
@@ -771,6 +815,7 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
     ...replica,
     associations: replica.associations || {},
     libraries: replica.libraries || {},
+    structure: replica.structure || {},
   };
 
   const ownership = await scanOwnership(devicesDir);
@@ -820,6 +865,9 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
   const libraries = await writeLibrariesFile(deviceDir, normalized.libraries);
   hashAlgo = hashAlgo || libraries.algo;
 
+  const structure = await writeStructureFile(deviceDir, normalized.structure);
+  hashAlgo = hashAlgo || structure.algo;
+
   // Data files are all committed above; device.json is the commit point and must
   // be written last.
   await writeDeviceManifest(deviceDir, {
@@ -838,6 +886,8 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
     associationsHash: associations.value,
     librariesFile: LIBRARIES_FILE_NAME,
     librariesHash: libraries.value,
+    structureFile: STRUCTURE_FILE_NAME,
+    structureHash: structure.value,
     updatedAt: Date.now(),
   });
 

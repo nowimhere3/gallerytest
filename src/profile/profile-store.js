@@ -58,6 +58,8 @@ import {
   V2_ASSOCIATION_STORE,
   loadV3LibrariesCache,
   saveV3LibrariesCache,
+  loadV3StructureCache,
+  saveV3StructureCache,
 } from "../storage/profile-sync-store.js";
 // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
 // [WHY: same-origin contexts share IndexedDB but not this object. The channel
@@ -273,6 +275,8 @@ export class ProfileStore {
   //  an absent row as {} forever - nothing writes libraries-v3 there.]
   #libraries = {};
   #librariesReady;
+  #structure = {};
+  #structureReady;
 
   // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
   // [WHY: closes the boot window Stage 03A left open. This store is constructed
@@ -324,6 +328,7 @@ export class ProfileStore {
     this.#loadSavedRecords();
     this.#associationsReady = this.#loadAssociations();
     this.#librariesReady = this.#loadLibraries();
+    this.#structureReady = this.#loadStructure();
   }
 
   async #loadAssociations() {
@@ -538,6 +543,25 @@ export class ProfileStore {
     return takeSnapshot(this.#libraries);
   }
 
+  async #loadStructure() {
+    try {
+      this.#structure = await loadV3StructureCache();
+      await this.#identity.ready;
+      this.#identity.observeReplica({ profiles: {}, associations: {}, libraries: {}, structure: this.#structure });
+    } catch (error) {
+      console.warn("[NORTH-STAR / N5] Could not load portable structure evidence.", error);
+    }
+  }
+
+  async whenStructureSettled() {
+    await this.#structureReady;
+    await this.#identity.ready;
+  }
+
+  getStructure() {
+    return takeSnapshot(this.#structure);
+  }
+
   /**
    * Every known shared Library, projected for display/ranking.
    *
@@ -701,6 +725,39 @@ export class ProfileStore {
     return row.libraryId;
   }
 
+  /** Records one bounded portable sample for a Library that already has shared identity. */
+  async recordLibraryStructure(localLibraryId, sample) {
+    await this.#structureReady;
+    await this.#identity.ready;
+    let row;
+    try {
+      row = await LibraryRegistry.getLibraryById(localLibraryId);
+    } catch (error) {
+      console.warn(`[NORTH-STAR / N5] Could not read local library "${localLibraryId}" for structure evidence.`, error);
+      return null;
+    }
+    if (!row?.libraryId) return null;
+
+    const current = this.#structure[row.libraryId]?.sample?.v;
+    if (MergeEngine.stableStringify(current) === MergeEngine.stableStringify(sample)) return row.libraryId;
+
+    const stamp = this.#identity.tick();
+    const next = Facts.setLibraryStructureSample(
+      { schemaVersion: Facts.REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: {}, structure: this.#structure },
+      row.libraryId,
+      sample,
+      stamp
+    );
+    this.#structure = next.structure;
+    try {
+      await this.#saveStructureAndAnnounce();
+    } catch (error) {
+      console.warn("[NORTH-STAR / N5] Could not persist portable structure evidence.", error);
+    }
+    this.#emit();
+    return row.libraryId;
+  }
+
   /**
    * [SYNCV3 / STAGE-08 / PROMOTE-LIBRARY]
    * [WHY: promoting a durable local folder creates/publishes shared Library
@@ -842,6 +899,7 @@ export class ProfileStore {
     await this.whenFactsSettled();
     await this.whenAssociationsSettled();
     await this.whenLibrariesSettled();
+    await this.whenStructureSettled();
 
     const replica = Facts.emptyReplica();
     replica.associations = this.#associations;
@@ -866,6 +924,8 @@ export class ProfileStore {
     //  declines to publish a map with nothing in it.]
     if (Object.keys(this.#libraries).length > 0) replica.libraries = this.#libraries;
     else delete replica.libraries;
+    if (Object.keys(this.#structure).length > 0) replica.structure = this.#structure;
+    else delete replica.structure;
     let knownIds;
     try {
       knownIds = new Set(await listAllProfileIds());
@@ -1004,6 +1064,7 @@ export class ProfileStore {
 
     await this.#adoptMergedAssociations(mergedReplica.associations);
     await this.#adoptMergedLibraries(mergedReplica.libraries);
+    await this.#adoptMergedStructure(mergedReplica.structure);
   }
 
   // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
@@ -1029,6 +1090,19 @@ export class ProfileStore {
       await this.#saveLibrariesAndAnnounce();
     } catch (error) {
       console.warn("[SYNCV3] Could not persist the merged shared Library catalog.", error);
+    }
+    this.#emit();
+  }
+
+  async #adoptMergedStructure(incoming) {
+    await this.#structureReady;
+    const merged = MergeEngine.mergeMaps(this.#structure, incoming || {}, MergeEngine.mergeStructureFacts);
+    if (MergeEngine.stableStringify(merged) === MergeEngine.stableStringify(this.#structure)) return;
+    this.#structure = merged;
+    try {
+      await this.#saveStructureAndAnnounce();
+    } catch (error) {
+      console.warn("[NORTH-STAR / N5] Could not persist merged portable structure evidence.", error);
     }
     this.#emit();
   }
@@ -2034,6 +2108,7 @@ export class ProfileStore {
       case LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.ASSOCIATIONS_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED:
+      case LOCAL_STATE_MESSAGE_KINDS.STRUCTURE_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.DEVICE_NAME_CHANGED:
         break;
       // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
@@ -2063,7 +2138,7 @@ export class ProfileStore {
     //  what reaches Drive is decided by the scheduler and the writer lease, not
     //  by whichever context happened to hear about a local change first.]
     const localLibraryLinkChanged = message.kind === LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED;
-    this.refreshFromStorage()
+    this.refreshFromStorage({ includeStructure: message.kind === LOCAL_STATE_MESSAGE_KINDS.STRUCTURE_CHANGED })
       .then((durableSharedStateChanged) => {
         // [SYNCV3 / STAGE-08 / MULTITAB-LINK-REFRESH]
         // [WHY: sibling tabs must re-read durable local Library link state after
@@ -2092,15 +2167,15 @@ export class ProfileStore {
    *  peers simply become current at their next pass instead of within
    *  milliseconds, and the writer is still never the stale one.]
    */
-  async refreshFromStorage() {
+  async refreshFromStorage({ includeStructure = true } = {}) {
     if (this.#localStateRefresh) return this.#localStateRefresh;
-    this.#localStateRefresh = this.#refreshFromStorageImpl().finally(() => {
+    this.#localStateRefresh = this.#refreshFromStorageImpl({ includeStructure }).finally(() => {
       this.#localStateRefresh = null;
     });
     return this.#localStateRefresh;
   }
 
-  async #refreshFromStorageImpl() {
+  async #refreshFromStorageImpl({ includeStructure }) {
     await this.#ready;
     let registryChanged = false;
 
@@ -2180,6 +2255,19 @@ export class ProfileStore {
       console.warn("[SYNCV3] Could not re-read the shared Library catalog.", error);
     }
 
+    if (includeStructure) try {
+      await this.#structureReady;
+      const stored = await loadV3StructureCache();
+      const merged = MergeEngine.mergeMaps(this.#structure, stored || {}, MergeEngine.mergeStructureFacts);
+      this.#identity.observeReplica({ profiles: {}, associations: {}, libraries: {}, structure: merged });
+      if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#structure)) {
+        this.#structure = merged;
+        registryChanged = true;
+      }
+    } catch (error) {
+      console.warn("[NORTH-STAR / N5] Could not re-read portable structure evidence.", error);
+    }
+
     // ---- Device Name ----
     // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
     // [WHY: re-reads the persisted name so a sibling tab's rename becomes
@@ -2218,6 +2306,11 @@ export class ProfileStore {
   async #saveLibrariesAndAnnounce() {
     await saveV3LibrariesCache(this.#libraries);
     this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED);
+  }
+
+  async #saveStructureAndAnnounce() {
+    await saveV3StructureCache(this.#structure);
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.STRUCTURE_CHANGED);
   }
 
   async #saveAssociationsAndAnnounce() {

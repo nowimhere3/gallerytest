@@ -117,6 +117,7 @@ const V3_ASSOCIATIONS_RECORD_ID = "associations-v3";
 //  row to land in and none of that machinery applies. Copying it here would be
 //  cargo-culting a fix for a problem this row cannot have.]
 const V3_LIBRARIES_RECORD_ID = "libraries-v3";
+const V3_STRUCTURE_RECORD_ID = "structure-v3";
 
 /** The transport mode SyncV3 activation records. Lives only in V3's own row. */
 export const ACTIVATION_V3 = "v3";
@@ -640,6 +641,31 @@ export async function saveV3LibrariesCache(libraries) {
 
   try {
     const record = { id: V3_LIBRARIES_RECORD_ID, libraries: libraries || {} };
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).put(record);
+    await completeTransaction(transaction);
+    return record;
+  } finally {
+    database.close();
+  }
+}
+
+export async function loadV3StructureCache() {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(V3_STRUCTURE_RECORD_ID));
+    await completeTransaction(transaction);
+    return record && record.structure && typeof record.structure === "object" ? record.structure : {};
+  } finally {
+    database.close();
+  }
+}
+
+export async function saveV3StructureCache(structure) {
+  const database = await openDatabase();
+  try {
+    const record = { id: V3_STRUCTURE_RECORD_ID, structure: structure || {} };
     const transaction = database.transaction(STORE_NAME, "readwrite");
     transaction.objectStore(STORE_NAME).put(record);
     await completeTransaction(transaction);
