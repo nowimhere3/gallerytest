@@ -94,6 +94,14 @@ export function mapAssociationCopy({
   };
 }
 
+// [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+// The folder's remembered Curation and this device's active Curation remain
+// separate state. Their second presentation earns ordinary UI only when the
+// values actually diverge (or the folder has not resolved a Curation yet).
+export function shouldShowActiveCurationChoice(associationUi) {
+  return !associationUi || associationUi.state !== "S2";
+}
+
 // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
 // [WHY: the rail card's last line answers "why would I press that button?".
 // Owned here, beside actionLabel, so the card's benefit and its action cannot

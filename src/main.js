@@ -22,6 +22,7 @@ import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-l
 //  reachable at their historical paths, and that intersection shrinks every
 //  time a folder is reorganized before it has been recorded.]
 import { resolveScopeForRoot } from "./storage/media-scope.js";
+import { listRoots } from "./storage/media-identity.js";
 import { runSeedingPass } from "./storage/media-seeding.js";
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
 // [WHY: Stage 02 is the first stage that READS MEDIA-ID back into what the user
@@ -53,7 +54,7 @@ import { ProfileStore } from "./profile/profile-store.js";
 import { createProfileProjectionView } from "./profile/profile-projection-view.js";
 import { ProfileSync } from "./profile/profile-sync.js";
 import { mapSyncStatusCopy } from "./profile/sync-status-copy.js";
-import { mapAssociationCopy } from "./profile/association-copy.js";
+import { mapAssociationCopy, shouldShowActiveCurationChoice } from "./profile/association-copy.js";
 import { describeMediaLibrarySurface, mapLinkState } from "./profile/link-state.js";
 import { applyProductStatusTone } from "./profile/status-tone.js";
 import {
@@ -66,6 +67,7 @@ import { createAssociationWriteSuppression } from "./profile/association-write-s
 import { describeMediaLibraryOptions } from "./profile/media-library-options.js";
 import { createAmbientProfileObserver } from "./profile/ambient-profile-observer.js";
 import { applyLoadTimeProfileRestoration } from "./profile/load-time-profile-restoration.js";
+import { resolveProvenParentCuration } from "./profile/parent-curation-inheritance.js";
 import {
   buildAmbientProfileOfferView,
   performAmbientProfileAction,
@@ -1136,6 +1138,12 @@ function updateAssociatedStatusRow() {
 // FUTURE: New source kinds belong in the single Stage 07 mapper adapter above.
 function syncAssociateButtonVisibility() {
   const associationUi = updateAssociatedStatusRow();
+  // [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+  // S2 means the remembered folder Curation and active local Curation already
+  // agree. Keep both states internally, but do not make the customer inspect a
+  // duplicate selector. S3 and every unresolved state still surface the local
+  // choice because a real decision may depend on the distinction.
+  profileActiveGroup.classList.toggle("hidden", !shouldShowActiveCurationChoice(associationUi));
   const shouldShow = associationUi.showAction;
   fsaAssociateBtn.classList.toggle("hidden", !shouldShow);
   fsaAssociateBtn.disabled = !shouldShow;
@@ -4332,13 +4340,73 @@ async function rebuildProjectionFromStorage(reason) {
   }
 }
 
+async function applyProvenParentCurationForLoad({ rootId, scope }) {
+  if (!rootId || !scope || scope.rootId !== rootId) return null;
+  if (!activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
+
+  try {
+    const roots = await listRoots();
+    const sameScopeRoots = roots.filter((root) => root && root.scopeId === scope.scopeId);
+    const libraries = (await Promise.all(sameScopeRoots.map((root) => getLibraryById(root.rootId)))).filter(Boolean);
+
+    const resolveCandidate = () => resolveProvenParentCuration({
+      currentRootId: rootId,
+      currentRoot: sameScopeRoots.find((root) => root.rootId === rootId) || null,
+      roots: sameScopeRoots,
+      libraries,
+      associations: profile.getAssociations(),
+      knownProfileIds: profile.listProfiles().map((entry) => entry.id),
+    });
+
+    let candidate = resolveCandidate();
+    if (!candidate) return null;
+
+    // Re-read the current and source rows immediately before the write. A
+    // shared fact or explicit folder choice that arrived while evidence was
+    // being enumerated restores P1/P3 precedence and cancels inheritance.
+    const refreshed = await Promise.all(libraries.map((record) => getLibraryById(record.id)));
+    libraries.splice(0, libraries.length, ...refreshed.filter(Boolean));
+    candidate = resolveCandidate();
+    if (!candidate || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
+
+    const updated = await associateThroughSyncV2(rootId, candidate.profileId);
+    if (!updated || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
+    activeLibraryRecord = updated;
+    establishAmbientProfileContext(activeLibraryRecord);
+
+    if (profile.getProfileId() !== candidate.profileId) {
+      const switched = await profile.switchProfile(candidate.profileId);
+      if (!switched && profile.getProfileId() !== candidate.profileId) return null;
+    }
+
+    return {
+      ...candidate,
+      profileName: getProfileNameById(candidate.profileId) || profile.getProfileName(),
+    };
+  } catch (error) {
+    // Inheritance is convenience, never a load requirement. Any unavailable
+    // evidence or persistence failure declines to conclude and leaves the
+    // ordinary unresolved flow intact.
+    console.warn("[NORTH-STAR / N3] Could not apply proven parent Curation inheritance.", error);
+    return null;
+  }
+}
+
 /**
  * Resolves the media scope structurally, then builds this load's alias index.
  *
  * Returns { scope, index } or null. Never throws: every failure degrades to
  * today's exact-path behaviour rather than failing the media load.
  */
-async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, complete, rootName = null }) {
+async function prepareMediaIdentityForLoad({
+  rootId,
+  handle,
+  sourceKind,
+  items,
+  complete,
+  rootName = null,
+  loadTimePolicyDeadlineAt = Number.POSITIVE_INFINITY,
+}) {
   let knownRootHandles = [];
   if (handle) {
     try {
@@ -4360,6 +4428,15 @@ async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, 
   if (scope.action !== "existing") {
     announceMediaIdentityChange(MEDIA_IDENTITY_MESSAGE_KINDS.SCOPE_CHANGED, scope.scopeId);
   }
+
+  // [NORTH-STAR / N3 / PROVEN-PARENT-INHERITANCE]
+  // MEDIA-ID has finished observing here; policy reads its durable result from
+  // above the evidence layer. The write makes inheritance an ordinary folder
+  // association, so this path becomes unreachable on every future load unless
+  // the customer explicitly changes it.
+  const inheritedCuration = sourceKind === "fsa" && Date.now() <= loadTimePolicyDeadlineAt
+    ? await applyProvenParentCurationForLoad({ rootId, scope })
+    : null;
 
   // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
   // [WHY: `factKeys` is a CALLBACK, not a captured array, and `profileId` is
@@ -4405,7 +4482,7 @@ async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, 
       `${describeProjection(index)}`
   );
 
-  return { scope, index };
+  return { scope, index, inheritedCuration };
 }
 
 // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
@@ -4527,7 +4604,18 @@ function beginMediaIdentityForLoad({ rootId, handle, sourceKind, items, rootName
 
   if (!rootId || !Array.isArray(items) || !items.length) return Promise.resolve(null);
 
-  const ready = prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, complete, rootName }).catch((error) => {
+  const ready = prepareMediaIdentityForLoad({
+    rootId,
+    handle,
+    sourceKind,
+    items,
+    complete,
+    rootName,
+    // A slow rebase may finish after path-exact rendering has already been
+    // released. N3 declines on that load rather than switching Curations in a
+    // live session; the durable proof is available immediately next load.
+    loadTimePolicyDeadlineAt: Date.now() + PROJECTION_FIRST_RENDER_BUDGET_MS,
+  }).catch((error) => {
     console.warn("[MEDIA-ID] Could not prepare media identity. Path-exact behaviour is unaffected.", error);
     return null;
   });
@@ -4548,7 +4636,7 @@ function beginMediaIdentityForLoad({ rootId, handle, sourceKind, items, rootName
  * returns. Never rejects.
  */
 async function applyProjectionWithinBudget(ready) {
-  if (!ready) return;
+  if (!ready) return null;
 
   let settled = false;
   let statusTimer = null;
@@ -4573,10 +4661,11 @@ async function applyProjectionWithinBudget(ready) {
     ready.then((prepared) => {
       if (prepared && prepared.index) profileView.setAliasIndex(prepared.index);
     });
-    return;
+    return null;
   }
 
   if (outcome.value && outcome.value.index) profileView.setAliasIndex(outcome.value.index);
+  return outcome.value || null;
 }
 
 // ---- [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING] --------------------------
@@ -5036,7 +5125,12 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
             complete: true,
           })
         : null;
-    await applyProjectionWithinBudget(mediaIdentityReady);
+    const preparedMediaIdentity = await applyProjectionWithinBudget(mediaIdentityReady);
+    if (preparedMediaIdentity?.inheritedCuration?.profileName) {
+      fsaStatusText.textContent =
+        `✓ Using ${preparedMediaIdentity.inheritedCuration.profileName}, remembered from a parent folder. ` +
+        fsaStatusText.textContent;
+    }
 
     finishLoadingItems(result.items);
     await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);

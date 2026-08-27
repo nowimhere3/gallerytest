@@ -106,6 +106,11 @@ The customer's correct level of awareness of machinery is **none**. Not "simplif
 
 > **A concept earns customer-facing existence only when a customer decision depends on it.**
 
+The same rule applies to presentations of state: **do not show two customer-facing
+representations when Browser Gallery can resolve them into one.** Stored state does not earn a
+permanent control merely because it exists. A second representation appears only while a real
+customer decision depends on the distinction, then retreats when the states agree.
+
 Browser Gallery may create, maintain, synchronize and depend on as much internal identity as it
 needs. **Creating an identity is not a reason to show it.** An internal concept becomes
 customer-facing only when the customer must make a decision that cannot be expressed without it —

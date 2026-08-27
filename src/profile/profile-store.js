@@ -581,6 +581,9 @@ export class ProfileStore {
   //
   // `localLibraryId` is library-registry.js's LOCAL row id (NOT the shared
   // libraryId — that's minted/preserved here via ensureLibraryId).
+  // Callers are policy boundaries: explicit customer association and N3's
+  // one-time deterministic inheritance from a proven parent. Folder-open code
+  // must never call this merely because a folder exists.
   // `profileId: null` disassociates explicitly. Returns the shared libraryId
   // on success, or null if the local library id isn't known. Stage 09's narrow
   // `includeAuthoredFact` option instead returns { libraryId, authoredFact };

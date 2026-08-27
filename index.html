@@ -1365,6 +1365,7 @@
             </div>
           </div>
 
+          <h3 class="profile-group-heading">Curation</h3>
           <p id="profile-library-association-text" class="product-status product-status-muted">No Media Folder loaded.</p>
           <!-- [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
                [WHY: static, non-modal markup beside the relationship it
@@ -1416,9 +1417,21 @@
             <p class="hint">This choice is shared with your other devices. The Curation this device is using does not change.</p>
           </div>
           <p id="profile-association-result" class="hint" role="status"></p>
+
+          <!-- [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+               Creation belongs with the single ordinary Curation concept, not
+               beneath a second permanent representation of active state. -->
+          <div class="profile-create-row">
+            <input id="profile-create-input" class="field-control" type="text" placeholder="New Curation name" maxlength="60" />
+            <button id="profile-create-btn" class="secondary" type="button">Create Curation</button>
+          </div>
+          <p id="profile-active-status-text" class="hint" role="status"></p>
         </div>
 
-        <!-- [SYNCV3 / STAGE-06 / PROFILE-SYNC-IA] -->
+        <!-- [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+             This group is retained for a real unresolved/divergent local
+             Active-Curation decision. Runtime presentation hides it when it
+             merely repeats the folder's already-resolved Curation. -->
         <div id="profile-active-group" class="profile-settings-group">
           <h3 class="profile-group-heading">This Device Is Using</h3>
           <!-- [SYNCV3 / STAGE-10 / FINAL-UX-POLISH]
@@ -1431,13 +1444,6 @@
                 is still focused directly by the rail shortcut. -->
           <div class="profile-current-row">
             <select id="profile-select" class="field-control" aria-label="Curation this device is using" aria-describedby="profile-active-context-help"></select>
-          </div>
-          <p id="profile-active-status-text" class="hint" role="status"></p>
-          <!-- The existing creation controls are intentionally subordinate to
-               the active choice; creation behavior and vocabulary are unchanged. -->
-          <div class="profile-create-row">
-            <input id="profile-create-input" class="field-control" type="text" placeholder="New Curation name" maxlength="60" />
-            <button id="profile-create-btn" class="secondary" type="button">Create Curation</button>
           </div>
           <div id="profile-active-context-help" class="contextual-help hidden" role="note">
             <p class="hint"></p>

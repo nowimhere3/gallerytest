@@ -313,8 +313,9 @@ export async function setLibraryProfile(id, profileId) {
  * [PHASE-6-SYNC-V2]
  * [STAGE-D3-LIBRARY-IDENTITY]
  * [WHY: mint-once, preserve-forever. Called from ProfileStore#setLibraryAssociation
- *  at the moment the user explicitly associates this library with a Profile —
- *  never from a folder-open path. An existing libraryId is returned unchanged
+ *  at the moment an approved Curation policy associates this library with a
+ *  Profile — an explicit customer choice, or N3's deterministic one-time
+ *  inheritance from a proven parent; never merely from opening a folder. An existing libraryId is returned unchanged
  *  (re-associating, or changing WHICH Profile, must never mint a second
  *  identity for the same physical folder — that would fork it into two
  *  logical libraries as far as any peer is concerned).]
