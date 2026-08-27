@@ -21,10 +21,10 @@ function count(haystack, needle) {
   return haystack.split(needle).length - 1;
 }
 
-const groupStart = html.indexOf('id="profile-folder-group"');
-const groupEnd = html.indexOf('id="profile-library-group"');
+const groupStart = html.indexOf('class="advanced-media-library-section"');
+const groupEnd = html.indexOf('class="advanced-playback-section"');
 const group = html.slice(groupStart, groupEnd);
-assert(groupStart >= 0 && groupEnd > groupStart, "This Media Folder precedes This Media Library");
+assert(groupStart >= 0 && groupEnd > groupStart, "Media Library administration is contained in Advanced");
 
 // =========================================================================
 // 1. THE SELECTOR IS THE CONTROL — no verb in steady state
@@ -37,17 +37,18 @@ assert(!/aria-expanded/.test(group), "the selector row is no longer a disclosure
 assert(!/aria-controls="profile-folder-link-row"/.test(group), "nothing claims to control the row's visibility");
 
 // The one button left in this group has one real job.
-const btn = group.slice(group.indexOf('id="profile-folder-link-btn"'));
+const btn = html.slice(html.indexOf('id="profile-folder-link-btn"'));
 assert(btn.slice(0, 300).includes(">Reconnect Media Folder<"),
   "the remaining button is the genuine L7 reconnect action, not a Link/Change toggle");
+assert(!group.includes('id="profile-folder-link-btn"'), "L7 recovery stays ordinary rather than moving into identity diagnostics");
 assert(main.includes("if (linkUi.reconnectNeeded) resumeLibrary(activeLibraryRecord);"),
   "that button does exactly one thing");
 assert(!main.includes("openFolderLinkEditor"), "the open/close editor toggle is gone");
 
 // Row visibility now follows the pure model rather than a click.
-assert(main.includes("const showSelector = Boolean(linkUi.allowPicker && activeLibraryRecord?.id);")
+assert(main.includes("const showSelector = Boolean(advancedSurface.showSelector);")
   && main.includes('profileFolderLinkRow.classList.toggle("hidden", !showSelector);'),
-  "the selector is shown for every durable Media Folder, by state, not by interaction");
+  "the Advanced selector is shown by the disclosure model, not by interaction");
 
 // Save/Cancel are consequences of changing the selection, never a permanent
 // confirmation ritual sitting under an unchanged value.
@@ -142,7 +143,8 @@ const saveGate = "profileFolderLinkSaveBtn.disabled = isCreateNew ? Boolean(link
 assert(main.includes(saveGate), "the save gate is still Stage 08's, expressed in one place");
 assert(!saveGate.includes("sync") && !saveGate.includes("Sync"),
   "the Sync hint never gates whether a Media Library can be chosen or created");
-assert(!/profileFolderLinkSelect\.disabled/.test(main), "the selector itself is never disabled by Sync state");
+assert(main.includes("profileFolderLinkSelect.disabled = !activeLibraryRecord?.id || !linkUi.allowPicker;"),
+  "Advanced remains visible but disables writes where Stage 08 says they do not work");
 // Reuses existing Settings navigation rather than a second Sync entry point.
 assert(main.includes("profileSyncGroup.scrollIntoView({ block: \"nearest\" });")
   && main.includes("profileSyncV3ChooseBtn.focus();"),

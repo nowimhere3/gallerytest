@@ -29,7 +29,7 @@ for (const obsolete of ["Could not switch Profiles", "This Library now has No Pr
 }
 assert(mainSource.includes("ProfileStore") && mainSource.includes("activeProfileId") && mainSource.includes("profileId"), "internal Profile architecture remains intact");
 
-for (const phrase of ["This Media Folder", "This Media Library", "Curation for This Media Library", "This Device Is Using", "— No Curation —", "Create Curation", "Import Curation", "Delete Curation"]) {
+for (const phrase of ["This Media Folder", "Curation for This Folder", "This Device Is Using", "— No Curation —", "Create Curation", "Import Curation", "Delete Curation"]) {
   assert(renderedHtml.includes(phrase) || executableMain.includes(phrase), `${phrase} is customer-facing`);
 }
 assert(renderedHtml.includes("Export Curation (.json)") && mainSource.includes("Export ${activeName} Curation (.json)"), "Export action names the current Curation");
@@ -37,10 +37,10 @@ assert(renderedHtml.includes("Export Curation (.json)") && mainSource.includes("
 const unchosen = mapAssociationCopy({ sourceKind: "fsa", folderName: "Nature" });
 assert(unchosen.associatedText === "None chosen yet" && unchosen.productLine === "Nature — no Curation chosen yet",
   "an unchosen Media Library states an unmade choice, in Curation language");
-assert(unchosen.actionLabel === "Choose a Curation for this Media Library", "choose action names the relationship");
+assert(unchosen.actionLabel === "Choose a Curation for this folder", "choose action names the customer relationship");
 const remembered = mapAssociationCopy({ sourceKind: "fsa", folderName: "Nature", associatedProfileId: "beast", associatedProfileName: "BEAST", activeProfileId: "beast" });
 assert(remembered.productLine === "Nature — remembered with BEAST Curation", "remembered status identifies Curation");
-assert(remembered.actionLabel === "Change Curation for this Media Library", "change action names the relationship");
+assert(remembered.actionLabel === "Change Curation for this folder", "change action names the customer relationship");
 
 const linked = mapLinkState({ sourceKind: "fsa", localLibraryId: "local-a", sharedLibraryId: "library-a", folderName: "Nature folder", sharedLibraries: [{ id: "library-a", name: "Nature" }] });
 assert(linked.summary === "Nature folder uses the Nature Media Library.",
@@ -60,7 +60,6 @@ assert(renderedHtml.includes('id="ambient-profile-offer-yes"') && renderedHtml.i
 // old noun survived a pass, pinned so a later edit cannot quietly restore it.
 for (const straggler of [
   "another folder\"",
-  "\"This folder\"",
   "Unlink this folder first",
   "already linked to the folder",
   "Could not unlink this folder",
@@ -102,6 +101,11 @@ const visibleText = renderedHtml
   .replace(/<[^>]+>/g, " ")
   .replace(/&amp;/g, "&")
   .replace(/\s+/g, " ");
+const ordinarySettings = renderedHtml.slice(
+  renderedHtml.indexOf('<details class="profile-section"'),
+  renderedHtml.indexOf('<details class="advanced-settings-section"'),
+);
+assert(!/Media Librar/i.test(ordinarySettings), "ordinary Settings contains no Media Library vocabulary");
 for (const retired of ["Shared Library", "Shared Media Library", "Link to a Media Library",
   "Link to a Library", "Link both", "Link this", "Linked Library", "Linked Media Library",
   "Unlink", "Unlinking", "Share this Media Library", "Share as a new"]) {

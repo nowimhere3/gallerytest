@@ -54,7 +54,7 @@ export function mapAssociationCopy({
       tone: "warning",
       associatedText: "Unavailable Curation",
       productLine: `${folderName} — remembers a Curation that no longer exists`,
-      actionLabel: "Choose a Curation for this Media Library",
+      actionLabel: "Choose a Curation for this folder",
       actionHelp: chooseCurationBenefit(),
       showAction: canWriteAssociation,
       allowPicker: canWriteAssociation,
@@ -68,7 +68,7 @@ export function mapAssociationCopy({
       tone: "muted",
       associatedText: "None chosen yet",
       productLine: `${folderName} — no Curation chosen yet`,
-      actionLabel: "Choose a Curation for this Media Library",
+      actionLabel: "Choose a Curation for this folder",
       actionHelp: chooseCurationBenefit(),
       showAction: canWriteAssociation,
       allowPicker: canWriteAssociation,
@@ -86,7 +86,7 @@ export function mapAssociationCopy({
     associatedText: associatedProfileName,
     productLine:
       `${folderName} — remembered with ${associatedProfileName} Curation` + (isActive ? "" : " (not used on this device)"),
-    actionLabel: "Change Curation for this Media Library",
+    actionLabel: "Change Curation for this folder",
     actionHelp: chooseCurationBenefit(),
     showAction: canWriteAssociation,
     allowPicker: canWriteAssociation,
@@ -99,5 +99,5 @@ export function mapAssociationCopy({
 // Owned here, beside actionLabel, so the card's benefit and its action cannot
 // drift apart or be derived twice.]
 function chooseCurationBenefit() {
-  return "Choose a Curation to remember the Favorites, Hidden items and Tags you want to use with this Media Library.";
+  return "Choose a Curation to remember the Favorites, Hidden items and Tags you want to use with this folder.";
 }

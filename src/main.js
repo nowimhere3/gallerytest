@@ -54,7 +54,7 @@ import { createProfileProjectionView } from "./profile/profile-projection-view.j
 import { ProfileSync } from "./profile/profile-sync.js";
 import { mapSyncStatusCopy } from "./profile/sync-status-copy.js";
 import { mapAssociationCopy } from "./profile/association-copy.js";
-import { mapLinkState } from "./profile/link-state.js";
+import { describeMediaLibrarySurface, mapLinkState } from "./profile/link-state.js";
 import { applyProductStatusTone } from "./profile/status-tone.js";
 import {
   PROFILE_SYNC_INTRO_STEPS,
@@ -228,6 +228,7 @@ const ambientProfileOfferLater = document.getElementById("ambient-profile-offer-
 const ambientProfileOfferClose = document.getElementById("ambient-profile-offer-close");
 const ambientProfileOfferResult = document.getElementById("ambient-profile-offer-result");
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
+const profileFolderLinkAdvancedSummary = document.getElementById("profile-folder-link-advanced-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
 const profileFolderActionHelp = document.getElementById("profile-folder-action-help");
 const profileFolderLinkHelp = document.getElementById("profile-folder-link-help");
@@ -4798,7 +4799,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     // finishLoadingItems() just triggered, so it's the right element for
     // a message that should stick around, not the generic status line.
     if (recognizedProfileName) {
-      fsaStatusText.textContent = `✓ Recognized this Media Library — Curation: ${recognizedProfileName}.`;
+      fsaStatusText.textContent = `✓ Recognized this folder's saved setup — Curation: ${recognizedProfileName}.`;
     }
 
     // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
@@ -4995,7 +4996,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // [Phase 8.4-2] Optional, brief recognition note — not a separate
     // notification system, just a prefix on the same status line that
     // already reports the load result.
-    const recognizedNote = recognizedProfileName ? `✓ Recognized this Media Library — Curation: ${recognizedProfileName}. ` : "";
+    const recognizedNote = recognizedProfileName ? `✓ Recognized this folder's saved setup — Curation: ${recognizedProfileName}. ` : "";
 
     if (result.incomplete) {
       // Reliability requirement: an interrupted scan must never be
@@ -5380,11 +5381,11 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
         const targetProfileName = getProfileNameById(targetProfileId);
         fsaStatusText.textContent = targetProfileName
           ? `Now remembered with ${targetProfileName}. It should be recognized next time you pick the same Media Folder here.`
-          : "This Media Library now has No Curation.";
+          : "This folder now has No Curation.";
         return true;
       } catch (error) {
         console.warn("[LEGACY-IDENTITY] Could not save this legacy library association.", error);
-        fsaStatusText.textContent = "Could not save the Curation for this Media Library. Try again.";
+        fsaStatusText.textContent = "Could not save the Curation for this folder. Try again.";
         return false;
       } finally {
         fsaAssociateBtn.disabled = false;
@@ -5418,12 +5419,12 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
     const targetProfileName = getProfileNameById(targetProfileId);
     fsaStatusText.textContent = targetProfileName
       ? `Now remembered with ${targetProfileName}.`
-      : "This Media Library now has No Curation.";
+      : "This folder now has No Curation.";
     await renderRecentLibraries();
     return true;
   } catch (error) {
     console.warn("[LIBRARY-REGISTRY] Could not associate this library with the current profile.", error);
-    fsaStatusText.textContent = "Could not save the Curation for this Media Library. Try again.";
+    fsaStatusText.textContent = "Could not save the Curation for this folder. Try again.";
     return false;
   } finally {
     fsaAssociateBtn.disabled = false;
@@ -5530,7 +5531,7 @@ profileAssociationSaveBtn.addEventListener("click", async () => {
     }
     profileAssociationResult.textContent = selectedProfileName
       ? `Now remembered with ${selectedProfileName}.`
-      : "This Media Library now has No Curation.";
+      : "This folder now has No Curation.";
     // [SYNCV3 / STAGE-10 / COMPLETED-EXPLAINER]
     // [WHY: the old action's benefit has finished its job. Scope dismissal to
     // this exact Library/association state so a new state or later interaction
@@ -5578,18 +5579,26 @@ function getCurrentFolderLinkUiState({ selectedLibraryId = null, selectedClaiman
 function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pendingFolderLinkClaimant } = {}) {
   if (!profileFolderLinkSummary) return null;
   const linkUi = getCurrentFolderLinkUiState({ selectedLibraryId, selectedClaimant });
-  profileFolderLinkSummary.textContent = linkUi.summary;
+  // [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+  // BREADCRUMBS — IS: ordinary visibility deliberately reads no peers, v3Peers,
+  //   v3Configured or shared catalog; link state alone drives disclosure.
+  const ordinarySurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "ordinary" });
+  const advancedSurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "advanced" });
+  profileFolderLinkSummary.textContent = ordinarySurface.statusText;
+  profileFolderLinkSummary.classList.toggle("hidden", !ordinarySurface.showStatus);
   applyProductStatusTone(profileFolderLinkSummary, linkUi.tone);
+  profileFolderLinkAdvancedSummary.textContent = advancedSurface.statusText;
+  applyProductStatusTone(profileFolderLinkAdvancedSummary, linkUi.tone);
 
   // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
   // [WHY: the selector replaced the old Link/Share disclosure, so this button
   // now has exactly one job left — L7 reconnect. `showAction` is true in that
   // state alone; every other durable state renders the selector instead.]
   profileFolderLinkBtn.textContent = linkUi.actionLabel || "Reconnect Media Folder";
-  profileFolderLinkBtn.classList.toggle("hidden", !linkUi.showAction);
-  profileFolderLinkBtn.disabled = !linkUi.showAction;
+  profileFolderLinkBtn.classList.toggle("hidden", !ordinarySurface.showRecoveryAction);
+  profileFolderLinkBtn.disabled = !ordinarySurface.showRecoveryAction;
 
-  const showSelector = Boolean(linkUi.allowPicker && activeLibraryRecord?.id);
+  const showSelector = Boolean(advancedSurface.showSelector);
   const wasHidden = profileFolderLinkRow.classList.contains("hidden");
   profileFolderLinkRow.classList.toggle("hidden", !showSelector);
   if (!showSelector) {
@@ -5598,7 +5607,10 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
     refreshContextualHelpAfterRender(contextualHelpEntries[1]);
     return linkUi;
   }
-  if (wasHidden) populateFolderLinkPicker();
+  if (activeLibraryRecord?.id && (wasHidden || profileFolderLinkSelect.options.length === 0)) {
+    populateFolderLinkPicker();
+  }
+  profileFolderLinkSelect.disabled = !activeLibraryRecord?.id || !linkUi.allowPicker;
 
   profileFolderActionHelp.textContent = linkUi.actionHelp;
 
@@ -9613,7 +9625,7 @@ function renderAmbientProfileOffer() {
   const view = buildAmbientProfileOfferView({
     pendingOffer,
     currentContext: context,
-    libraryName: activeLibraryRecord?.name || activeLibraryDisplayName || "This Media Library",
+    libraryName: activeLibraryRecord?.name || activeLibraryDisplayName || "This folder",
     targetName,
     activeProfileName: profile.getProfileName() || "my current Curation",
   });
@@ -9830,7 +9842,7 @@ async function handleAmbientProfileOfferAction(kind) {
       // device's Curation, and the Media Library's remembered Curation — and
       // the previous wording used "changed" for both, leaving the reader to
       // guess which was which. The stale-after-switch semantics are untouched.]
-      ambientProfileOfferResult.textContent = "Switched Curations, but this Media Library's remembered Curation changed again before your choice could be saved.";
+      ambientProfileOfferResult.textContent = "Switched Curations, but this folder's remembered Curation changed again before your choice could be saved.";
     } else if (result.status === "persistence-failed") {
       if (result.switched) {
         ambientProfileObserver.dismissPendingOffer(pendingOffer);

@@ -6,14 +6,12 @@ function assert(condition, label) { if (!condition) throw new Error(label); asse
 function count(needle) { return html.split(needle).length - 1; }
 
 const folder = html.indexOf('id="profile-folder-group"');
-const library = html.indexOf('id="profile-library-group"');
 const active = html.indexOf('id="profile-active-group"');
 const device = html.indexOf('id="profile-device-group"');
 const sync = html.indexOf('id="profile-sync-group"');
-assert(folder >= 0 && folder < library, "This Media Folder precedes This Media Library");
-assert(library < active, "This Media Library precedes This Device Is Using");
+assert(folder >= 0 && folder < active, "the combined media area precedes This Device Is Using");
 assert(active < device && device < sync, "device Curation, device identity, and Sync retain order");
-assert(html.slice(library, active).includes('id="ambient-profile-offer"'), "Stage 09 offer remains inside This Media Library");
+assert(html.slice(folder, active).includes('id="ambient-profile-offer"'), "Stage 09 offer remains inside the combined media area");
 assert(html.slice(active, device).includes('id="profile-select"'), "Curation selector remains in This Device Is Using");
 assert(count('id="profile-create-input"') === 1 && count('id="profile-create-btn"') === 1, "Create Curation controls remain singleton");
 assert(count('id="profile-delete-btn"') === 1, "Delete Curation remains singleton");

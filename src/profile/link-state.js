@@ -121,6 +121,50 @@ export function mapLinkState({
   };
 }
 
+// [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+// BREADCRUMBS — IS: disclosure routes on LINK STATE only. The ordinary surface
+//   never shows Media Library administration; Advanced exposes it; L7 recovery
+//   and L5 status stay ordinary.
+// BREADCRUMBS — WAS: `allowPicker` exposed identity administration to every
+//   durable folder, including customers who had no identity decision to make.
+// BREADCRUMBS — WILL BE / FUTURE: N2 may extend this seam with a real unresolved
+//   cross-device decision for the current folder, never mere peer presence.
+export function describeMediaLibrarySurface({ linkState, surface } = {}) {
+  if (!linkState || !["ordinary", "advanced"].includes(surface)) {
+    throw new TypeError("A linkState and an ordinary or advanced surface are required.");
+  }
+
+  if (surface === "advanced") {
+    return Object.freeze({
+      showSelector: true,
+      showStatus: true,
+      showRecoveryAction: false,
+      statusText: linkState.summary,
+    });
+  }
+
+  // BREADCRUMBS — IS: ordinary L5/L7 copy names the customer's saved setup;
+  //   Advanced passes mapLinkState's precise diagnostic summary through.
+  // BREADCRUMBS — WAS: recovery copy named Media Library on the ordinary path,
+  //   reintroducing the plumbing vocabulary N1 exists to contain.
+  const statusText = linkState.state === "L5"
+    ? "Browser Gallery can't find this folder's saved setup yet."
+    : linkState.state === "L7"
+      ? ordinaryPermissionStatus(linkState.summary)
+      : "";
+  return Object.freeze({
+    showSelector: false,
+    showStatus: Boolean(statusText),
+    showRecoveryAction: linkState.state === "L7" && linkState.reconnectNeeded === true,
+    statusText,
+  });
+}
+
+function ordinaryPermissionStatus(summary) {
+  const permissionLead = String(summary || "").split(". Its Media Library is safe.")[0];
+  return `${permissionLead}. Your setup is safe.`;
+}
+
 function base(state, summary, tone) {
   return {
     state,

@@ -102,7 +102,7 @@ store.closeLocalStateChannel();
 // This section previously pinned a hard-coded "\n" in the label plus a
 // `white-space: pre-line` rule to make a long label wrap into two tidy centred
 // lines. The closeout pass shortened the label instead — the card's
-// "Curation for This Media Library" heading two lines above already names the
+// "Curation for This Folder" heading two lines above already names the
 // concept — so the wrap machinery is retired rather than merely unused.
 
 assert(mainSource.includes('? "Change Curation"') && mainSource.includes(': "Choose a Curation"'),
@@ -140,7 +140,7 @@ for (const marker of order) {
   assert(at > previous, `card order: ${marker} follows what precedes it`);
   previous = at;
 }
-assert(card.includes("Curation for This Media Library"), "the card names the concept first");
+assert(card.includes("Curation for This Folder"), "the card names the customer concept first");
 assert(mainSource.includes('fsaAssociateHelp.textContent = shouldShow && actionHelpIsCurrent ? (associationUi.actionHelp || "") : "";'),
   "the current benefit comes from the pure mapper and completed-action Help can retreat");
 

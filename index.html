@@ -205,7 +205,7 @@
              Settings, and the whole point of the shortcut is to go there.
              See the button's own note below. -->
         <div class="rail-profile-summary">
-          <p class="rail-profile-summary-label">Curation for This Media Library</p>
+          <p class="rail-profile-summary-label">Curation for This Folder</p>
           <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
                WHAT: Live Library<->Profile association state for whatever
                is CURRENTLY LOADED — not the globally active profile name.
@@ -250,7 +250,7 @@
                  past an explanation first.
                BREADCRUMBS — WAS: there was no benefit line at all, and the
                  button repeated the concept from the label two lines above it
-                 ("Choose Curation for This Media Library") — long enough to
+                 ("Choose Curation for This Folder") — long enough to
                  need a hard-coded line break to wrap tidily in the rail.
                BREADCRUMBS — FUTURE: this stays a summary plus the existing
                  navigation shortcut. Do not move this sentence above the
@@ -1342,26 +1342,14 @@
           </div>
         </section>
 
-        <!-- [SYNCV3 / STAGE-10 / NARRATIVE-HIERARCHY]
-             [WHY: DOM, reading, and keyboard order establish physical Folder
-              and shared Library identity before asking for this device's
-              active Profile choice. Existing controls move intact.] -->
+        <!-- [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+             BREADCRUMBS — IS: this ordinary media area combines folder status
+              and Curation choice; identity administration exists only below in
+              Advanced, while required recovery remains here. -->
         <div id="profile-folder-group" class="profile-settings-group">
-          <!-- [SYNCV3 / STAGE-08 / LINK-UI]
-               [WHY: This Media Folder owns the device-local physical-folder
-                relationship; This Media Library below continues to own the
-                shared Curation association.] -->
-          <!-- [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
-               BREADCRUMBS — IS: the Media Library reads as a PROPERTY of the
-                 loaded Media Folder. The selector is always present for a
-                 durable folder and is itself the change affordance, so there is
-                 no "Link"/"Change" button to press first.
-               BREADCRUMBS — WAS: a `Link to a Library` / `Share this Library`
-                 button revealed this row. First-time users read "link" as
-                 merging or copying folders.
-               BREADCRUMBS — FUTURE: #profile-folder-link-btn is retained as the
-                 single genuine action left in this group (L7 reconnect). Do not
-                 re-purpose it into a disclosure toggle again. -->
+          <!-- BREADCRUMBS — IS: ordinary rendering is peer-, Sync-, and
+               catalog-independent. A device joining Sync cannot make identity
+               plumbing appear here. -->
           <div id="profile-media-folder-controls">
             <h3 class="profile-group-heading">This Media Folder</h3>
             <p id="profile-folder-link-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
@@ -1377,68 +1365,6 @@
             </div>
           </div>
 
-          <div id="profile-folder-link-row" class="profile-folder-link-row hidden">
-            <label for="profile-folder-link-select">Media Library</label>
-            <select
-              id="profile-folder-link-select"
-              class="field-control"
-              aria-describedby="profile-folder-link-conflict profile-media-library-context-help"
-            ></select>
-
-            <!-- [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
-                 [WHY: naming happens where the new Media Library is created, so
-                  the name is understood as a Browser Gallery label rather than
-                  a folder rename. Prefilled from the folder name because that
-                  is what promoteLibraryToShared already stored.] -->
-            <div id="profile-folder-new-library-row" class="profile-folder-new-library-row hidden">
-              <label for="profile-folder-new-library-input">Media Library name</label>
-              <input
-                id="profile-folder-new-library-input"
-                class="field-control"
-                type="text"
-                maxlength="120"
-                aria-describedby="profile-folder-new-library-help"
-              />
-              <p id="profile-folder-new-library-help" class="hint">This name is only used inside Browser Gallery. Your Media Folder keeps its own name and stays where it is. Nothing is copied or uploaded.</p>
-            </div>
-
-            <!-- [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
-                 [WHY: verified against ProfileStore — a Media Library created on
-                  another device only enters this device's catalog through
-                  adoptMergedReplica(), which only a Sync pass calls. Before Sync
-                  the list is genuinely local-only, so an empty selector must say
-                  so instead of looking broken.] -->
-            <p id="profile-folder-library-sync-hint" class="hint hidden">Media Libraries from your other devices appear here after Sync is set up.</p>
-            <button id="profile-folder-library-sync-btn" class="secondary hint-action-btn hidden" type="button">Set Up Sync</button>
-
-            <div class="profile-folder-link-actions">
-              <button id="profile-folder-link-save-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-link-conflict">Use This Media Library</button>
-              <button id="profile-folder-link-cancel-btn" class="secondary hidden" type="button">Cancel</button>
-              <button id="profile-folder-unlink-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-unlink-help">Remove from This Media Library</button>
-            </div>
-            <!-- [SYNCV3 / STAGE-10 / SAFETY-REASSURANCE]
-                 [WHY: removing clears only this device's Media Folder -> Media
-                  Library relationship. It is not deletion of media, shared
-                  identity, Curation state, or curation.] -->
-            <p id="profile-folder-unlink-help" class="hint hidden">Removing only clears which Media Library this Media Folder represents on this device. Your photos, videos, Media Library, Curation, Favorites, Hidden items and Tags are not deleted.</p>
-            <!-- [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
-                 [WHY: a storage-level claimant refusal is safety-critical and
-                  must be visually distinct from ordinary explanatory text.] -->
-            <div id="profile-folder-link-conflict" class="profile-folder-link-conflict hidden" role="status" aria-live="polite">
-              <strong id="profile-folder-link-conflict-heading"></strong>
-              <p id="profile-folder-link-conflict-detail"></p>
-              <p id="profile-folder-link-conflict-action"></p>
-            </div>
-            <div id="profile-media-library-context-help" class="contextual-help hidden" role="note">
-              <p id="profile-folder-action-help" class="hint"></p>
-              <p id="profile-folder-link-help" class="hint"></p>
-            </div>
-          </div>
-          <p id="profile-folder-link-result" class="hint" role="status"></p>
-        </div>
-
-        <div id="profile-library-group" class="profile-settings-group">
-          <h3 class="profile-group-heading">This Media Library</h3>
           <p id="profile-library-association-text" class="product-status product-status-muted">No Media Folder loaded.</p>
           <!-- [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
                [WHY: static, non-modal markup beside the relationship it
@@ -1450,7 +1376,7 @@
             aria-labelledby="ambient-profile-offer-heading"
           >
             <div class="ambient-profile-offer-header">
-              <h4 id="ambient-profile-offer-heading">This Media Library remembers another Curation</h4>
+              <h4 id="ambient-profile-offer-heading">This folder remembers another Curation</h4>
               <button
                 id="ambient-profile-offer-close"
                 class="ambient-profile-offer-close"
@@ -1473,20 +1399,20 @@
             aria-expanded="false"
             aria-controls="profile-association-row"
             disabled
-          >Choose a Curation for this Media Library</button>
+          >Choose a Curation for this folder</button>
 
           <!-- [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
                [WHY: association is shared state while active Profile is a
                 local device choice; association changes must never silently
                 switch the active Profile.] -->
           <div id="profile-association-row" class="profile-association-row hidden">
-            <label for="profile-association-select">Curation for this Media Library</label>
+            <label for="profile-association-select">Curation for this folder</label>
             <select id="profile-association-select" class="field-control"></select>
             <div class="profile-association-actions">
-              <button id="profile-association-save-btn" class="secondary" type="button">Save Curation for this Media Library</button>
+              <button id="profile-association-save-btn" class="secondary" type="button">Save Curation for this folder</button>
               <button id="profile-association-cancel-btn" class="secondary" type="button">Cancel</button>
             </div>
-            <p class="hint">Only the Curation remembered for this Media Library changes. Favorites, Hidden items and Tags stay in their own Curations.</p>
+            <p class="hint">Only the Curation remembered for this folder changes. Favorites, Hidden items and Tags stay in their own Curations.</p>
             <p class="hint">This choice is shared with your other devices. The Curation this device is using does not change.</p>
           </div>
           <p id="profile-association-result" class="hint" role="status"></p>
@@ -1655,6 +1581,43 @@
               available without competing with the normal Profile & Sync flow.] -->
         <details class="advanced-settings-section">
           <summary>Advanced Settings</summary>
+
+          <!-- [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+               BREADCRUMBS — IS: the full identity-management surface lives in
+                Advanced and uses the same state and handlers as before. -->
+          <div class="advanced-media-library-section">
+            <h3 class="profile-sync-heading">Media Library diagnostics</h3>
+            <p id="profile-folder-link-advanced-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
+            <div id="profile-folder-link-row" class="profile-folder-link-row hidden">
+              <label for="profile-folder-link-select">Media Library</label>
+              <select id="profile-folder-link-select" class="field-control" aria-describedby="profile-folder-link-conflict profile-media-library-context-help"></select>
+
+              <div id="profile-folder-new-library-row" class="profile-folder-new-library-row hidden">
+                <label for="profile-folder-new-library-input">Media Library name</label>
+                <input id="profile-folder-new-library-input" class="field-control" type="text" maxlength="120" aria-describedby="profile-folder-new-library-help" />
+                <p id="profile-folder-new-library-help" class="hint">This name is only used inside Browser Gallery. Your Media Folder keeps its own name and stays where it is. Nothing is copied or uploaded.</p>
+              </div>
+
+              <p id="profile-folder-library-sync-hint" class="hint hidden">Media Libraries from your other devices appear here after Sync is set up.</p>
+              <button id="profile-folder-library-sync-btn" class="secondary hint-action-btn hidden" type="button">Set Up Sync</button>
+              <div class="profile-folder-link-actions">
+                <button id="profile-folder-link-save-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-link-conflict">Use This Media Library</button>
+                <button id="profile-folder-link-cancel-btn" class="secondary hidden" type="button">Cancel</button>
+                <button id="profile-folder-unlink-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-unlink-help">Remove from This Media Library</button>
+              </div>
+              <p id="profile-folder-unlink-help" class="hint hidden">Removing only clears which Media Library this Media Folder represents on this device. Your photos, videos, Media Library, Curation, Favorites, Hidden items and Tags are not deleted.</p>
+              <div id="profile-folder-link-conflict" class="profile-folder-link-conflict hidden" role="status" aria-live="polite">
+                <strong id="profile-folder-link-conflict-heading"></strong>
+                <p id="profile-folder-link-conflict-detail"></p>
+                <p id="profile-folder-link-conflict-action"></p>
+              </div>
+              <div id="profile-media-library-context-help" class="contextual-help hidden" role="note">
+                <p id="profile-folder-action-help" class="hint"></p>
+                <p id="profile-folder-link-help" class="hint"></p>
+              </div>
+            </div>
+            <p id="profile-folder-link-result" class="hint" role="status"></p>
+          </div>
 
           <div class="advanced-playback-section">
             <h3 class="profile-sync-heading">Arcade animations</h3>

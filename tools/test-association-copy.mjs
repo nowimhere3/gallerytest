@@ -20,27 +20,27 @@ verify("S0", {}, {
 });
 verify("S1", { sourceKind: "fsa", folderName: "Library A" }, {
   state: "S1", tone: "muted", associatedText: "None chosen yet", productLine: "Library A — no Curation chosen yet",
-  actionLabel: "Choose a Curation for this Media Library", showAction: true, allowPicker: true,
+  actionLabel: "Choose a Curation for this folder", showAction: true, allowPicker: true,
 });
 verify("S2", {
   sourceKind: "fsa", folderName: "Library A", associatedProfileId: "beast",
   associatedProfileName: "BEAST", activeProfileId: "beast",
 }, {
   state: "S2", tone: "success", productLine: "Library A — remembered with BEAST Curation",
-  actionLabel: "Change Curation for this Media Library", showAction: true, allowPicker: true,
+  actionLabel: "Change Curation for this folder", showAction: true, allowPicker: true,
 });
 verify("S3", {
   sourceKind: "legacy", legacyHasDurableIdentity: true, folderName: "Library A",
   associatedProfileId: "hardcore", associatedProfileName: "Hardcore", activeProfileId: "beast",
 }, {
   state: "S3", tone: "active", productLine: "Library A — remembered with Hardcore Curation (not used on this device)",
-  actionLabel: "Change Curation for this Media Library", showAction: true, allowPicker: true,
+  actionLabel: "Change Curation for this folder", showAction: true, allowPicker: true,
 });
 verify("S4", {
   sourceKind: "fsa", folderName: "Library A", associatedProfileId: "deleted", activeProfileId: "beast",
 }, {
   state: "S4", tone: "warning", productLine: "Library A — remembers a Curation that no longer exists",
-  actionLabel: "Choose a Curation for this Media Library", showAction: true, allowPicker: true,
+  actionLabel: "Choose a Curation for this folder", showAction: true, allowPicker: true,
 });
 verify("S5 unassociated", { sourceKind: "legacy", folderName: "Selected files" }, {
   state: "S5", tone: "muted", associatedText: "None chosen yet",
@@ -76,7 +76,7 @@ assert(mapAssociationCopy({
 // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
 // The rail card's locked scan path is concept -> current state -> action ->
 // benefit. The pure mapper owns the last two so they cannot drift apart.
-const BENEFIT = "Choose a Curation to remember the Favorites, Hidden items and Tags you want to use with this Media Library.";
+const BENEFIT = "Choose a Curation to remember the Favorites, Hidden items and Tags you want to use with this folder.";
 for (const input of [
   { sourceKind: "fsa", folderName: "Library A" },
   { sourceKind: "fsa", folderName: "Library A", associatedProfileId: "gone" },

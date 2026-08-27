@@ -42,10 +42,11 @@ for (const id of ["profile-media-folder-context-help", "profile-media-library-co
   assert(count(html, `id="${id}"`) === 1, `${id} exists once`);
   assert(new RegExp(`id="${id}" class="contextual-help hidden" role="note"`).test(html), `${id} is hidden and semantic by default`);
 }
-const mediaFolderControls = html.slice(html.indexOf('id="profile-media-folder-controls"'), html.indexOf('id="profile-folder-link-row"'));
+const mediaFolderControls = html.slice(html.indexOf('id="profile-media-folder-controls"'), html.indexOf('id="profile-library-association-text"'));
 const mediaLibraryControls = html.slice(html.indexOf('id="profile-folder-link-row"'), html.indexOf('id="profile-folder-link-result"'));
 assert(mediaFolderControls.includes('profile-media-folder-context-help') && !mediaFolderControls.includes('profile-media-library-context-help'), "Media Folder reveals only Media Folder Help");
 assert(mediaLibraryControls.includes('profile-media-library-context-help') && !mediaLibraryControls.includes('profile-media-folder-context-help'), "Media Library reveals only Media Library Help");
+assert(html.indexOf('id="profile-folder-link-row"') > html.indexOf('<details class="advanced-settings-section"'), "Media Library Help and controls are Advanced-only");
 
 const controllerStart = main.indexOf("const contextualHelpEntries");
 const controllerEnd = main.indexOf("function renderProfileSyncIntroduction", controllerStart);

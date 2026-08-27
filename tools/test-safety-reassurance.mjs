@@ -76,8 +76,8 @@ assert(mainSource.includes("`Now using the ${savedName} Media Library. Your file
 assert(mainSource.includes("profileFolderLinkResult.textContent = \"This Media Folder no longer uses a Media Library. Your files were not changed or moved.\""),
   "removing reassures the same way");
 
-assert(html.includes("Only the Curation remembered for this Media Library changes. Favorites, Hidden items and Tags stay in their own Curations."),
-  "Curation-for-Media-Library reassurance preserves other Curations");
+assert(html.includes("Only the Curation remembered for this folder changes. Favorites, Hidden items and Tags stay in their own Curations."),
+  "folder Curation reassurance preserves other Curations without exposing plumbing");
 assert(html.includes("This choice is shared with your other devices. The Curation this device is using does not change."),
   "remembered Curation stays separate from the local device choice");
 

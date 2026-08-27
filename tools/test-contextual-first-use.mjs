@@ -48,8 +48,8 @@ outcome = transition(outcome.state, "skip");
 assert(outcome.effect === null && outcome.state.seen, "closing replay leaves the seen preference unchanged");
 assert(createContextualFirstUseState().seen === false, "another device-local state can remain unseen");
 
-assert(PROFILE_SYNC_INTRO_STEPS.length === 5, "introduction contains exactly five steps");
-const helpConcepts = new Set(["folder", "library", "profile", "active-profile", "profile-for-library", "sync"]);
+assert(PROFILE_SYNC_INTRO_STEPS.length === 3, "introduction contains exactly three customer concepts");
+const helpConcepts = new Set(["folder", "profile", "active-profile", "sync"]);
 assert(main.includes("PROFILE_SYNC_BACKGROUND_GLOSSARY"), "canonical concepts remain background source material");
 for (const step of PROFILE_SYNC_INTRO_STEPS) {
   assert(step.concepts.every((concept) => helpConcepts.has(concept)), `${step.id} is tied to canonical Help concepts`);
@@ -59,7 +59,7 @@ assert(PROFILE_SYNC_INTRO_STEPS[0].body.includes("Media Folder") && PROFILE_SYNC
 assert(PROFILE_SYNC_INTRO_STEPS[0].body.startsWith("Browser Gallery opens your photos and videos"),
   "step one has not introduced Sync yet, so Browser Gallery is the actor");
 assert(!PROFILE_SYNC_INTRO_STEPS[0].body.includes("Sync does not"),
-  "step one never names Sync before step five introduces it");
+  "step one never names Sync before the Sync step introduces it");
 
 // Step 2 teaches the familiar ACTIONS before it names the new noun.
 const curation = PROFILE_SYNC_INTRO_STEPS[1];
@@ -73,57 +73,19 @@ assert(curation.body.includes("Create different Curations for different people, 
 assert(!/organize the same photos and videos/.test(curation.body),
   "the narrower same-collection framing is retired");
 
-// [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
-// Step 3 is the card three rounds of usability testing failed on. It must
-// answer all five questions, so all five are pinned individually.
-const library = PROFILE_SYNC_INTRO_STEPS[2];
-assert(library.title === "Your Media Library", "step three keeps its heading");
-assert(library.body.startsWith("Have the same collection of photos and videos in different Media Folders across your devices?"),
-  "step three describes the reader's existing situation across devices rather than instructing them to keep duplicates");
-assert(!library.body.startsWith("Keep "), "'Keep' could read as an instruction to maintain copies");
-assert(library.body.includes("Browser Gallery doesn't automatically know those folders are the same collection"),
-  "WHY: the reader learns why Browser Gallery cannot just work it out");
-assert(library.body.includes("Choosing the same Media Library is how you tell it"),
-  "WHEN: choosing the same one is the answer to that problem");
-assert(library.body.includes("A Media Library is Browser Gallery's name for that collection"),
-  "WHAT: a name, not another folder");
-assert(library.body.includes("which Favorites, Hidden items and Tags belong with those photos and videos"),
-  "WHY THE READER CARES: their organization stays with the right media");
-assert(library.body.includes("Different collections use different Media Libraries"),
-  "the same-collection rule is taught in BOTH directions");
-assert(library.body.includes("Nothing is copied, moved or uploaded"),
-  "WHAT IT DOES NOT DO is stated explicitly");
-assert(!/\bmatching\b/i.test(library.body), "step three never says 'matching' without defining it");
-assert(!/\bexact same photos\b/i.test(library.body),
-  "step three never demands file-for-file equality between Media Folders");
-
-const libraryCuration = PROFILE_SYNC_INTRO_STEPS[3];
-assert(libraryCuration.title === "Choose the Curation for This Media Library",
-  "step four names both nouns instead of leaning on a pronoun");
-// The Media Library remembers WHICH Curation to use. The Curation itself stays
-// a reusable saved organization — it is not owned by one collection.
-assert(libraryCuration.body.includes("Choose the Curation you want this Media Library to use."),
-  "step four makes the Media Library the thing doing the using");
-assert(libraryCuration.body.includes("Browser Gallery will remember that choice"),
-  "step four says the CHOICE is what is remembered");
-assert(libraryCuration.body.includes("which Favorites, Hidden items and Tags to use when you open this Media Library"),
-  "step four keeps the concrete consequence");
-assert(!/belongs? to this collection/i.test(libraryCuration.body)
-  && !/remember for this collection/i.test(libraryCuration.body),
-  "step four never implies the Curation itself belongs only to this collection");
-// Stage 09 is frozen: onboarding must not promise an automatic switch anywhere.
-assert(!/\bautomatically\b/i.test(libraryCuration.body) && !/\beverywhere\b/i.test(libraryCuration.body)
-  && !/\balways asks\b/i.test(libraryCuration.body),
-  "step four never overpromises an automatic or universal Curation switch");
-
-const sync = PROFILE_SYNC_INTRO_STEPS[4];
+// The old Media Library and Library/Curation teaching cards protected precise
+// architecture vocabulary. N1 moves that protection to Advanced diagnostics
+// and the exhaustive disclosure test because no ordinary decision needs it.
+assert(!PROFILE_SYNC_INTRO_STEPS.some((step) => /Media Library/.test(`${step.title} ${step.body}`)),
+  "the introduction teaches no identity plumbing");
+const sync = PROFILE_SYNC_INTRO_STEPS[2];
 assert(sync.body.includes("connect each device you want to use to the same Google Drive Sync Folder"),
-  "step five scales past two devices");
+  "step three scales past two devices");
 assert(sync.body.includes("stores Browser Gallery information only")
   && sync.body.includes("separate from a Google Drive Media Folder"),
-  "step five distinguishes the two Google Drive roles");
+  "step three distinguishes the two Google Drive roles");
 assert(sync.body.includes("may ask before changing which Curation a device is using"),
-  "step five states Stage 09 consent without promising it always asks");
+  "step three states Stage 09 consent without promising it always asks");
 
 // Multi-device copy rule: general product concepts must scale to many devices.
 const introCopy = PROFILE_SYNC_INTRO_STEPS.map((step) => `${step.title} ${step.body}`).join(" ");
@@ -221,12 +183,9 @@ assert(closed.state.replay === false, "Close leaves replay mode");
 
 assert(main.includes('setActiveWorkspace("gallery");'), "passive boot keeps an unflagged Gallery initialization");
 assert(main.includes('intentionalProfileSync: entry.name === "settings"'), "Settings activation marks intentional Curations & Sync entry");
-// The approved step-four wording used "associates with this collection".
-// "association" is on the retired-jargon list, and Help already teaches the
-// same idea with "remembers for", so onboarding uses that verb instead.
 assert(!/associat/i.test(introCopy), "introduction uses approved user-facing vocabulary");
-assert(libraryCuration.body.includes("will remember that choice"),
-  "step four states the remembered relationship in the product's own verb");
+assert(curation.body.includes("One saved set of those choices is a Curation"),
+  "the remaining Curation step explains the saved customer choice directly");
 
 installFakeIndexedDB();
 const Preferences = await import("../src/storage/app-preferences.js");

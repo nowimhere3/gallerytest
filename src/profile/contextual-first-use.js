@@ -3,6 +3,10 @@
 // short introduction steps name the Help concepts they summarize so tests can
 // catch vocabulary drift without duplicating the whole glossary here.
 export const PROFILE_SYNC_INTRO_STEPS = Object.freeze([
+  // [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+  // BREADCRUMBS — WAS: five steps included two architecture lessons before any
+  //   customer decision required them. BREADCRUMBS — IS: three customer-relevant
+  //   steps remain; the no-copy/move/upload sentence stays because it earns trust.
   Object.freeze({
     id: "media",
     concepts: Object.freeze(["folder", "sync"]),
@@ -14,23 +18,6 @@ export const PROFILE_SYNC_INTRO_STEPS = Object.freeze([
     concepts: Object.freeze(["profile"]),
     title: "Your Curation",
     body: "As you browse, you can mark Favorites, hide items and add Tags. One saved set of those choices is a Curation. Create different Curations for different people, purposes, or ways of organizing your media.",
-  }),
-  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
-  // [WHY: three rounds of first-time-user testing put every unanswered question
-  // on this one card — what a Media Library is, why Browser Gallery needs one,
-  // when to reuse the same one, and what it does NOT do. It answers all five in
-  // that order and shares its purpose clause with the canonical Help entry.]
-  Object.freeze({
-    id: "library",
-    concepts: Object.freeze(["folder", "library"]),
-    title: "Your Media Library",
-    body: "Have the same collection of photos and videos in different Media Folders across your devices? Browser Gallery doesn't automatically know those folders are the same collection. Choosing the same Media Library is how you tell it. A Media Library is Browser Gallery's name for that collection. It lets Browser Gallery know which Favorites, Hidden items and Tags belong with those photos and videos. Use the same Media Library only for Media Folders that show the same collection of photos and videos. Different collections use different Media Libraries. Nothing is copied, moved or uploaded.",
-  }),
-  Object.freeze({
-    id: "library-curation",
-    concepts: Object.freeze(["profile-for-library", "profile"]),
-    title: "Choose the Curation for This Media Library",
-    body: "Choose the Curation you want this Media Library to use. Browser Gallery will remember that choice, so it knows which Favorites, Hidden items and Tags to use when you open this Media Library.",
   }),
   Object.freeze({
     id: "sync",

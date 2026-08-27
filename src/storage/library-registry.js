@@ -320,6 +320,10 @@ export async function setLibraryProfile(id, profileId) {
  *  logical libraries as far as any peer is concerned).]
  *
  * No-op (returns null) if the local library id isn't known.
+ *
+ * BREADCRUMBS — WILL BE / FUTURE: libraryId becomes MORE load-bearing as a
+ * machine address for sync, automation and StreamLoop as it becomes LESS
+ * customer-visible. Hiding it must never license weakening or removing it.
  */
 export async function ensureLibraryId(id) {
   const database = await openDatabase();
