@@ -1,7 +1,7 @@
 // [APP-PREFERENCES] Global application preferences — Playback (interval,
 // shuffle, skip duplicates, loop playlist, fill panel), Micro-Arcade,
-// Presentation's Ghost Opacity "remember" state/value, and local onboarding.
-// These are NOT Profile curation
+// Presentation's Ghost Opacity "remember" state/value, local onboarding, and
+// Startup Media policy (N6-4). These are NOT Profile curation
 // data: they stay constant across Profile switches, are never part of
 // Profile export/import/merge/replace, and deliberately live in their own
 // tiny database rather than piggybacking on ProfileStore's or the FSA
@@ -56,6 +56,20 @@ const DEFAULT_MICRO_ARCADE = {
 
 const DEFAULT_ONBOARDING = {
   profileSyncIntroSeen: false,
+};
+
+// [STARTUP-MEDIA / N6-4]
+// [WHY: device-local, like every other section here — a startup policy is a
+//  property of THIS machine, not a synchronized Curation fact. Different
+//  devices may reasonably start differently. Not stored on the library row
+//  either: library-registry.js's header states it "ONLY persists
+//  identity/metadata", and a startup policy is neither — keeping it here
+//  also means removing a folder from Recents can never silently rewrite a
+//  customer's startup choice (see normalizeStartupEligibleLibraryIds()
+//  below, which deliberately never prunes).]
+const DEFAULT_STARTUP = {
+  policy: "last-used",
+  eligibleLibraryIds: [],
 };
 
 // Exposed so main.js can apply the same built-in fallback when
@@ -120,6 +134,28 @@ function shuffleMode(value) {
   return value === "true-random" ? "true-random" : "shuffle-loop";
 }
 
+// [STARTUP-MEDIA / N6-4] Any unrecognized value — including a policy string
+// written by a future version this build doesn't know about — falls back to
+// today's proven default, same reasoning shuffleMode()/arcadeAnimationOrder()
+// already use above.
+function startupPolicy(value) {
+  return value === "random-remembered" || value === "random-selected" ? value : "last-used";
+}
+
+// [WHY: stale ids are tolerated, never pruned here — decideStartupMedia()
+//  (boot-restore.js) simply skips an id that no longer matches a row at
+//  decision time. Eagerly rewriting this set when the registry changes would
+//  be a background tidy-up silently discarding a customer's explicit choice,
+//  the same reasoning N6's P6 already established for Recents.]
+function normalizeStartupEligibleLibraryIds(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  for (const entry of value) {
+    if (typeof entry === "string" && entry) seen.add(entry);
+  }
+  return [...seen];
+}
+
 function arcadeAnimationOrder(value, temporaryShuffleValue) {
   if (value === "sequential" || value === "true-random" || value === "shuffle-loop") return value;
   // Minimal compatibility for the temporary boolean used by the preceding
@@ -141,6 +177,7 @@ function normalizeRecord(raw) {
   const presentationSource = source.presentation && typeof source.presentation === "object" ? source.presentation : {};
   const microArcadeSource = source.microArcade && typeof source.microArcade === "object" ? source.microArcade : {};
   const onboardingSource = source.onboarding && typeof source.onboarding === "object" ? source.onboarding : {};
+  const startupSource = source.startup && typeof source.startup === "object" ? source.startup : {};
 
   return {
     id: RECORD_ID,
@@ -170,6 +207,11 @@ function normalizeRecord(raw) {
     // without allowing it into any SyncV3 replica or shared identity store.]
     onboarding: {
       profileSyncIntroSeen: bool(onboardingSource.profileSyncIntroSeen, DEFAULT_ONBOARDING.profileSyncIntroSeen),
+    },
+    // [STARTUP-MEDIA / N6-4]
+    startup: {
+      policy: startupPolicy(startupSource.policy),
+      eligibleLibraryIds: normalizeStartupEligibleLibraryIds(startupSource.eligibleLibraryIds),
     },
   };
 }
@@ -271,4 +313,8 @@ export function saveMicroArcadePreferences(partial) {
 
 export function saveOnboardingPreferences(partial) {
   return savePartial("onboarding", partial);
+}
+
+export function saveStartupPreferences(partial) {
+  return savePartial("startup", partial);
 }

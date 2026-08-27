@@ -11,7 +11,7 @@ import {
   getLibraryById,
   getLibraryByLibraryId,
 } from "./storage/library-registry.js";
-import { decideBootRestore } from "./storage/boot-restore.js";
+import { decideBootRestore, decideStartupMedia } from "./storage/boot-restore.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -43,6 +43,7 @@ import {
   savePresentationPreferences,
   saveMicroArcadePreferences,
   saveOnboardingPreferences,
+  saveStartupPreferences,
   DEFAULT_GHOST_OPACITY_PERCENT,
 } from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
@@ -185,6 +186,12 @@ const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
 const shuffleInput = document.getElementById("shuffle-input");
 const arcadeAnimationOrderSelect = document.getElementById("arcade-animation-order-select");
 const arcadeAnimationOrderHelper = document.getElementById("arcade-animation-order-helper");
+// [STARTUP-MEDIA / N6-4]
+const startupMediaPolicySelect = document.getElementById("startup-media-policy-select");
+const startupMediaPolicyHelper = document.getElementById("startup-media-policy-helper");
+const startupMediaEligibleSection = document.getElementById("startup-media-eligible-section");
+const startupMediaEligibleEmpty = document.getElementById("startup-media-eligible-empty");
+const startupMediaEligibleList = document.getElementById("startup-media-eligible-list");
 const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
@@ -3966,6 +3973,10 @@ let arcadePreviousScene = null;
 let arcadeAnimationOrder = DEFAULT_ARCADE_ANIMATION_ORDER;
 let arcadeShuffleLoopVisitedScenes = [];
 
+// [STARTUP-MEDIA / N6-4] Safe default while IndexedDB preferences load
+// asynchronously — mirrors DEFAULT_STARTUP in app-preferences.js.
+let currentStartupPreferences = { policy: "last-used", eligibleLibraryIds: [] };
+
 // [PLAYBACK / MICRO-ARCADE / ANIMATION-ORDER]
 // Keep the existing key so sequential review resumes at the same scene across
 // preference and app upgrades.
@@ -5673,6 +5684,12 @@ async function renderRecentLibraries() {
     row.appendChild(removeBtn);
     fsaRecentLibrariesEl.appendChild(row);
   }
+
+  // [STARTUP-MEDIA / N6-4] Keeps the "Startup Media" eligible-folder
+  // checklist in sync with this same population every time it changes —
+  // see renderStartupMediaSettings()'s own comment for why this is called
+  // from here rather than duplicating the listLibraries() read.
+  await renderStartupMediaSettings();
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -8542,6 +8559,71 @@ arcadeAnimationOrderSelect.addEventListener("change", () => {
   saveMicroArcadePreferences({ animationOrder: arcadeAnimationOrder });
 });
 
+// [STARTUP-MEDIA / N6-4]
+function startupMediaPolicyHelperText(policy) {
+  if (policy === "random-remembered") return "Randomly picks among every remembered folder Browser Gallery can still open.";
+  if (policy === "random-selected") return "Randomly picks among the folders you check below.";
+  return "Opens whichever folder you used last, if Browser Gallery still has access.";
+}
+
+function updateStartupMediaPolicyHelper() {
+  startupMediaPolicyHelper.textContent = startupMediaPolicyHelperText(startupMediaPolicySelect.value);
+  startupMediaEligibleSection.classList.toggle("hidden", startupMediaPolicySelect.value !== "random-selected");
+}
+
+// [WHY: rebuilt from scratch each call rather than diffed — same reasoning
+//  renderRecentLibraries() immediately below already documents for its own
+//  list ("list is small — a handful of libraries at most"). Called from
+//  renderRecentLibraries() itself so the two lists — Recent Libraries and
+//  this eligible-folder checklist — can never drift out of sync with each
+//  other.]
+async function renderStartupMediaSettings() {
+  let rows;
+  try {
+    rows = await listLibraries();
+  } catch (error) {
+    console.warn("[STARTUP-MEDIA] Could not read saved libraries.", error);
+    rows = [];
+  }
+
+  startupMediaEligibleList.innerHTML = "";
+  startupMediaEligibleEmpty.classList.toggle("hidden", rows.length > 0);
+
+  // [WHY: stale ids (folders no longer in `rows`, e.g. removed from Recents)
+  //  are deliberately never pruned from the saved set here — only the ones
+  //  still present get a checkbox at all. See
+  //  normalizeStartupEligibleLibraryIds() in app-preferences.js.]
+  const eligibleSet = new Set(currentStartupPreferences.eligibleLibraryIds);
+  for (const record of rows) {
+    const label = document.createElement("label");
+    label.className = "startup-media-library-checkbox";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = eligibleSet.has(record.id);
+    checkbox.addEventListener("change", () => {
+      const nextIds = new Set(currentStartupPreferences.eligibleLibraryIds);
+      if (checkbox.checked) nextIds.add(record.id);
+      else nextIds.delete(record.id);
+      currentStartupPreferences = { ...currentStartupPreferences, eligibleLibraryIds: [...nextIds] };
+      saveStartupPreferences({ eligibleLibraryIds: currentStartupPreferences.eligibleLibraryIds });
+    });
+
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = record.name;
+
+    label.appendChild(checkbox);
+    label.appendChild(nameSpan);
+    startupMediaEligibleList.appendChild(label);
+  }
+}
+
+startupMediaPolicySelect.addEventListener("change", () => {
+  currentStartupPreferences = { ...currentStartupPreferences, policy: startupMediaPolicySelect.value };
+  updateStartupMediaPolicyHelper();
+  saveStartupPreferences({ policy: currentStartupPreferences.policy });
+});
+
 skipDuplicatesInput.addEventListener("change", () => {
   const currentItem = runtime.getState().currentItem;
   skipDuplicates = skipDuplicatesInput.checked;
@@ -11192,13 +11274,20 @@ renderProfileSync();
 // before the user unchecked "Remember this value", and unchecked launches
 // must always show the built-in fallback, not that old number.
 function applyLoadedPreferences(preferences) {
-  const { playback, presentation, microArcade } = preferences;
+  const { playback, presentation, microArcade, startup } = preferences;
 
   intervalInput.value = String(playback.intervalSeconds);
   shuffleInput.checked = playback.shuffle;
   arcadeAnimationOrderSelect.value = microArcade.animationOrder;
   arcadeAnimationOrder = microArcade.animationOrder;
   updateArcadeAnimationOrderHelper();
+  // [STARTUP-MEDIA / N6-4] currentStartupPreferences must be set before
+  // renderRecentLibraries() (and the renderStartupMediaSettings() it calls)
+  // first runs — applyLoadedPreferences() always runs earlier in boot, well
+  // before initFsaLibraries().
+  currentStartupPreferences = startup;
+  startupMediaPolicySelect.value = startup.policy;
+  updateStartupMediaPolicyHelper();
   skipDuplicatesInput.checked = playback.skipDuplicates;
   skipDuplicates = playback.skipDuplicates;
   loopInput.checked = playback.loopPlaylist;
@@ -11337,9 +11426,65 @@ async function attemptBootRestore() {
 
   // Not awaited — same reasoning profileSync.init() below documents: a
   // permission check should never block the rest of boot, and nothing here
-  // depends on boot restore having settled.
-  attemptBootRestore();
+  // depends on startup media restore having settled.
+  attemptStartupMedia();
 })();
+
+// [STARTUP-MEDIA / N6-4]
+// BREADCRUMBS — IS: an Advanced "Startup Media" preference (default
+// "last-used", which is exactly N6's zero-ceremony reopen, unchanged) chooses
+// what loads at boot. "random-remembered" and "random-selected" query
+// permission — never request it — for every remembered durable folder in the
+// relevant pool and hand the granted subset to decideStartupMedia()
+// (boot-restore.js), which picks one row using an injected random(). The
+// winning row loads through the SAME loadFromFsaHandle() every other caller
+// uses — see attemptBootRestore() above, which this function delegates to
+// unchanged for the default policy so N6's own frozen test/behavior never
+// has to move for this slice.
+async function attemptStartupMedia() {
+  const startup = currentStartupPreferences || { policy: "last-used", eligibleLibraryIds: [] };
+
+  if (startup.policy !== "random-remembered" && startup.policy !== "random-selected") {
+    await attemptBootRestore();
+    return;
+  }
+
+  let rows;
+  try {
+    rows = await listLibraries();
+  } catch (error) {
+    console.warn("[STARTUP-MEDIA] Could not read saved libraries.", error);
+    return;
+  }
+  if (!rows.length) return;
+
+  // [WHY: every row in the pool needs a live permission read before
+  //  decideStartupMedia() can filter to "granted" — unlike last-used, which
+  //  only ever needs rows[0]. Still queryPermission-only, still never a
+  //  gesture-requiring permission prompt — see
+  //  readFolderPermissionForBootRestore() above.]
+  const permissionStates = {};
+  for (const row of rows) {
+    if (!row.id) continue;
+    permissionStates[row.id] = await readFolderPermissionForBootRestore(row.handle);
+  }
+
+  const decision = decideStartupMedia({
+    policy: startup.policy,
+    rows,
+    permissionStates,
+    eligibleIds: startup.eligibleLibraryIds,
+  });
+  if (!decision.restore) return;
+
+  const candidate = rows.find((row) => row.id === decision.rowId);
+  if (!candidate) return;
+
+  // [WHY: same P5 reasoning as attemptBootRestore() — loadFromFsaHandle()
+  //  owns the one generation/token guard every caller shares, so no new
+  //  staleness machinery is needed here either.]
+  await loadFromFsaHandle(candidate.handle, candidate);
+}
 
 // [PROFILE-SYNC] Boot-time: silently reconnect to a remembered sync folder
 // if permission is still usable — see ProfileSync#init(). Not awaited here

@@ -1624,9 +1624,15 @@
 
           <!-- [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
                BREADCRUMBS — IS: the full identity-management surface lives in
-                Advanced and uses the same state and handlers as before. -->
-          <div class="advanced-media-library-section">
-            <h3 class="profile-sync-heading">Media Library diagnostics</h3>
+                Advanced and uses the same state and handlers as before.
+               [N6-4 / ADVANCED-DISCLOSURES]
+               [WHY: closed by default, same as the other three nested
+                disclosures below — "Advanced means complexity is available on
+                demand, not displayed all at once." getElementById() still
+                finds every control inside a closed <details>, so no id or
+                handler below needed to change.] -->
+          <details class="advanced-media-library-section">
+            <summary>Media Library diagnostics</summary>
             <p id="profile-folder-link-advanced-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
             <div id="profile-folder-link-row" class="profile-folder-link-row hidden">
               <label for="profile-folder-link-select">Media Library</label>
@@ -1657,10 +1663,10 @@
               </div>
             </div>
             <p id="profile-folder-link-result" class="hint" role="status"></p>
-          </div>
+          </details>
 
-          <div class="advanced-playback-section">
-            <h3 class="profile-sync-heading">Arcade animations</h3>
+          <details class="advanced-playback-section">
+            <summary>Arcade animations</summary>
             <label for="arcade-animation-order-select" class="hint">Animation order</label>
             <select id="arcade-animation-order-select" class="field-control">
               <option value="sequential">Sequential</option>
@@ -1668,7 +1674,32 @@
               <option value="shuffle-loop">Shuffle Loop</option>
             </select>
             <p id="arcade-animation-order-helper" class="hint">Every loading animation is picked randomly. Repeats can happen.</p>
-          </div>
+          </details>
+
+          <!-- [STARTUP-MEDIA / N6-4]
+               [WHY: an Advanced preference choosing what loads at launch.
+                "Last used folder" is the default and is exactly N6's
+                existing zero-ceremony-reopen behaviour, unchanged. The
+                eligible-folder checkbox list is populated by
+                renderStartupMediaSettings() in main.js from the same
+                remembered-durable-FSA-folder population Recent Libraries
+                already shows — see boot-restore.js's decideStartupMedia()
+                for the selection policy itself.] -->
+          <details class="advanced-startup-media-section">
+            <summary>Startup Media</summary>
+            <label for="startup-media-policy-select" class="hint">What loads when Browser Gallery opens</label>
+            <select id="startup-media-policy-select" class="field-control">
+              <option value="last-used">Last used folder</option>
+              <option value="random-remembered">Random remembered folder</option>
+              <option value="random-selected">Random from selected folders</option>
+            </select>
+            <p id="startup-media-policy-helper" class="hint">Opens whichever folder you used last, if Browser Gallery still has access.</p>
+
+            <div id="startup-media-eligible-section" class="startup-media-eligible-section hidden">
+              <p id="startup-media-eligible-empty" class="hint hidden">No remembered folders yet — choose a folder first, then come back here to include it.</p>
+              <div id="startup-media-eligible-list" class="startup-media-eligible-list"></div>
+            </div>
+          </details>
 
         <!-- [PROFILE-SYNC]
              WHAT: Compact status + controls for the Profile Sync Folder POC
@@ -1683,8 +1714,8 @@
              media-source controls (FSA/legacy pickers) elsewhere in this
              page — loading a different library must never show, hide, or
              otherwise touch anything here. See profile-sync.js's header. -->
-        <div class="profile-sync-section" id="profile-sync-section">
-          <h3 class="profile-sync-heading">Sync Your Curations</h3>
+        <details class="profile-sync-section" id="profile-sync-section">
+          <summary>Sync Your Curations</summary>
 
           <p class="hint">Choose a Google Drive Sync Folder. Browser Gallery uses it to make your Curations available across your devices. It is separate from a Google Drive Media Folder and does not contain your photos and videos.</p>
 
@@ -1747,7 +1778,7 @@
               <button id="profile-sync-keep-local-btn" class="secondary" type="button">Keep Local Version</button>
             </div>
           </div>
-        </div>
+        </details>
 
         </details>
 

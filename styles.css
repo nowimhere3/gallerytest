@@ -275,6 +275,56 @@ input {
   margin: 8px 0 0;
 }
 
+/* [N6-4 / ADVANCED-DISCLOSURES]
+   [WHY: each advanced function is now its own nested, closed-by-default
+    <details> inside .advanced-settings-section — "Advanced means complexity
+    is available on demand, not displayed all at once." Targeted structurally
+    (direct <details> children of .advanced-settings-section) rather than by
+    adding a shared class to each one: several of these elements keep their
+    own pre-existing class (.advanced-media-library-section,
+    .advanced-playback-section, .profile-sync-section), and other test/tool
+    code matches those classes as exact, single-class attribute strings — see
+    tools/test-media-library-selection.mjs. A structural selector gets the
+    same shared disclosure styling without touching those attributes at all.
+    The summary reuses .profile-sync-heading's exact size/weight (1rem/700)
+    so converting a plain heading into a summary here does not visually
+    demote what used to sit at the top of these sections; the disclosure
+    affordance is new, the visual weight is not.] */
+.advanced-settings-section > details {
+  margin-top: 20px;
+  margin-bottom: 20px;
+}
+
+.advanced-settings-section > details:first-of-type {
+  margin-top: 0;
+}
+
+.advanced-settings-section > details > summary {
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  list-style-position: inside;
+}
+
+.advanced-settings-section > details[open] > summary {
+  margin-bottom: 10px;
+}
+
+.startup-media-eligible-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.startup-media-library-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95em;
+}
+
 /* [UI-REDESIGN / STAGE 6] [PROFILE-TAGS-DISCLOSURE]
    WHAT: The Tags administration disclosure, relocated from the removed
    top-level Tagging workspace — see TAGS-PROFILE-ADMIN in index.html.
