@@ -9,9 +9,9 @@ function outcome(status, extra = {}) {
 export function buildAmbientProfileOfferView({
   pendingOffer = null,
   currentContext = null,
-  libraryName = "This Library",
+  libraryName = "This Media Library",
   targetName = null,
-  activeProfileName = "my current Profile",
+  activeProfileName = "my current Curation",
 } = {}) {
   const visible = Boolean(pendingOffer && currentContext && targetName
     && pendingOffer.localLibraryId === currentContext.localLibraryId
@@ -19,7 +19,7 @@ export function buildAmbientProfileOfferView({
   if (!visible) return Object.freeze({ visible: false });
   return Object.freeze({
     visible: true,
-    text: `“${libraryName}” is now associated with “${targetName}”. Use ${targetName} on this device too?`,
+    text: `“${libraryName}” now remembers the “${targetName}” Curation. Use ${targetName} on this device too?`,
     yesLabel: `Use ${targetName}`,
     noLabel: `Keep ${activeProfileName}`,
     laterLabel: "Later",

@@ -1,11 +1,29 @@
 // [SYNCV3 / STAGE-08 / LINK-STATE]
-// [WHY: "This Folder" is local link state while "This Library" remains
-// shared Profile-association state; the two must not collapse into one concept.]
+// [WHY: "This Media Folder" is local link state while "This Media Library"
+// remains shared Profile-association state; the two must not collapse into one
+// concept.]
 // Pure L0-L7 mapping: no DOM, storage, ProfileStore, or writes.
+//
+// BREADCRUMBS — IS: the CUSTOMER-FACING model is SELECTION. A Media Library is
+//   presented as a property of the loaded Media Folder ("which Media Library
+//   does this Media Folder represent?"), never as a filesystem operation. The
+//   selector is the change affordance, so `showAction`/`actionLabel` now serve
+//   exactly one real action — L7 reconnect — and `allowPicker` means "show the
+//   Media Library selector", which is true for every durable folder including
+//   one with an empty catalog (it can still create the first Media Library).
+// BREADCRUMBS — WAS: these states drove a "Link to a Library" / "Share this
+//   Library" / "Unlink" button pair. Three rounds of first-time-user testing
+//   showed "link" made users expect folders to be merged, copied, synchronized
+//   or symlinked — the opposite of the trust model. The verbs were retired from
+//   visible copy only.
+// BREADCRUMBS — FUTURE: the L0-L7 codes, the local-only ownership of the
+//   Folder->Library relationship and the direct-relink refusal are Stage 08
+//   semantics and stay frozen. Presentation may keep moving; do not reintroduce
+//   customer-facing link/unlink language to describe them.
 export function mapLinkState({
   sourceKind = "none",
   legacyHasDurableIdentity = false,
-  folderName = "Loaded folder",
+  folderName = "Loaded Media Folder",
   localLibraryId = null,
   sharedLibraryId = null,
   sharedLibraries = [],
@@ -20,7 +38,7 @@ export function mapLinkState({
     : null;
 
   if (sourceKind === "none") {
-    return base("L0", "No folder loaded.", "muted");
+    return base("L0", "No Media Folder loaded.", "muted");
   }
 
   if (!durable || !localLibraryId) {
@@ -29,8 +47,8 @@ export function mapLinkState({
 
   if (sourceKind === "fsa" && permissionState !== "granted") {
     return {
-      ...base("L7", `${folderName} needs permission again. Its Library link is safe.`, "warning"),
-      actionLabel: "Reconnect Folder",
+      ...base("L7", `${folderName} needs permission again. Its Media Library is safe.`, "warning"),
+      actionLabel: "Reconnect Media Folder",
       showAction: true,
       reconnectNeeded: true,
       sharedLibraryId,
@@ -38,16 +56,14 @@ export function mapLinkState({
   }
 
   if (!sharedLibraryId && selectedLibraryId && selectedClaimant) {
-    const libraryName = selectedLibrary ? selectedLibrary.name : "That Library";
-    const otherFolder = selectedClaimant.name || "another folder";
+    const libraryName = selectedLibrary ? selectedLibrary.name : "That Media Library";
+    const otherFolder = selectedClaimant.name || "another Media Folder";
     return {
-      ...base("L6", `${libraryName} is already linked to ${otherFolder} on this device.`, "danger"),
-      actionLabel: "Link to a Library",
-      actionHelp: linkActionHelp(),
-      showAction: true,
+      ...base("L6", `${libraryName} already represents ${otherFolder} on this device.`, "danger"),
+      actionHelp: mediaLibraryHelp(),
       allowPicker: true,
       saveEnabled: false,
-      conflict: `Unlink ${otherFolder} first.`,
+      conflict: `Remove ${otherFolder} from that Media Library first.`,
       selectedLibraryId,
     };
   }
@@ -58,14 +74,12 @@ export function mapLinkState({
       ...base(
         hasCatalog ? "L3" : "L2",
         hasCatalog
-          ? `${folderName} is not linked to a Library yet.`
-          : `${folderName} is ready to become a Library.`,
+          ? `${folderName} has no Media Library yet.`
+          : `${folderName} is ready for its first Media Library.`,
         "muted"
       ),
-      actionLabel: hasCatalog ? "Link to a Library" : "Share this Library",
-      actionHelp: hasCatalog ? linkActionHelp() : shareActionHelp(),
-      showAction: true,
-      allowPicker: hasCatalog,
+      actionHelp: mediaLibraryHelp(),
+      allowPicker: true,
       saveEnabled: Boolean(selectedLibraryId),
       defaultSelection: "",
     };
@@ -74,12 +88,11 @@ export function mapLinkState({
 
   if (selectedLibraryId && selectedLibraryId !== sharedLibraryId) {
     return {
-      ...base("L4", "Unlink this folder before linking it to a different Library.", "danger"),
-      actionLabel: "Change link",
-      showAction: true,
+      ...base("L4", "Remove this Media Folder from its Media Library before choosing a different one.", "danger"),
+      actionHelp: mediaLibraryHelp(),
       allowPicker: true,
       saveEnabled: false,
-      conflict: "Unlink this folder first.",
+      conflict: "Remove this Media Folder from its Media Library first.",
       defaultSelection: sharedLibraryId,
       sharedLibraryId,
     };
@@ -88,9 +101,8 @@ export function mapLinkState({
   const linkedLibrary = catalog.find((library) => library.id === sharedLibraryId) || null;
   if (!linkedLibrary) {
     return {
-      ...base("L5", "This folder is linked to a Library that Browser Gallery cannot find yet.", "active"),
-      actionLabel: "Change link",
-      showAction: true,
+      ...base("L5", "This Media Folder uses a Media Library that Browser Gallery cannot find yet.", "active"),
+      actionHelp: mediaLibraryHelp(),
       allowPicker: true,
       saveEnabled: false,
       defaultSelection: sharedLibraryId,
@@ -99,9 +111,8 @@ export function mapLinkState({
   }
 
   return {
-    ...base("L4", `${folderName} is your copy of ${linkedLibrary.name}.`, "success"),
-    actionLabel: "Change link",
-    showAction: true,
+    ...base("L4", `${folderName} uses the ${linkedLibrary.name} Media Library.`, "success"),
+    actionHelp: mediaLibraryHelp(),
     allowPicker: true,
     saveEnabled: true,
     defaultSelection: sharedLibraryId,
@@ -127,10 +138,10 @@ function base(state, summary, tone) {
   };
 }
 
-function linkActionHelp() {
-  return "Have this media collection on another device? Link this folder to the same Library. That tells Browser Gallery both folders are the same collection. Your photos and videos are not uploaded or moved.";
-}
-
-function shareActionHelp() {
-  return "Have this media collection on another device, or plan to move it there? Share this Library so the other device can link its copy to the same collection. Your photos and videos are not uploaded or moved.";
+// [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+// [WHY: one helper sentence pair for every durable state. The old model needed
+// two different explanations because Share and Link were two different buttons;
+// selecting from a list is one idea, so it gets one explanation.]
+function mediaLibraryHelp() {
+  return "Which collection of photos and videos this Media Folder represents. Choose the same Media Library on each device where you open that collection.";
 }

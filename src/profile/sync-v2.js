@@ -190,7 +190,7 @@ export async function runSyncV2Pass({ profileStore, dirHandle, state = {} }) {
       reason: publishResult.reason,
       adopted,
       message:
-        "This device's sync-v2 publish could not be verified, so nothing was accepted. Local Profile data is unaffected.",
+        "This device's sync-v2 publish could not be verified, so nothing was accepted. Your local Curation is unaffected.",
       mergedPeers: validPeers.length,
       skippedPeers,
       peers,

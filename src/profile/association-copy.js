@@ -8,7 +8,7 @@
 export function mapAssociationCopy({
   sourceKind = "none",
   legacyHasDurableIdentity = false,
-  folderName = "Loaded folder",
+  folderName = "Loaded Media Folder",
   associatedProfileId = null,
   associatedProfileName = null,
   activeProfileId = null,
@@ -21,8 +21,9 @@ export function mapAssociationCopy({
       state: "S0",
       tone: "muted",
       associatedText: "—",
-      productLine: "No folder loaded.",
+      productLine: "No Media Folder loaded.",
       actionLabel: "",
+      actionHelp: "",
       showAction: false,
       allowPicker: false,
       associatedProfileId: null,
@@ -35,11 +36,12 @@ export function mapAssociationCopy({
     return {
       state: "S5",
       tone: "muted",
-      associatedText: remembered ? activeProfileName : "No Profile",
+      associatedText: remembered ? activeProfileName : "None chosen yet",
       productLine: remembered
         ? `${folderName} — remembered with ${activeProfileName}`
-        : `${folderName} — no Profile chosen yet`,
+        : `${folderName} — no Curation chosen yet`,
       actionLabel: "",
+      actionHelp: "",
       showAction: false,
       allowPicker: false,
       associatedProfileId: null,
@@ -50,9 +52,10 @@ export function mapAssociationCopy({
     return {
       state: "S4",
       tone: "warning",
-      associatedText: "Unavailable Profile",
-      productLine: `${folderName} — remembers a Profile that no longer exists`,
-      actionLabel: "Choose a Profile for this Library",
+      associatedText: "Unavailable Curation",
+      productLine: `${folderName} — remembers a Curation that no longer exists`,
+      actionLabel: "Choose a Curation for this Media Library",
+      actionHelp: chooseCurationBenefit(),
       showAction: canWriteAssociation,
       allowPicker: canWriteAssociation,
       associatedProfileId,
@@ -63,9 +66,10 @@ export function mapAssociationCopy({
     return {
       state: "S1",
       tone: "muted",
-      associatedText: "No Profile",
-      productLine: `${folderName} — no Profile chosen yet`,
-      actionLabel: "Choose a Profile for this Library",
+      associatedText: "None chosen yet",
+      productLine: `${folderName} — no Curation chosen yet`,
+      actionLabel: "Choose a Curation for this Media Library",
+      actionHelp: chooseCurationBenefit(),
       showAction: canWriteAssociation,
       allowPicker: canWriteAssociation,
       associatedProfileId: null,
@@ -81,10 +85,19 @@ export function mapAssociationCopy({
     tone: isActive ? "success" : "active",
     associatedText: associatedProfileName,
     productLine:
-      `${folderName} — remembered with ${associatedProfileName}` + (isActive ? "" : " (not your active Profile)"),
-    actionLabel: "Change Profile for this Library",
+      `${folderName} — remembered with ${associatedProfileName} Curation` + (isActive ? "" : " (not used on this device)"),
+    actionLabel: "Change Curation for this Media Library",
+    actionHelp: chooseCurationBenefit(),
     showAction: canWriteAssociation,
     allowPicker: canWriteAssociation,
     associatedProfileId,
   };
+}
+
+// [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+// [WHY: the rail card's last line answers "why would I press that button?".
+// Owned here, beside actionLabel, so the card's benefit and its action cannot
+// drift apart or be derived twice.]
+function chooseCurationBenefit() {
+  return "Choose a Curation to remember the Favorites, Hidden items and Tags you want to use with this Media Library.";
 }

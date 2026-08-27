@@ -676,6 +676,21 @@ a:focus-visible,
   font-size: 0.9em;
 }
 
+/* [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+   The rail card's label above the button now carries the concept, so this label
+   is short enough to need no wrap handling at all. The `white-space: pre-line`
+   rule that honoured a hard-coded break in the old long label is retired with
+   it; only the centring remains. */
+#fsa-associate-btn-label {
+  text-align: center;
+}
+
+/* The card's closing benefit line. Sits after the action, matching DOM order. */
+.rail-profile-summary-help {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+}
+
 .fsa-recent-library-row {
   display: flex;
   align-items: stretch;
@@ -1005,6 +1020,34 @@ button:not(:disabled):hover,
   margin: 0;
 }
 
+/* [SYNCV3 / STAGE-10 / REPLAY-CLOSE]
+   Progress on the left, the replay-only Close on the right. Mirrors the Stage 09
+   offer card's header so the two inline cards dismiss the same way. */
+.profile-sync-intro-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-sync-intro-close {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.profile-sync-intro-close:hover,
+.profile-sync-intro-close:focus-visible {
+  color: var(--text);
+}
+
 .profile-sync-intro-progress {
   color: var(--muted);
   font-size: 0.85rem;
@@ -1019,11 +1062,21 @@ button:not(:disabled):hover,
   color: var(--muted);
 }
 
+.profile-sync-intro-header .profile-sync-intro-progress {
+  margin: 0;
+}
+
 .profile-sync-intro-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+}
+
+/* Forward progress is always the rightmost action in both DOM and layout. */
+#profile-sync-intro-next,
+#profile-sync-intro-done {
+  margin-left: auto;
 }
 
 .profile-sync-help-content h3 {
@@ -1086,6 +1139,33 @@ button:not(:disabled):hover,
 .profile-association-row .hint,
 .profile-folder-link-row .hint {
   margin: 0;
+}
+
+/* [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+   The Media Library reads as a labelled PROPERTY of the loaded Media Folder,
+   so its label gets the same small-caps treatment as the group headings around
+   it rather than looking like a form field caption. */
+.profile-folder-link-row > label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Creation is a nested step inside the same column, so it inherits the row's
+   620px column and stacks its own label/input/reassurance. */
+.profile-folder-new-library-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+.profile-folder-new-library-row > label {
+  font-size: 0.9rem;
+  color: var(--muted);
 }
 
 /* [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
@@ -1179,6 +1259,25 @@ button:not(:disabled):hover,
   color: var(--text);
 }
 
+/* [SYNCV3 / STAGE-10 / DRIVE-ROLES]
+   A one-line role label that sits directly with the control it describes, so
+   "Google Drive Media Folder" and "Google Drive Sync Folder" are structurally
+   distinct rather than distinguished only in prose. */
+.role-descriptor {
+  margin: 0 0 4px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.role-descriptor-detail {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 .product-status {
   margin: 0 0 12px;
   font-size: 0.95rem;
@@ -1235,12 +1334,6 @@ button:not(:disabled):hover,
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
-}
-
-.profile-select-label {
-  color: var(--muted);
-  font-size: 0.9rem;
-  flex: 0 0 auto;
 }
 
 .profile-current-row select {

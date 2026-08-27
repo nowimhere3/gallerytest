@@ -850,7 +850,7 @@ export class ProfileSync {
         this.#status = "migration-failed";
         this.#message =
           (result.migration && result.migration.reason) ||
-          "Sync activation did not finish. Your Profile data is safe and saved locally.";
+          "Sync activation did not finish. Your Curation is safe and saved locally.";
         this.#emit();
         return result;
       }
@@ -1434,7 +1434,7 @@ export class ProfileSync {
       this.#status = "migration-failed";
       this.#message =
         (this.#activation && this.#activation.migration && this.#activation.migration.reason) ||
-        "Sync activation did not finish. Your Profile data is safe and saved locally.";
+        "Sync activation did not finish. Your Curation is safe and saved locally.";
       this.#emit();
       return;
     }

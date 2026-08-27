@@ -59,9 +59,11 @@ import { applyProductStatusTone } from "./profile/status-tone.js";
 import {
   PROFILE_SYNC_INTRO_STEPS,
   createContextualFirstUseState,
+  describeContextualFirstUseActions,
   transitionContextualFirstUse,
 } from "./profile/contextual-first-use.js";
 import { createAssociationWriteSuppression } from "./profile/association-write-suppression.js";
+import { describeMediaLibraryOptions } from "./profile/media-library-options.js";
 import { createAmbientProfileObserver } from "./profile/ambient-profile-observer.js";
 import { applyLoadTimeProfileRestoration } from "./profile/load-time-profile-restoration.js";
 import {
@@ -164,6 +166,7 @@ const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
 const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
 const fsaAssociateBtnLabel = document.getElementById("fsa-associate-btn-label");
+const fsaAssociateHelp = document.getElementById("fsa-associate-help");
 const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
@@ -236,6 +239,11 @@ const profileFolderLinkConflictHeading = document.getElementById("profile-folder
 const profileFolderLinkConflictDetail = document.getElementById("profile-folder-link-conflict-detail");
 const profileFolderLinkConflictAction = document.getElementById("profile-folder-link-conflict-action");
 const profileFolderLinkResult = document.getElementById("profile-folder-link-result");
+const profileFolderNewLibraryRow = document.getElementById("profile-folder-new-library-row");
+const profileFolderNewLibraryInput = document.getElementById("profile-folder-new-library-input");
+const profileFolderLibrarySyncHint = document.getElementById("profile-folder-library-sync-hint");
+const profileFolderLibrarySyncBtn = document.getElementById("profile-folder-library-sync-btn");
+const profileSyncGroup = document.getElementById("profile-sync-group");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
@@ -257,6 +265,7 @@ const profileSyncIntroBack = document.getElementById("profile-sync-intro-back");
 const profileSyncIntroNext = document.getElementById("profile-sync-intro-next");
 const profileSyncIntroDone = document.getElementById("profile-sync-intro-done");
 const profileSyncIntroSkip = document.getElementById("profile-sync-intro-skip");
+const profileSyncIntroClose = document.getElementById("profile-sync-intro-close");
 const profileSyncIntroReplay = document.getElementById("profile-sync-intro-replay");
 
 // [PROFILE-SYNC] DOM refs for the compact Profile Sync block — see
@@ -503,15 +512,16 @@ function renderProfileSyncIntroduction() {
   profileSyncIntroTitle.textContent = step.title;
   profileSyncIntroBody.textContent = step.body;
   profileSyncIntro.dataset.helpConcepts = step.concepts.join(" ");
-  profileSyncIntroBack.classList.toggle("hidden", profileSyncIntroState.stepIndex === 0);
-  profileSyncIntroNext.classList.toggle(
-    "hidden",
-    profileSyncIntroState.stepIndex === PROFILE_SYNC_INTRO_STEPS.length - 1,
-  );
-  profileSyncIntroDone.classList.toggle(
-    "hidden",
-    profileSyncIntroState.stepIndex !== PROFILE_SYNC_INTRO_STEPS.length - 1,
-  );
+  // [SYNCV3 / STAGE-10 / FINAL-UX-POLISH]
+  // [WHY: which actions the step offers is now derived by the same pure model
+  // that owns the steps, so the approved Back / Skip Intro / forward pattern
+  // cannot drift here. This function still only applies that result.]
+  const actions = describeContextualFirstUseActions(profileSyncIntroState);
+  profileSyncIntroBack.classList.toggle("hidden", !actions.back);
+  profileSyncIntroSkip.classList.toggle("hidden", !actions.skip);
+  profileSyncIntroClose.classList.toggle("hidden", !actions.close);
+  profileSyncIntroNext.classList.toggle("hidden", !actions.next);
+  profileSyncIntroDone.classList.toggle("hidden", !actions.done);
 }
 
 function dispatchProfileSyncIntroduction(event) {
@@ -762,6 +772,13 @@ profileSyncIntroNext.addEventListener("click", () => {
 profileSyncIntroDone.addEventListener("click", () => {
   dispatchProfileSyncIntroduction({ type: "done" });
 });
+profileSyncIntroClose.addEventListener("click", () => {
+  // [SYNCV3 / STAGE-10 / REPLAY-CLOSE]
+  // [WHY: Close shares the skip/done hide path exactly so a replay — where seen
+  // is already true — can never produce a persist effect or reset the
+  // device-local preference.]
+  dispatchProfileSyncIntroduction({ type: "close" });
+});
 profileSyncIntroSkip.addEventListener("click", () => {
   dispatchProfileSyncIntroduction({ type: "skip" });
 });
@@ -926,7 +943,7 @@ function getProfileNameById(profileId) {
 // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
 // The only adapter from live app state into the pure S0-S5 mapper.
 function getCurrentAssociationUiState() {
-  const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded folder";
+  const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded Media Folder";
   const usesDurableRecord =
     currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
   const sharedCatalogEntry = activeLibraryRecord?.libraryId
@@ -991,14 +1008,25 @@ function syncAssociateButtonVisibility() {
   profileAssociateBtn.classList.toggle("hidden", !shouldShow);
   profileAssociateBtn.disabled = !shouldShow;
   if (shouldShow) {
+    // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+    // [WHY: the rail card already names the concept in its own label directly
+    // above this button, so the button says only what pressing it does. That
+    // also retires the hard-coded line break the long label needed to wrap
+    // tidily in the rail — a short label wraps on its own or not at all.]
     fsaAssociateBtnLabel.textContent = ["S2", "S3"].includes(associationUi.state)
-      ? "Change Profile for This Library"
-      : "Choose Profile for This Library";
+      ? "Change Curation"
+      : "Choose a Curation";
     profileAssociateBtn.textContent = associationUi.actionLabel;
   } else if (!profileAssociationRow.classList.contains("hidden")) {
     profileAssociationRow.classList.add("hidden");
     profileAssociateBtn.setAttribute("aria-expanded", "false");
   }
+  // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+  // [WHY: the benefit line follows the action's own availability — there is no
+  // point explaining a control that is not being offered. Copy is owned by the
+  // pure mapper beside actionLabel; this only applies it.]
+  fsaAssociateHelp.textContent = shouldShow ? (associationUi.actionHelp || "") : "";
+  fsaAssociateHelp.classList.toggle("hidden", !shouldShow || !associationUi.actionHelp);
   // [UI-REDESIGN / Stage 6] Ordered after updateAssociatedStatusRow() on
   // purpose — the compact header mirrors that function's output, so it must
   // read the row only once the row is current.
@@ -4504,7 +4532,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
-  activeLibraryDisplayName = rootName || (isFolderPick ? "Loaded folder" : "Selected files");
+  activeLibraryDisplayName = rootName || (isFolderPick ? "Loaded Media Folder" : "Selected files");
   currentSourceKind = "legacy";
   currentFolderPermissionState = "granted";
   // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
@@ -4636,7 +4664,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     // finishLoadingItems() just triggered, so it's the right element for
     // a message that should stick around, not the generic status line.
     if (recognizedProfileName) {
-      fsaStatusText.textContent = `✓ Recognized this library — Profile: ${recognizedProfileName}.`;
+      fsaStatusText.textContent = `✓ Recognized this Media Library — Curation: ${recognizedProfileName}.`;
     }
 
     // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
@@ -4743,7 +4771,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   activeLibraryRecord = libraryRecord || null;
   associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
   establishAmbientProfileContext(activeLibraryRecord);
-  activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded folder";
+  activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
   currentSourceKind = "fsa";
   currentFolderPermissionState = "granted";
   // [LIBRARY-PROFILE-UX / Phase 8.5] Same reset as loadFiles() — a new
@@ -4833,7 +4861,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // [Phase 8.4-2] Optional, brief recognition note — not a separate
     // notification system, just a prefix on the same status line that
     // already reports the load result.
-    const recognizedNote = recognizedProfileName ? `✓ Recognized this library — Profile: ${recognizedProfileName}. ` : "";
+    const recognizedNote = recognizedProfileName ? `✓ Recognized this Media Library — Curation: ${recognizedProfileName}. ` : "";
 
     if (result.incomplete) {
       // Reliability requirement: an interrupted scan must never be
@@ -5028,7 +5056,7 @@ async function resumeLibrary(record) {
     // data cleared, etc.) — fail gracefully rather than throwing, and stop
     // offering a broken resume for it.
     console.error("[FSA] A saved folder is no longer accessible.", error);
-    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Libraries.`;
+    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Media Folders.`;
     // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove, not removeLibrary() — a
     // permission failure doesn't mean the physical folder is gone for
     // good (it may just be a revoked permission on an otherwise-fine
@@ -5062,7 +5090,7 @@ function formatLibraryMeta(record) {
   if (record.lastOpenedAt) parts.push(`opened ${formatRelativeTime(record.lastOpenedAt)}`);
   if (record.profileId) {
     const associated = profile.listProfiles().find((entry) => entry.id === record.profileId);
-    parts.push(`Profile: ${associated ? associated.name : "unknown"}`);
+    parts.push(`Curation: ${associated ? associated.name : "unknown"}`);
   }
   return parts.join(" · ");
 }
@@ -5119,8 +5147,8 @@ async function renderRecentLibraries() {
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "fsa-recent-library-remove-btn";
-    removeBtn.title = `Remove "${record.name}" from Recent Libraries`;
-    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Libraries`);
+    removeBtn.title = `Remove "${record.name}" from Recent Media Folders`;
+    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Media Folders`);
     removeBtn.textContent = "✕";
     removeBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -5217,12 +5245,12 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
         syncAssociateButtonVisibility();
         const targetProfileName = getProfileNameById(targetProfileId);
         fsaStatusText.textContent = targetProfileName
-          ? `Now remembered with ${targetProfileName}. It should be recognized next time you pick the same folder here.`
-          : "This Library now has No Profile.";
+          ? `Now remembered with ${targetProfileName}. It should be recognized next time you pick the same Media Folder here.`
+          : "This Media Library now has No Curation.";
         return true;
       } catch (error) {
         console.warn("[LEGACY-IDENTITY] Could not save this legacy library association.", error);
-        fsaStatusText.textContent = "Could not save the Profile for this Library. Try again.";
+        fsaStatusText.textContent = "Could not save the Curation for this Media Library. Try again.";
         return false;
       } finally {
         fsaAssociateBtn.disabled = false;
@@ -5240,7 +5268,7 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
     if (targetProfileId !== profile.getProfileId()) return false;
     legacySessionAssociated = true;
     syncAssociateButtonVisibility();
-    fsaStatusText.textContent = `This folder is remembered with "${profile.getProfileName()}" for this session.`;
+    fsaStatusText.textContent = `This Media Folder is remembered with "${profile.getProfileName()}" Curation for this session.`;
     return true;
   }
 
@@ -5256,12 +5284,12 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
     const targetProfileName = getProfileNameById(targetProfileId);
     fsaStatusText.textContent = targetProfileName
       ? `Now remembered with ${targetProfileName}.`
-      : "This Library now has No Profile.";
+      : "This Media Library now has No Curation.";
     await renderRecentLibraries();
     return true;
   } catch (error) {
     console.warn("[LIBRARY-REGISTRY] Could not associate this library with the current profile.", error);
-    fsaStatusText.textContent = "Could not save the Profile for this Library. Try again.";
+    fsaStatusText.textContent = "Could not save the Curation for this Media Library. Try again.";
     return false;
   } finally {
     fsaAssociateBtn.disabled = false;
@@ -5304,7 +5332,7 @@ function populateAssociationPicker({ preservePending = false } = {}) {
 
   const noProfile = document.createElement("option");
   noProfile.value = "";
-  noProfile.textContent = "— No Profile —";
+  noProfile.textContent = "— No Curation —";
   profileAssociationSelect.appendChild(noProfile);
 
   for (const entry of profiles) {
@@ -5364,7 +5392,7 @@ profileAssociationSaveBtn.addEventListener("click", async () => {
     }
     profileAssociationResult.textContent = selectedProfileName
       ? `Now remembered with ${selectedProfileName}.`
-      : "This Library now has No Profile.";
+      : "This Media Library now has No Curation.";
     syncAssociateButtonVisibility();
     closeAssociationEditor();
   } catch (error) {
@@ -5394,7 +5422,7 @@ function getCurrentFolderLinkUiState({ selectedLibraryId = null, selectedClaiman
   return mapLinkState({
     sourceKind: currentSourceKind,
     legacyHasDurableIdentity,
-    folderName: activeLibraryRecord?.name || activeLibraryDisplayName || "Loaded folder",
+    folderName: activeLibraryRecord?.name || activeLibraryDisplayName || "Loaded Media Folder",
     localLibraryId: activeLibraryRecord?.id || null,
     sharedLibraryId: activeLibraryRecord?.libraryId || null,
     sharedLibraries: profile.listLibraries(),
@@ -5409,69 +5437,110 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   const linkUi = getCurrentFolderLinkUiState({ selectedLibraryId, selectedClaimant });
   profileFolderLinkSummary.textContent = linkUi.summary;
   applyProductStatusTone(profileFolderLinkSummary, linkUi.tone);
-  profileFolderLinkBtn.textContent = linkUi.actionLabel || "Link to a Library";
+
+  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+  // [WHY: the selector replaced the old Link/Share disclosure, so this button
+  // now has exactly one job left — L7 reconnect. `showAction` is true in that
+  // state alone; every other durable state renders the selector instead.]
+  profileFolderLinkBtn.textContent = linkUi.actionLabel || "Reconnect Media Folder";
   profileFolderLinkBtn.classList.toggle("hidden", !linkUi.showAction);
   profileFolderLinkBtn.disabled = !linkUi.showAction;
+
+  const showSelector = Boolean(linkUi.allowPicker && activeLibraryRecord?.id);
+  const wasHidden = profileFolderLinkRow.classList.contains("hidden");
+  profileFolderLinkRow.classList.toggle("hidden", !showSelector);
+  if (!showSelector) {
+    clearFolderLinkConflict();
+    profileFolderActionHelp.classList.add("hidden");
+    return linkUi;
+  }
+  if (wasHidden) populateFolderLinkPicker();
+
   profileFolderActionHelp.textContent = linkUi.actionHelp;
   profileFolderActionHelp.classList.toggle("hidden", !linkUi.actionHelp);
 
-  if (!linkUi.showAction && !profileFolderLinkRow.classList.contains("hidden")) {
-    closeFolderLinkEditor({ returnFocus: false });
-  }
-  if (!profileFolderLinkRow.classList.contains("hidden")) {
-    // [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
-    // [WHY: a storage-level claimant refusal is safety-critical and must be
-    // visually distinct from ordinary explanatory text. Keep the select focused
-    // and explain the disabled Save inline through its existing described-by id.]
-    const showClaimantWarning = Boolean(selectedClaimant);
-    // [SYNCV3 / STAGE-08 / DIRECT-RELINK-WARNING]
-    // [WHY: direct Library relinking is intentionally forbidden until the
-    // current folder is explicitly unlinked; this identity-safety refusal must
-    // be as visually obvious as a claimant collision. It shares presentation,
-    // not semantics, with the claimant guard immediately above.]
-    const showDirectRelinkWarning = Boolean(
-      !showClaimantWarning &&
-      activeLibraryRecord?.libraryId &&
-      selectedLibraryId &&
-      selectedLibraryId !== activeLibraryRecord.libraryId
-    );
-    const showSafetyWarning = showClaimantWarning || showDirectRelinkWarning;
-    const selectedLibrary = selectedLibraryId && selectedLibraryId !== NEW_SHARED_LIBRARY_VALUE
-      ? profile.listLibraries().find((library) => library.id === selectedLibraryId)
-      : null;
-    const libraryName = selectedLibrary?.name || "That Library";
-    const folderName = selectedClaimant?.name || "another folder";
-    const currentFolderName = activeLibraryRecord?.name || activeLibraryDisplayName || "This folder";
-    const targetLibraryName = selectedLibrary?.name || "a new Library";
-    profileFolderLinkConflict.classList.toggle("hidden", !showSafetyWarning);
-    profileFolderLinkConflictHeading.textContent = showClaimantWarning
-      ? "⚠ Already linked on this device"
-      : showDirectRelinkWarning
-        ? "⚠ Unlink this folder first"
-        : "";
-    profileFolderLinkConflictDetail.textContent = showClaimantWarning
-      ? `“${libraryName}” is already linked to the folder “${folderName}”.`
-      : showDirectRelinkWarning
-        ? `“${currentFolderName}” is already linked to another Library.`
-        : "";
-    profileFolderLinkConflictAction.textContent = showClaimantWarning
-      ? `Unlink ${folderName} before linking this one.`
-      : showDirectRelinkWarning
-        ? `Unlink this folder before linking it to “${targetLibraryName}”.`
-        : "";
-    profileFolderLinkSaveBtn.disabled =
-      selectedLibraryId === NEW_SHARED_LIBRARY_VALUE ? Boolean(activeLibraryRecord?.libraryId) : !linkUi.saveEnabled;
-    const canUnlink = Boolean(activeLibraryRecord?.libraryId);
-    profileFolderUnlinkBtn.classList.toggle("hidden", !canUnlink);
-    profileFolderUnlinkHelp.classList.toggle("hidden", !canUnlink);
-  }
-  return linkUi;
-}
+  const linkedId = activeLibraryRecord?.libraryId || "";
+  const selected = profileFolderLinkSelect.value;
+  const isCreateNew = selected === NEW_SHARED_LIBRARY_VALUE;
+  // Steady state is a plain property row. Save/Cancel appear only once the
+  // reader has actually changed the selection, so choosing never feels like an
+  // operation that has to be confirmed.
+  const pendingChange = selected !== linkedId;
 
-function sharedLibraryOptionLabel(library) {
-  const name = library.name || "Unnamed Library";
-  const device = library.sourceDeviceName || library.deviceName || "";
-  return [name, device, `${library.id.slice(0, 8)}…`].filter(Boolean).join(" · ");
+  // [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
+  // [WHY: a storage-level claimant refusal is safety-critical and must be
+  // visually distinct from ordinary explanatory text. Keep the select focused
+  // and explain the disabled Save inline through its existing described-by id.]
+  const showClaimantWarning = Boolean(selectedClaimant);
+  // [SYNCV3 / STAGE-08 / DIRECT-RELINK-WARNING]
+  // [WHY: choosing a different Media Library directly is intentionally
+  // forbidden until the current one is explicitly removed; this identity-safety
+  // refusal must be as visually obvious as a claimant collision. It shares
+  // presentation, not semantics, with the claimant guard immediately above.
+  // Stage 08 semantics are frozen: only the wording moved off "unlink".]
+  const showDirectRelinkWarning = Boolean(
+    !showClaimantWarning &&
+    linkedId &&
+    selected &&
+    selected !== linkedId
+  );
+  const showSafetyWarning = showClaimantWarning || showDirectRelinkWarning;
+  const selectedLibrary = selected && !isCreateNew
+    ? profile.listLibraries().find((library) => library.id === selected)
+    : null;
+  const libraryName = selectedLibrary?.name || "That Media Library";
+  const folderName = selectedClaimant?.name || "another Media Folder";
+  const currentFolderName = activeLibraryRecord?.name || activeLibraryDisplayName || "This Media Folder";
+  const targetLibraryName = selectedLibrary?.name || "a new Media Library";
+  profileFolderLinkConflict.classList.toggle("hidden", !showSafetyWarning);
+  profileFolderLinkConflictHeading.textContent = showClaimantWarning
+    ? "⚠ Already used on this device"
+    : showDirectRelinkWarning
+      ? "⚠ Remove this Media Folder first"
+      : "";
+  profileFolderLinkConflictDetail.textContent = showClaimantWarning
+    ? `“${libraryName}” already represents the Media Folder “${folderName}”.`
+    : showDirectRelinkWarning
+      ? `“${currentFolderName}” already uses another Media Library.`
+      : "";
+  profileFolderLinkConflictAction.textContent = showClaimantWarning
+    ? `Remove ${folderName} from that Media Library first.`
+    : showDirectRelinkWarning
+      ? `Remove this Media Folder from its Media Library before choosing “${targetLibraryName}”.`
+      : "";
+
+  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+  // [WHY: naming belongs to creation, not to selection. The field is prefilled
+  // from the Media Folder name because promoteLibraryToShared already stored
+  // exactly that; the adjacent copy is what stops the prefill reading as a
+  // folder rename.]
+  profileFolderNewLibraryRow.classList.toggle("hidden", !isCreateNew);
+  if (isCreateNew && !profileFolderNewLibraryInput.value.trim()) {
+    profileFolderNewLibraryInput.value = activeLibraryRecord?.name || "";
+  }
+
+  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+  // [WHY: VERIFIED against ProfileStore, not assumed — a Media Library created
+  // on another device reaches this catalog only through adoptMergedReplica(),
+  // and the only callers of that are the sync-v2/sync-v3 passes and V2
+  // activation. Before a Sync Folder is connected this list is local-only, so
+  // an empty selector states the real prerequisite instead of looking broken.]
+  const catalogIsEmpty = profile.listLibraries().length === 0;
+  const syncStatus = profileSync.getStatus();
+  const syncConfigured = Boolean(syncStatus.configured || syncStatus.v3Configured);
+  const showSyncHint = catalogIsEmpty && !syncConfigured;
+  profileFolderLibrarySyncHint.classList.toggle("hidden", !showSyncHint);
+  profileFolderLibrarySyncBtn.classList.toggle("hidden", !showSyncHint);
+
+  profileFolderLinkSaveBtn.textContent = isCreateNew ? "Create Media Library" : "Use This Media Library";
+  profileFolderLinkSaveBtn.classList.toggle("hidden", !pendingChange);
+  profileFolderLinkCancelBtn.classList.toggle("hidden", !pendingChange);
+  profileFolderLinkSaveBtn.disabled = isCreateNew ? Boolean(linkedId) : !linkUi.saveEnabled;
+
+  const canUnlink = Boolean(linkedId) && !pendingChange;
+  profileFolderUnlinkBtn.classList.toggle("hidden", !canUnlink);
+  profileFolderUnlinkHelp.classList.toggle("hidden", !canUnlink);
+  return linkUi;
 }
 
 function populateFolderLinkPicker({ preservePending = false } = {}) {
@@ -5482,32 +5551,42 @@ function populateFolderLinkPicker({ preservePending = false } = {}) {
 
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = "Choose a shared Library…";
+  placeholder.textContent = "Choose a Media Library…";
   profileFolderLinkSelect.appendChild(placeholder);
 
-  const createOption = document.createElement("option");
-  createOption.value = NEW_SHARED_LIBRARY_VALUE;
-  createOption.textContent = "— Share as a new Library —";
-  profileFolderLinkSelect.appendChild(createOption);
-
-  for (const library of catalog) {
-    const option = document.createElement("option");
-    option.value = library.id;
-    option.textContent = sharedLibraryOptionLabel(library);
-    profileFolderLinkSelect.appendChild(option);
+  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-OPTION-LABELS]
+  // [WHY: labels are derived in one pure pass over the whole catalog, because
+  // whether a name needs disambiguating is a property of the SET, not of the
+  // record. The option's value stays the durable id either way.]
+  for (const option of describeMediaLibraryOptions({
+    libraries: catalog,
+    currentDeviceId: profile.getDeviceId(),
+  })) {
+    const element = document.createElement("option");
+    element.value = option.id;
+    element.textContent = option.label;
+    profileFolderLinkSelect.appendChild(element);
   }
 
   if (linkedId && !catalog.some((library) => library.id === linkedId)) {
+    // This one genuinely has no name yet — the Library fact has not reached
+    // this device, so its id is the only thing there is to show.
     const pending = document.createElement("option");
     pending.value = linkedId;
-    pending.textContent = `Linked Library · ${linkedId.slice(0, 8)}…`;
+    pending.textContent = `Media Library · ${linkedId.slice(0, 8)}…`;
     profileFolderLinkSelect.appendChild(pending);
   }
+
+  // Creation stays at the bottom, after every existing Media Library, so
+  // "choose the one you already use" is the path a reader meets first.
+  const createOption = document.createElement("option");
+  createOption.value = NEW_SHARED_LIBRARY_VALUE;
+  createOption.textContent = "Create New Media Library…";
+  profileFolderLinkSelect.appendChild(createOption);
 
   const values = new Set([...profileFolderLinkSelect.options].map((option) => option.value));
   if (preservePending && values.has(pendingValue)) profileFolderLinkSelect.value = pendingValue;
   else if (linkedId) profileFolderLinkSelect.value = linkedId;
-  else if (catalog.length === 0) profileFolderLinkSelect.value = NEW_SHARED_LIBRARY_VALUE;
   else profileFolderLinkSelect.value = "";
 }
 
@@ -5537,45 +5616,50 @@ async function refreshCurrentFolderPermission() {
   if (activeLibraryRecord?.id === recordId) renderFolderLinkState();
 }
 
-function openFolderLinkEditor() {
-  const linkUi = getCurrentFolderLinkUiState();
-  if (linkUi.reconnectNeeded) {
-    resumeLibrary(activeLibraryRecord);
-    return false;
-  }
-  if (!linkUi.showAction || !activeLibraryRecord?.id) return false;
-  pendingFolderLinkClaimant = null;
-  populateFolderLinkPicker();
-  profileFolderLinkResult.textContent = "";
-  profileFolderLinkRow.classList.remove("hidden");
-  profileFolderLinkBtn.setAttribute("aria-expanded", "true");
-  refreshFolderLinkSelection().then(() => profileFolderLinkSelect.focus());
-  return true;
-}
-
-function closeFolderLinkEditor({ returnFocus = true } = {}) {
-  profileFolderLinkRow.classList.add("hidden");
-  profileFolderLinkBtn.setAttribute("aria-expanded", "false");
+function clearFolderLinkConflict() {
   pendingFolderLinkClaimant = null;
   profileFolderLinkConflict.classList.add("hidden");
   profileFolderLinkConflictHeading.textContent = "";
   profileFolderLinkConflictDetail.textContent = "";
   profileFolderLinkConflictAction.textContent = "";
-  if (returnFocus) profileFolderLinkBtn.focus();
+}
+
+// [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+// [WHY: with the selector always visible there is nothing to close — Cancel
+// simply puts the control back to the Media Library this Media Folder is
+// actually using. Nothing is written, so this is never a destructive step.]
+function resetFolderLinkSelection({ returnFocus = true } = {}) {
+  clearFolderLinkConflict();
+  profileFolderNewLibraryInput.value = "";
+  populateFolderLinkPicker();
+  renderFolderLinkState();
+  if (returnFocus) profileFolderLinkSelect.focus();
 }
 
 profileFolderLinkBtn.addEventListener("click", () => {
   refreshCurrentFolderPermission().then(() => {
-    if (profileFolderLinkRow.classList.contains("hidden")) openFolderLinkEditor();
-    else closeFolderLinkEditor();
+    const linkUi = getCurrentFolderLinkUiState();
+    if (linkUi.reconnectNeeded) resumeLibrary(activeLibraryRecord);
   });
 });
-profileFolderLinkSelect.addEventListener("change", () => refreshFolderLinkSelection());
-profileFolderLinkCancelBtn.addEventListener("click", () => closeFolderLinkEditor());
+profileFolderLinkSelect.addEventListener("change", () => {
+  profileFolderNewLibraryInput.value = "";
+  refreshFolderLinkSelection();
+});
+profileFolderLinkCancelBtn.addEventListener("click", () => resetFolderLinkSelection());
 profileFolderLinkRow.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   event.preventDefault();
-  closeFolderLinkEditor();
+  resetFolderLinkSelection();
+});
+
+// [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+// [WHY: reuses the existing Settings navigation — the Sync group is a sibling
+// inside this same always-open section, so this is a scroll and a focus, not a
+// second Sync entry point.]
+profileFolderLibrarySyncBtn.addEventListener("click", () => {
+  profileSyncGroup.scrollIntoView({ block: "nearest" });
+  profileSyncV3ChooseBtn.focus();
 });
 
 profileFolderLinkSaveBtn.addEventListener("click", async () => {
@@ -5585,7 +5669,10 @@ profileFolderLinkSaveBtn.addEventListener("click", async () => {
   try {
     let result;
     if (selected === NEW_SHARED_LIBRARY_VALUE) {
-      result = await profile.promoteLibraryToShared(activeLibraryRecord.id, { name: activeLibraryRecord.name });
+      const typedName = profileFolderNewLibraryInput.value.trim();
+      result = await profile.promoteLibraryToShared(activeLibraryRecord.id, {
+        name: typedName || activeLibraryRecord.name,
+      });
     } else if (selected === activeLibraryRecord.libraryId) {
       result = activeLibraryRecord;
     } else {
@@ -5597,38 +5684,59 @@ profileFolderLinkSaveBtn.addEventListener("click", async () => {
       return;
     }
     if (!result) {
-      profileFolderLinkResult.textContent = "Could not save the link. Try again.";
+      profileFolderLinkResult.textContent = "Could not save that Media Library. Try again.";
       return;
     }
     activeLibraryRecord = await getLibraryById(activeLibraryRecord.id) || result;
     establishAmbientProfileContext(activeLibraryRecord);
-    profileFolderLinkResult.textContent = "Folder link saved.";
+    // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+    // [WHY: the one moment a reader most needs to hear that nothing happened to
+    // their files. Uses the status line this group already owns rather than a
+    // new notification surface.]
+    const savedName = getSharedLibraryNameById(activeLibraryRecord.libraryId);
+    profileFolderLinkResult.textContent = savedName
+      ? `Now using the ${savedName} Media Library. Your files were not changed or moved.`
+      : "Media Library saved. Your files were not changed or moved.";
+    profileFolderNewLibraryInput.value = "";
+    populateFolderLinkPicker();
     await renderRecentLibraries();
     syncAssociateButtonVisibility();
-    closeFolderLinkEditor();
+    clearFolderLinkConflict();
+    renderFolderLinkState();
   } catch (error) {
     console.warn("[SYNCV3 / STAGE-08 / LINK-AND-SYNC] Could not save folder link.", error);
-    profileFolderLinkResult.textContent = "Could not save the link. Try again.";
+    profileFolderLinkResult.textContent = "Could not save that Media Library. Try again.";
   } finally {
     if (!pendingFolderLinkClaimant) profileFolderLinkSaveBtn.disabled = false;
   }
 });
 
+function getSharedLibraryNameById(libraryId) {
+  if (!libraryId) return "";
+  const entry = profile.listLibraries().find((library) => library.id === libraryId);
+  return entry?.name || "";
+}
+
 profileFolderUnlinkBtn.addEventListener("click", async () => {
   if (!activeLibraryRecord?.id || !activeLibraryRecord.libraryId) return;
   profileFolderUnlinkBtn.disabled = true;
   try {
+    // Stage 08 semantics unchanged: this clears only this device's local
+    // Media Folder -> Media Library row. Nothing shared is deleted.
     const unlinked = await profile.unlinkLocalLibraryFromShared(activeLibraryRecord.id);
     if (!unlinked) throw new Error("Local Library row was unavailable.");
     activeLibraryRecord = unlinked;
     establishAmbientProfileContext(activeLibraryRecord);
-    profileFolderLinkResult.textContent = "This folder is no longer linked to a shared Library.";
+    profileFolderLinkResult.textContent = "This Media Folder no longer uses a Media Library. Your files were not changed or moved.";
+    profileFolderNewLibraryInput.value = "";
+    populateFolderLinkPicker();
     await renderRecentLibraries();
     syncAssociateButtonVisibility();
-    closeFolderLinkEditor();
+    clearFolderLinkConflict();
+    renderFolderLinkState();
   } catch (error) {
     console.warn("[SYNCV3 / STAGE-08 / UNLINK] Could not unlink folder.", error);
-    profileFolderLinkResult.textContent = "Could not unlink this folder. Try again.";
+    profileFolderLinkResult.textContent = "Could not remove this Media Folder from its Media Library. Try again.";
   } finally {
     profileFolderUnlinkBtn.disabled = false;
   }
@@ -6378,7 +6486,7 @@ shellBreakpointQuery.addEventListener("change", (event) => {
 // FUTURE: Add context by mirroring another existing readout the same way.
 // Never let this derive association, profile or library state itself.
 function syncMobileContextSummary() {
-  mobileContextText.textContent = `Profile: ${associatedText.textContent}`;
+  mobileContextText.textContent = `Curation: ${associatedText.textContent}`;
 }
 
 function syncVideoLoopControl() {
@@ -9306,10 +9414,15 @@ function renderProfileSelector() {
 
   profileSelect.innerHTML = "";
 
+  // [SYNCV3 / STAGE-10 / FINAL-UX-POLISH]
+  // [WHY: "Curation" is display text only. The option VALUE stays the raw
+  // profileId and the stored name is never rewritten, so switching, deletion,
+  // export, association and Sync all keep reading the same identity they
+  // always did — only what the collapsed select shows has changed.]
   profiles.forEach((entry) => {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.textContent = entry.name;
+    option.textContent = `${entry.name} Curation`;
     profileSelect.appendChild(option);
   });
 
@@ -9320,7 +9433,8 @@ function renderProfileSelector() {
   // activation, not only inside the confirmation step.] These are the same
   // active Profile getters the delete handler reads at click time, so the
   // visible target and the actual target cannot become separate concepts.
-  profileDeleteBtn.textContent = activeId && activeName ? `Delete ${activeName}` : "Delete Profile";
+  profileDeleteBtn.textContent = activeId && activeName ? `Delete ${activeName} Curation` : "Delete Curation";
+  profileExportBtn.textContent = activeName ? `Export ${activeName} Curation (.json)` : "Export Curation (.json)";
 }
 
 function establishAmbientProfileContext(libraryRecord) {
@@ -9355,9 +9469,9 @@ function renderAmbientProfileOffer() {
   const view = buildAmbientProfileOfferView({
     pendingOffer,
     currentContext: context,
-    libraryName: activeLibraryRecord?.name || activeLibraryDisplayName || "This Library",
+    libraryName: activeLibraryRecord?.name || activeLibraryDisplayName || "This Media Library",
     targetName,
-    activeProfileName: profile.getProfileName() || "my current Profile",
+    activeProfileName: profile.getProfileName() || "my current Curation",
   });
 
   if (!view.visible) {
@@ -9563,15 +9677,20 @@ async function handleAmbientProfileOfferAction(kind) {
       ambientProfileObserver.dismissPendingOffer(pendingOffer);
       await refreshCurrentAssociationFromRegistry();
     } else if (result.status === "switch-failed") {
-      ambientProfileOfferResult.textContent = "Could not switch Profiles. Try again.";
+      ambientProfileOfferResult.textContent = "Could not switch Curations. Try again.";
     } else if (result.status === "stale-after-switch") {
       ambientProfileObserver.dismissPendingOffer(pendingOffer);
       await refreshCurrentAssociationFromRegistry();
-      ambientProfileOfferResult.textContent = "Profile changed, but the Library association changed before this choice could be remembered.";
+      // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+      // [WHY: copy only. Two different things change in this race — this
+      // device's Curation, and the Media Library's remembered Curation — and
+      // the previous wording used "changed" for both, leaving the reader to
+      // guess which was which. The stale-after-switch semantics are untouched.]
+      ambientProfileOfferResult.textContent = "Switched Curations, but this Media Library's remembered Curation changed again before your choice could be saved.";
     } else if (result.status === "persistence-failed") {
       if (result.switched) {
         ambientProfileObserver.dismissPendingOffer(pendingOffer);
-        ambientProfileOfferResult.textContent = "Profile changed, but this choice could not be remembered on this device.";
+        ambientProfileOfferResult.textContent = "Curation changed, but this choice could not be remembered on this device.";
       } else {
         // NO/LATER have no effect without durable persistence. Keep the exact
         // current offer visible so retrying is honest and safe.
@@ -9658,7 +9777,7 @@ profileSelect.addEventListener("change", async () => {
 
   const ok = await profile.switchProfile(targetId);
   if (!ok) {
-    profileActiveStatusText.textContent = "Could not switch profile.";
+    profileActiveStatusText.textContent = "Could not switch Curation.";
     renderProfileSelector(); // revert the <select> to the still-active profile
     return;
   }
@@ -9683,7 +9802,7 @@ async function createProfileFromInput() {
     profileCreateInput.value = "";
     profileActiveStatusText.textContent = `Created and switched to "${created.name}".`;
   } catch (error) {
-    profileActiveStatusText.textContent = `Could not create profile: ${error.message}`;
+    profileActiveStatusText.textContent = `Could not create Curation: ${error.message}`;
   } finally {
     profileCreateBtn.disabled = false;
   }
@@ -9703,7 +9822,7 @@ profileDeleteBtn.addEventListener("click", async () => {
 
   const activeName = profile.getProfileName();
   const confirmed = window.confirm(
-    `Delete profile "${activeName}"? This removes its tags, favorites, and hidden state. Your media files are not affected. This cannot be undone.`
+    `Delete ${activeName} Curation? This removes its Tags, Favorites, and Hidden items. Your photos and videos are not affected. This cannot be undone.`
   );
   if (!confirmed) return;
 
@@ -9730,7 +9849,7 @@ profileDeleteBtn.addEventListener("click", async () => {
     }
     syncAssociateButtonVisibility();
   } catch (error) {
-    profileActiveStatusText.textContent = `Could not delete profile: ${error.message}`;
+    profileActiveStatusText.textContent = `Could not delete Curation: ${error.message}`;
   } finally {
     profileDeleteBtn.disabled = false;
   }
@@ -9848,11 +9967,11 @@ profileImportCopyInput.addEventListener("change", async (event) => {
     try {
       parsed = JSON.parse(text);
     } catch {
-      throw new Error("Not a recognized profile file (invalid JSON).");
+      throw new Error("Not a recognized Curation file (invalid JSON).");
     }
 
-    const suggestedName = typeof parsed.profileName === "string" && parsed.profileName.trim() ? parsed.profileName.trim() : "Imported Profile";
-    const name = window.prompt("Name for the new profile:", suggestedName);
+    const suggestedName = typeof parsed.profileName === "string" && parsed.profileName.trim() ? parsed.profileName.trim() : "Imported Curation";
+    const name = window.prompt("Name for the new Curation:", suggestedName);
     if (!name || !name.trim()) return; // cancelled
 
     const created = await profile.createProfile(name.trim());
@@ -9861,7 +9980,7 @@ profileImportCopyInput.addEventListener("change", async (event) => {
 
     profileActiveStatusText.textContent = `Created "${created.name}" from import (${result.applied} applied).`;
   } catch (error) {
-    profileActiveStatusText.textContent = `Could not import as a new profile: ${error.message}`;
+    profileActiveStatusText.textContent = `Could not import as a new Curation: ${error.message}`;
   }
 });
 
@@ -10024,7 +10143,7 @@ function renderProfileSync() {
       line = "Status: Not configured";
       break;
     case "checking":
-      line = "Status: Checking folder access…";
+      line = "Status: Checking Sync Folder access…";
       break;
     case "permission-needed":
       line = `Status: Permission needed for "${status.folderName}".`;
@@ -10033,7 +10152,7 @@ function renderProfileSync() {
       line = "Status: Syncing…";
       break;
     case "conflict":
-      line = "Profile changed on another device. Choose a version below.";
+      line = "A Curation changed on another device. Choose a version below.";
       break;
     case "offline":
       line = `Offline — saved locally. Changes will sync when available.${status.message ? ` (${status.message})` : ""}`;
@@ -10057,7 +10176,7 @@ function renderProfileSync() {
     //  installation does not currently have. It says so plainly and points at
     //  the retry, because the only correct next step is a user decision.]
     case "migration-failed":
-      line = `Sync activation did not finish — ${status.message || "Your Profile data is safe and saved locally."}`;
+      line = `Sync activation did not finish — ${status.message || "Your Curation is safe and saved locally."}`;
       break;
     // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
     // [WHY: V3 gets its own status strings rather than reusing "connected".
@@ -10119,7 +10238,7 @@ function renderProfileSync() {
       line = `Sync V3 — permission needed for "${status.v3FolderName}". Nothing is being synced.`;
       break;
     case "v3-not-configured":
-      line = "Sync V3 is active — no V3 folder chosen yet. Nothing is being synced.";
+      line = "Sync V3 is active — no Sync Folder chosen yet. Nothing is being synced.";
       break;
     // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
     // [WHY: a V3 status must never reach the `default` branch below, which
@@ -10128,7 +10247,7 @@ function renderProfileSync() {
     //  a connected V1 sync is the precise false reassurance Stage B removed from
     //  V1, so every V3 status this engine can produce gets an explicit arm.]
     case "v3-verify-failed":
-      line = `Sync V3 not completed — ${status.message || "nothing was accepted; local Profile data is unaffected."}`;
+      line = `Sync V3 not completed — ${status.message || "nothing was accepted; your local Curation is unaffected."}`;
       break;
     case "connected":
     default: {
@@ -10188,8 +10307,8 @@ function renderSyncV3State(status, isV3) {
   let line;
   if (!connected) {
     line = isV3
-      ? "Mode: V3 (active) · No V3 folder chosen yet."
-      : "Mode: " + status.mode + " · No V3 folder chosen yet.";
+      ? "Mode: V3 (active) · No Sync Folder chosen yet."
+      : "Mode: " + status.mode + " · No Sync Folder chosen yet.";
   } else if (status.v3Status === "permission-needed") {
     line = `Mode: ${isV3 ? "V3 (active)" : status.mode} · Folder "${status.v3FolderName}" — permission needed.`;
   } else {
@@ -10324,7 +10443,7 @@ profileSyncSetupOpenBtn.addEventListener("click", () => {
 
 profileSyncDisconnectBtn.addEventListener("click", async () => {
   const confirmed = window.confirm(
-    "Disconnect Profile Sync? Your Profiles remain saved locally — they will just stop syncing to this folder."
+    "Disconnect Curation Sync? Your Curations remain saved locally — they will just stop syncing to this Sync Folder."
   );
   if (!confirmed) return;
   await profileSync.disconnect();
@@ -10353,7 +10472,7 @@ profileSyncActivateBtn.addEventListener("click", async () => {
     "Activate Sync V2 on this device?\n\n" +
       "• Changes from every device will be merged instead of one version replacing another.\n" +
       "• This device will stop writing the old sync format. Existing old files are left untouched.\n" +
-      "• Nothing in your local Profiles is deleted.\n\n" +
+      "• Nothing in your local Curations is deleted.\n\n" +
       "This is one-way for this device."
   );
   if (!confirmed) return;
@@ -10375,9 +10494,24 @@ profileSyncActivateBtn.addEventListener("click", async () => {
 //  point a V3 user at the V2 folder, which is the one folder V3 must never
 //  adopt. The proper V3 setup explanation is part of the later Profile & Sync
 //  Settings stage.]
+// [SYNCV3 / STAGE-10 / CHANGE-SYNC-FOLDER-FIX]
+// [WHY: this used to report failure ONLY through profileSyncV3StatusText, which
+// lives inside the collapsed <details class="advanced-settings-section">. The
+// button that calls it lives in the always-visible Sync group, so an
+// unsupported browser or a picker error produced a click with no visible result
+// whatsoever. Failures now also reach the product status line beside the
+// button. renderProfileSync() overwrites that line on the next emit, which is
+// correct — a failed pick emits nothing, so the message survives exactly as
+// long as it is still true.]
+function reportSyncFolderProblem(message, tone) {
+  profileSyncV3StatusText.textContent = message;
+  profileSyncProductStatus.textContent = message;
+  applyProductStatusTone(profileSyncProductStatus, tone);
+}
+
 async function runV3FolderPicker() {
   if (!isFsaSupported()) {
-    profileSyncV3StatusText.textContent = "This browser does not support the File System Access API.";
+    reportSyncFolderProblem("This browser does not support choosing a Sync Folder.", "warning");
     return;
   }
 
@@ -10386,11 +10520,19 @@ async function runV3FolderPicker() {
     dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
   } catch (error) {
     if (error && error.name === "AbortError") return; // user closed the picker — not an error
-    profileSyncV3StatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    reportSyncFolderProblem(`Could not open the folder picker: ${error.message}`, "danger");
     return;
   }
 
-  await profileSync.connectV3Folder(dirHandle);
+  try {
+    await profileSync.connectV3Folder(dirHandle);
+  } catch (error) {
+    // [WHY: connectV3Folder tolerates a failed PERSIST internally, so reaching
+    // here means the connection itself failed. Swallowing it was the other way
+    // this control could appear to do nothing.]
+    console.warn("[SYNCV3] Could not connect the chosen Sync Folder.", error);
+    reportSyncFolderProblem("Could not use that Sync Folder. Try choosing it again.", "danger");
+  }
 }
 
 // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
@@ -10443,7 +10585,7 @@ profileSyncV3ActivateBtn.addEventListener("click", async () => {
     "Activate Sync V3 on this device?\n\n" +
       "• Sync V3 has no transport yet — nothing will be synced or written to the V3 folder.\n" +
       "• Sync V2 becomes dormant. Its saved configuration is left completely intact.\n" +
-      "• Nothing in your local Profiles is deleted.\n\n" +
+      "• Nothing in your local Curations is deleted.\n\n" +
       "You can return to Sync V2 with \"Leave V3 Mode\"."
   );
   if (!confirmed) return;

@@ -35,8 +35,8 @@ assert(PRODUCT_STATUS_TONES.filter((tone) => element.classList.contains(`product
 
 const mainSource = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 assert(mainSource.includes("applyProductStatusTone(profileFolderLinkSummary, linkUi.tone)"),
-  "This Folder rendering applies the pure link-state tone through the class-swap helper");
+  "This Media Folder rendering applies the pure link-state tone through the class-swap helper");
 assert(mainSource.includes("applyProductStatusTone(profileLibraryAssociationText, associationUi.tone)"),
-  "This Library rendering applies the pure association-copy tone through the class-swap helper");
+  "This Media Library rendering applies the pure association-copy tone through the class-swap helper");
 
 console.log(`status tone rendering: ${assertions} assertions passed`);

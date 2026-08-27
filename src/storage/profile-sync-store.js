@@ -140,15 +140,15 @@ function openDatabase() {
 function requestToPromise(request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Profile sync database request failed."));
+    request.onerror = () => reject(request.error || new Error("Curation sync database request failed."));
   });
 }
 
 function completeTransaction(transaction) {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = resolve;
-    transaction.onerror = () => reject(transaction.error || new Error("Profile sync database operation failed."));
-    transaction.onabort = () => reject(transaction.error || new Error("Profile sync database operation was aborted."));
+    transaction.onerror = () => reject(transaction.error || new Error("Curation sync database operation failed."));
+    transaction.onabort = () => reject(transaction.error || new Error("Curation sync database operation was aborted."));
   });
 }
 

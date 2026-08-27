@@ -374,7 +374,7 @@ async function runV3PassBody({ profileStore, dirHandle, state, deviceId, lease, 
       reason: publishResult.reason,
       adopted,
       message:
-        "This device's sync-v3 publish could not be verified, so nothing was accepted. Local Profile data is unaffected.",
+        "This device's sync-v3 publish could not be verified, so nothing was accepted. Your local Curation is unaffected.",
       mergedPeers: validPeers.length,
       skippedPeers,
       peers,
