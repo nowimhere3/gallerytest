@@ -1306,46 +1306,13 @@
         <details class="profile-section" open>
         <summary>Curations &amp; Sync</summary>
 
-        <p class="hint">Mark Favorites, hide items and add Tags as you browse. One saved set of those choices is a Curation.</p>
-
-        <!-- [SYNCV3 / STAGE-10 / PERSISTENT-HELP]
-             [WHY: this is the canonical owner of the six concept definitions.
-              The shorter introduction references these concepts rather than
-              maintaining a second full Folder/Library/Profile glossary.] -->
-        <details id="profile-sync-help" class="profile-sync-help">
-          <summary>? Help with Curations &amp; Sync</summary>
-          <div id="profile-sync-help-content" class="profile-sync-help-content">
-            <section data-help-concept="folder">
-              <h3>Media Folder</h3>
-              <p>Where Browser Gallery opens your photos and videos from. Choose a Media Folder on this device or a Google Drive Media Folder. Browser Gallery does not upload, move or copy what is inside it.</p>
-            </section>
-            <section data-help-concept="library">
-              <h3>Media Library</h3>
-              <p>A Media Library is Browser Gallery's name for one collection of photos and videos.</p>
-              <p>If that collection appears through different Media Folders across your devices, choose the same Media Library for each one. That tells Browser Gallery they represent the same collection, and which Favorites, Hidden items and Tags belong with it.</p>
-              <p>Use the same Media Library only for Media Folders that show the same collection of photos and videos. Different collections use different Media Libraries.</p>
-              <p>Choosing a Media Library does not create or change a folder. Nothing is copied, moved, combined or uploaded.</p>
-            </section>
-            <section data-help-concept="profile">
-              <h3>Curation</h3>
-              <p>As you browse, you can mark Favorites, hide items and add Tags. One saved set of those choices is a Curation. Create different Curations for different people, purposes, or ways of organizing your media.</p>
-            </section>
-            <section data-help-concept="active-profile">
-              <h3>This Device Is Using</h3>
-              <p>The Curation this device is using right now. Its Favorites, Hidden items and Tags are the ones Browser Gallery uses while you browse your media. Each of your devices can use a different Curation. When you open a Media Library, Browser Gallery may switch to the Curation that Media Library remembers, or ask you first.</p>
-            </section>
-            <section data-help-concept="profile-for-library">
-              <h3>Curation for This Media Library</h3>
-              <p>The Curation Browser Gallery remembers for this Media Library. It is the Favorites, Hidden items and Tags that belong with that collection. If another of your devices opens the same Media Library, Browser Gallery can ask whether to use that Curation there too.</p>
-            </section>
-            <section data-help-concept="sync">
-              <h3>Sync</h3>
-              <p>Sync makes your Favorites, Hidden items and Tags available on your other devices. Connect each device you want to use to the same Google Drive Sync Folder.</p>
-              <p>A Google Drive Sync Folder stores Browser Gallery information only. It is separate from a Google Drive Media Folder and does not contain your photos and videos.</p>
-            </section>
-          </div>
-          <button id="profile-sync-intro-replay" class="secondary profile-sync-help-replay" type="button">Replay Introduction</button>
-        </details>
+        <!-- [SYNCV3 / STAGE-10 / HELP-COMPRESSION]
+             BREADCRUMBS — IS: the first small utility inside the expanded
+               section replays the existing five-step introduction.
+             BREADCRUMBS — WAS: Help opened the complete concept glossary.
+             BREADCRUMBS — WILL BE / FUTURE: explain one concept in context;
+               never make the user study the product model before acting. -->
+        <button id="profile-sync-help-btn" class="secondary profile-sync-help-btn" type="button">? Help</button>
 
         <!-- [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
              [WHY: this stays inline and hidden until intentional Profile & Sync
@@ -1395,29 +1362,28 @@
                BREADCRUMBS — FUTURE: #profile-folder-link-btn is retained as the
                  single genuine action left in this group (L7 reconnect). Do not
                  re-purpose it into a disclosure toggle again. -->
-          <h3 class="profile-group-heading">This Media Folder</h3>
-          <p id="profile-folder-link-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
-          <button
-            id="profile-folder-link-btn"
-            class="secondary hidden"
-            type="button"
-            disabled
-          >Reconnect Media Folder</button>
+          <div id="profile-media-folder-controls">
+            <h3 class="profile-group-heading">This Media Folder</h3>
+            <p id="profile-folder-link-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
+            <button
+              id="profile-folder-link-btn"
+              class="secondary hidden"
+              type="button"
+              disabled
+              aria-describedby="profile-media-folder-context-help"
+            >Reconnect Media Folder</button>
+            <div id="profile-media-folder-context-help" class="contextual-help hidden" role="note">
+              <p id="profile-media-folder-help" class="hint"></p>
+            </div>
+          </div>
 
           <div id="profile-folder-link-row" class="profile-folder-link-row hidden">
             <label for="profile-folder-link-select">Media Library</label>
             <select
               id="profile-folder-link-select"
               class="field-control"
-              aria-describedby="profile-folder-link-conflict profile-folder-action-help profile-folder-link-help"
+              aria-describedby="profile-folder-link-conflict profile-media-library-context-help"
             ></select>
-            <p id="profile-folder-action-help" class="hint hidden"></p>
-
-            <!-- [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
-                 [WHY: the same-collection rule has to be taught in BOTH
-                  directions at the point of choice, or a user cheerfully puts
-                  two different collections in one Media Library.] -->
-            <p id="profile-folder-link-help" class="hint">Use the same Media Library only for Media Folders that show the same collection of photos and videos. Different collections use different Media Libraries. Nothing is copied, moved or uploaded.</p>
 
             <!-- [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
                  [WHY: naming happens where the new Media Library is created, so
@@ -1462,6 +1428,10 @@
               <strong id="profile-folder-link-conflict-heading"></strong>
               <p id="profile-folder-link-conflict-detail"></p>
               <p id="profile-folder-link-conflict-action"></p>
+            </div>
+            <div id="profile-media-library-context-help" class="contextual-help hidden" role="note">
+              <p id="profile-folder-action-help" class="hint"></p>
+              <p id="profile-folder-link-help" class="hint"></p>
             </div>
           </div>
           <p id="profile-folder-link-result" class="hint" role="status"></p>
@@ -1534,15 +1504,17 @@
                 gone, so the accessible name moves to aria-label — the select
                 is still focused directly by the rail shortcut. -->
           <div class="profile-current-row">
-            <select id="profile-select" class="field-control" aria-label="Curation this device is using"></select>
+            <select id="profile-select" class="field-control" aria-label="Curation this device is using" aria-describedby="profile-active-context-help"></select>
           </div>
-          <p class="hint">Other devices can use a different Curation.</p>
           <p id="profile-active-status-text" class="hint" role="status"></p>
           <!-- The existing creation controls are intentionally subordinate to
                the active choice; creation behavior and vocabulary are unchanged. -->
           <div class="profile-create-row">
             <input id="profile-create-input" class="field-control" type="text" placeholder="New Curation name" maxlength="60" />
             <button id="profile-create-btn" class="secondary" type="button">Create Curation</button>
+          </div>
+          <div id="profile-active-context-help" class="contextual-help hidden" role="note">
+            <p class="hint"></p>
           </div>
         </div>
 
@@ -1567,20 +1539,15 @@
         <div id="profile-sync-group" class="profile-settings-group">
           <h3 class="profile-group-heading">Sync</h3>
           <p id="profile-sync-product-status" class="product-status product-status-muted" role="status">Not syncing — no sync folder chosen</p>
-          <!-- [SYNCV3 / STAGE-10 / SAFETY-REASSURANCE]
-               [WHY: SyncV3 transports Browser Gallery Profile, association,
-                and Library facts; it never transports the media collection.] -->
-          <p id="profile-sync-media-safety" class="hint">To make your Favorites, Hidden items and Tags available on your other devices, connect each device you want to use to the same Google Drive Sync Folder.</p>
-          <!-- [SYNCV3 / STAGE-10 / DRIVE-ROLES]
-               [WHY: the Sync Folder's role is stated as a label beside its own
-                chooser, not as prose several paragraphs away. A Google Drive
-                Media Folder holds photos and videos; this one never does.] -->
-          <p class="role-descriptor">Google Drive Sync Folder</p>
-          <p class="role-descriptor-detail">Browser Gallery information only · No photos or videos</p>
           <div class="control-stack">
-            <button id="profile-sync-v3-choose-btn" class="secondary" type="button">Choose Sync Folder</button>
+            <button id="profile-sync-v3-choose-btn" class="secondary" type="button" aria-describedby="profile-sync-context-help">Choose Sync Folder</button>
             <button id="profile-sync-v3-reconnect-btn" class="secondary hidden" type="button">Reconnect Sync Folder</button>
             <button id="profile-sync-v3-disconnect-btn" class="secondary hidden" type="button">Disconnect Sync Folder</button>
+          </div>
+          <div id="profile-sync-context-help" class="contextual-help hidden" role="note">
+            <p id="profile-sync-media-safety" class="hint"></p>
+            <p class="role-descriptor">Google Drive Sync Folder</p>
+            <p class="role-descriptor-detail">Browser Gallery information only · No photos or videos</p>
           </div>
         </div>
 

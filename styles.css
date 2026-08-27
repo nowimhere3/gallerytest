@@ -959,47 +959,36 @@ button:not(:disabled):hover,
   margin: 8px 0 0;
 }
 
-/* [SYNCV3 / STAGE-10 / CHECKPOINT-1-SYNC-SPACING]
-   The Sync reassurance is a block <p>, so its bottom margin participates in
-   layout and creates the same 8px separation used by nearby captions. */
-#profile-sync-media-safety {
-  margin-bottom: 8px;
+/* [SYNCV3 / STAGE-10 / HELP-COMPRESSION]
+   Help is the first quiet utility inside the expanded section, never a second
+   click target competing with the disclosure summary. */
+.profile-sync-help-btn {
+  min-height: 32px;
+  margin: 10px 0 2px;
+  padding: 4px 10px;
+  font-size: 0.9rem;
 }
 
-/* [SYNCV3 / STAGE-10 / PERSISTENT-HELP]
-   A compact native disclosure: discoverable before the identity flow without
-   competing with THIS FOLDER or adding permanent mobile height. */
-.profile-sync-help {
+/* [SYNCV3 / STAGE-10 / SETTINGS-COMPRESSION]
+   Blocks are last in their group, so revealing one only moves content below.
+   Opacity is the sole animated property; height never animates. */
+.contextual-help {
   max-width: 620px;
-  margin-top: 12px;
+  margin-top: 10px;
+  opacity: 1;
+  transition: opacity 120ms ease;
 }
 
-.profile-sync-help summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 0.95rem;
-  font-weight: 600;
+.contextual-help.hidden {
+  opacity: 0;
 }
 
-.profile-sync-help[open] summary {
-  margin-bottom: 12px;
-  color: var(--text);
+.contextual-help > :first-child {
+  margin-top: 0;
 }
 
-.profile-sync-help-content {
-  display: grid;
-  gap: 12px;
-  max-width: 620px;
-}
-
-.profile-sync-help-content section,
-.profile-sync-help-content h3,
-.profile-sync-help-content p {
-  margin: 0;
-}
-
-.profile-sync-help-replay {
-  margin-top: 12px;
+.contextual-help p:empty {
+  display: none;
 }
 
 /* [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
@@ -1077,17 +1066,6 @@ button:not(:disabled):hover,
 #profile-sync-intro-next,
 #profile-sync-intro-done {
   margin-left: auto;
-}
-
-.profile-sync-help-content h3 {
-  font-size: 0.95rem;
-  color: var(--text);
-}
-
-.profile-sync-help-content p {
-  margin-top: 4px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
 }
 
 /* [SYNCV3 / STAGE-09 / THIS-DEVICE-LABEL-SPACING]

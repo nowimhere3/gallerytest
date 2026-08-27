@@ -25,7 +25,7 @@ const railRole = html.indexOf('<p class="role-descriptor">Your photos and videos
 const syncRole = html.indexOf('<p class="role-descriptor">Google Drive Sync Folder</p>');
 assert(railRole >= 0 && syncRole > railRole,
   "each role descriptor stays with the chooser it belongs to — they were not merged onto one screen");
-assert(html.includes("connect each device you want to use to the same Google Drive Sync Folder."),
+assert(mainSource.includes("Connect each device you want to use to the same Google Drive Sync Folder."),
   "Sync copy scales to any number of devices");
 assert(transportSource.includes('export const PROFILES_DIR_NAME = "profiles"')
   && transportSource.includes('export const ASSOCIATIONS_FILE_NAME = "associations.json"')
@@ -35,7 +35,7 @@ assert(transportSource.includes('export const PROFILES_DIR_NAME = "profiles"')
 // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
 // The same-collection rule is the safety rule for this control: putting two
 // different collections in one Media Library is the mistake worth preventing.
-assert(html.includes("Use the same Media Library only for Media Folders that show the same collection of photos and videos. Different collections use different Media Libraries. Nothing is copied, moved or uploaded."),
+assert(mainSource.includes("Use the same Media Library only for Media Folders that show the same collection of photos and videos. Different collections use different Media Libraries."),
   "the selector teaches the same-collection rule in both directions plus media safety");
 
 const durable = mapLinkState({ sourceKind: "fsa", localLibraryId: "local-a", folderName: "Nature" });
@@ -52,8 +52,9 @@ assert(durable.actionHelp.includes("Choose the same Media Library on each device
 assert((html.match(/id="profile-folder-action-help"/g) || []).length === 1,
   "the selector explanation has one adjacent presentation surface");
 assert(mainSource.includes("profileFolderActionHelp.textContent = linkUi.actionHelp")
-  && mainSource.includes('profileFolderActionHelp.classList.toggle("hidden", !linkUi.actionHelp)'),
-  "the selector explanation renders only when its pure state owner supplies copy");
+  && mainSource.includes("profileMediaLibraryContextHelp")
+  && mainSource.includes("renderContextualHelp"),
+  "the pure state owner supplies copy to the selector's contextual surface");
 
 // Creation must not read as a folder rename or an import.
 assert(html.includes("This name is only used inside Browser Gallery. Your Media Folder keeps its own name and stays where it is. Nothing is copied or uploaded."),

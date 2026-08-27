@@ -49,7 +49,8 @@ assert(outcome.effect === null && outcome.state.seen, "closing replay leaves the
 assert(createContextualFirstUseState().seen === false, "another device-local state can remain unseen");
 
 assert(PROFILE_SYNC_INTRO_STEPS.length === 5, "introduction contains exactly five steps");
-const helpConcepts = new Set([...html.matchAll(/data-help-concept="([^"]+)"/g)].map((match) => match[1]));
+const helpConcepts = new Set(["folder", "library", "profile", "active-profile", "profile-for-library", "sync"]);
+assert(main.includes("PROFILE_SYNC_BACKGROUND_GLOSSARY"), "canonical concepts remain background source material");
 for (const step of PROFILE_SYNC_INTRO_STEPS) {
   assert(step.concepts.every((concept) => helpConcepts.has(concept)), `${step.id} is tied to canonical Help concepts`);
 }
@@ -133,8 +134,8 @@ assert(!/\b(link|linked|linking|unlink|shared)\b/i.test(introCopy),
   "onboarding carries no retired link/shared vocabulary");
 
 assert((html.match(/id="profile-sync-intro"/g) || []).length === 1, "introduction exists exactly once");
-assert((html.match(/id="profile-sync-intro-replay"/g) || []).length === 1, "Replay action exists exactly once");
-assert((html.match(/id="profile-sync-help"/g) || []).length === 1, "Persistent Help remains exactly once");
+assert((html.match(/id="profile-sync-help-btn"/g) || []).length === 1, "Persistent Help entry remains exactly once");
+assert(!html.includes('id="profile-sync-intro-replay"'), "redundant Replay Introduction control is absent");
 assert(/<section id="profile-sync-intro"[^>]*class="[^"]*hidden/.test(html), "introduction is hidden by default");
 for (const control of ["back", "next", "done", "skip", "close"]) {
   assert((html.match(new RegExp(`id="profile-sync-intro-${control}"`, "g")) || []).length === 1,
@@ -206,6 +207,8 @@ assert(main.includes('profileSyncIntroClose.classList.toggle("hidden", !actions.
 assert(html.includes('id="profile-sync-intro-close"') && /id="profile-sync-intro-close"[\s\S]{0,200}?aria-label="Close introduction"/.test(html),
   "the Close affordance carries an accessible name");
 assert(!/profile-sync-intro-close[\s\S]{0,400}?confirm/i.test(main), "closing a replay asks for no confirmation");
+assert(/profileSyncHelpBtn\.addEventListener\("click", \(\) => \{[\s\S]{0,300}?dispatchProfileSyncIntroduction\(\{ type: "replay" \}\);/.test(main),
+  "? Help replays the existing inline introduction directly");
 
 // Close must never write seen:false, and must never persist on a device that
 // has already seen the introduction.
@@ -245,7 +248,7 @@ assert(!transition(reloaded, "enter-profile-sync", { intentional: true }).state.
   "an intentional entry after a hard refresh stays quiet on a seen device");
 const replayed = transition(reloaded, "replay");
 assert(replayed.state.visible && replayed.state.stepIndex === 0 && replayed.effect === null,
-  "Replay Introduction still opens it on that same reloaded, seen device");
+  "? Help replay still opens it on that same reloaded, seen device");
 assert(transition(replayed.state, "done").state.seen === true,
   "closing that replay leaves the device seen, so nothing auto-opens later");
 

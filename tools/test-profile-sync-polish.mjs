@@ -141,8 +141,8 @@ for (const marker of order) {
   previous = at;
 }
 assert(card.includes("Curation for This Media Library"), "the card names the concept first");
-assert(mainSource.includes('fsaAssociateHelp.textContent = shouldShow ? (associationUi.actionHelp || "") : "";'),
-  "the benefit line is applied from the pure mapper, not written here");
+assert(mainSource.includes('fsaAssociateHelp.textContent = shouldShow && actionHelpIsCurrent ? (associationUi.actionHelp || "") : "";'),
+  "the current benefit comes from the pure mapper and completed-action Help can retreat");
 
 // Behaviour is untouched: this is the same single navigation-only control.
 assert(count(html, 'id="fsa-associate-btn"') === 1, "the rail action still exists exactly once");

@@ -209,6 +209,8 @@ const manageTagsBtn = document.getElementById("manage-tags-btn");
 
 const profileSelect = document.getElementById("profile-select");
 const profileSectionDetails = document.querySelector(".profile-section");
+const profileMediaFolderControls = document.getElementById("profile-media-folder-controls");
+const profileActiveGroup = document.getElementById("profile-active-group");
 // [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN] [PROFILE-TAGS-DISCLOSURE]
 const tagsAdminSectionDetails = document.querySelector(".tags-admin-section");
 const profileAssociateBtn = document.getElementById("profile-associate-btn");
@@ -228,6 +230,7 @@ const ambientProfileOfferResult = document.getElementById("ambient-profile-offer
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
 const profileFolderActionHelp = document.getElementById("profile-folder-action-help");
+const profileFolderLinkHelp = document.getElementById("profile-folder-link-help");
 const profileFolderLinkRow = document.getElementById("profile-folder-link-row");
 const profileFolderLinkSelect = document.getElementById("profile-folder-link-select");
 const profileFolderLinkSaveBtn = document.getElementById("profile-folder-link-save-btn");
@@ -244,6 +247,11 @@ const profileFolderNewLibraryInput = document.getElementById("profile-folder-new
 const profileFolderLibrarySyncHint = document.getElementById("profile-folder-library-sync-hint");
 const profileFolderLibrarySyncBtn = document.getElementById("profile-folder-library-sync-btn");
 const profileSyncGroup = document.getElementById("profile-sync-group");
+const profileMediaFolderContextHelp = document.getElementById("profile-media-folder-context-help");
+const profileMediaLibraryContextHelp = document.getElementById("profile-media-library-context-help");
+const profileActiveContextHelp = document.getElementById("profile-active-context-help");
+const profileSyncContextHelp = document.getElementById("profile-sync-context-help");
+const profileSyncMediaSafety = document.getElementById("profile-sync-media-safety");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
@@ -266,7 +274,7 @@ const profileSyncIntroNext = document.getElementById("profile-sync-intro-next");
 const profileSyncIntroDone = document.getElementById("profile-sync-intro-done");
 const profileSyncIntroSkip = document.getElementById("profile-sync-intro-skip");
 const profileSyncIntroClose = document.getElementById("profile-sync-intro-close");
-const profileSyncIntroReplay = document.getElementById("profile-sync-intro-replay");
+const profileSyncHelpBtn = document.getElementById("profile-sync-help-btn");
 
 // [PROFILE-SYNC] DOM refs for the compact Profile Sync block — see
 // index.html's own [PROFILE-SYNC] comment on `.profile-sync-section`.
@@ -504,6 +512,130 @@ let activeWorkspace = "gallery";
 let profileSyncIntroState = createContextualFirstUseState();
 let profileSyncIntroPreferencesReady = false;
 let pendingIntentionalProfileSyncEntry = false;
+let contextualHelpActiveEntry = null;
+let syncContextHelpDefaultVisible = false;
+let dismissedAssociationHelpKey = null;
+
+// The full Stage 10 language remains background product knowledge. Settings
+// renders only the short sentence belonging to the focused concept; this
+// object is not itself a customer-facing destination.
+const PROFILE_SYNC_BACKGROUND_GLOSSARY = Object.freeze({
+  mediaFolder: "Where Browser Gallery opens your photos and videos from. Choose a Media Folder on this device or a Google Drive Media Folder. Browser Gallery does not upload, move or copy what is inside it.",
+  mediaLibrary: "A Media Library is Browser Gallery's name for one collection of photos and videos. If that collection appears through different Media Folders across your devices, choose the same Media Library for each one. That tells Browser Gallery they represent the same collection, and which Favorites, Hidden items and Tags belong with it. Use the same Media Library only for Media Folders that show the same collection of photos and videos. Different collections use different Media Libraries. Choosing a Media Library does not create or change a folder. Nothing is copied, moved, combined or uploaded.",
+  curation: "As you browse, you can mark Favorites, hide items and add Tags. One saved set of those choices is a Curation. Create different Curations for different people, purposes, or ways of organizing your media.",
+  activeCuration: "The Curation this device is using right now. Its Favorites, Hidden items and Tags are the ones Browser Gallery uses while you browse your media. Each of your devices can use a different Curation. When you open a Media Library, Browser Gallery may switch to the Curation that Media Library remembers, or ask you first.",
+  libraryCuration: "The Curation Browser Gallery remembers for this Media Library. It is the Favorites, Hidden items and Tags that belong with that collection. If another of your devices opens the same Media Library, Browser Gallery can ask whether to use that Curation there too.",
+  sync: "Sync makes your Favorites, Hidden items and Tags available on your other devices. Connect each device you want to use to the same Google Drive Sync Folder. A Google Drive Sync Folder stores Browser Gallery information only. It is separate from a Google Drive Media Folder and does not contain your photos and videos.",
+});
+
+function glossaryExcerpt(key, sentenceCount) {
+  const excerpt = PROFILE_SYNC_BACKGROUND_GLOSSARY[key].split(". ").slice(0, sentenceCount).join(". ");
+  return excerpt.endsWith(".") ? excerpt : `${excerpt}.`;
+}
+
+document.getElementById("profile-media-folder-help").textContent = glossaryExcerpt("mediaFolder", 1);
+profileFolderLinkHelp.textContent = glossaryExcerpt("mediaLibrary", 2);
+profileActiveContextHelp.querySelector("p").textContent = glossaryExcerpt("activeCuration", 2);
+profileSyncMediaSafety.textContent = glossaryExcerpt("sync", 2);
+
+function associationHelpKey(associationUi) {
+  return [
+    currentSourceKind,
+    activeLibraryRecord?.id || "session",
+    associationUi.state,
+    associationUi.associatedProfileId || "none",
+  ].join(":");
+}
+
+// [SYNCV3 / STAGE-10 / SETTINGS-COMPRESSION]
+// BREADCRUMBS — IS: one focus-driven explainer may appear at the end of its
+//   group; warnings, conflicts and an unsaved Media Library choice keep it.
+// BREADCRUMBS — WAS: the same teaching copy occupied every healthy steady state.
+// BREADCRUMBS — WILL BE / FUTURE: onboarding may replace this in Stage 11; do not turn
+//   this presentation controller into a second product-state authority.
+const contextualHelpEntries = [
+  {
+    group: profileMediaFolderControls,
+    block: profileMediaFolderContextHelp,
+    toneElement: profileFolderLinkSummary,
+    hasPendingChange: () => false,
+    hasConflict: () => false,
+  },
+  {
+    group: profileFolderLinkRow,
+    block: profileMediaLibraryContextHelp,
+    toneElement: profileFolderLinkSummary,
+    hasPendingChange: () => !profileFolderLinkSaveBtn.classList.contains("hidden"),
+    hasConflict: () => !profileFolderLinkConflict.classList.contains("hidden"),
+  },
+  {
+    group: profileActiveGroup,
+    block: profileActiveContextHelp,
+    toneElement: null,
+    hasPendingChange: () => false,
+    hasConflict: () => false,
+  },
+  {
+    group: profileSyncGroup,
+    block: profileSyncContextHelp,
+    toneElement: profileSyncProductStatus,
+    hasPendingChange: () => false,
+    hasConflict: () => false,
+  },
+];
+
+function contextualHelpHasWarning(entry) {
+  return Boolean(entry.toneElement && (
+    entry.toneElement.classList.contains("product-status-warning") ||
+    entry.toneElement.classList.contains("product-status-danger")
+  ));
+}
+
+function contextualHelpIsSticky(entry) {
+  return entry.hasPendingChange() || contextualHelpHasWarning(entry) || entry.hasConflict();
+}
+
+function renderContextualHelp(requestedEntry = contextualHelpActiveEntry) {
+  if (profileSyncIntroState.visible) {
+    contextualHelpEntries.forEach((entry) => entry.block.classList.add("hidden"));
+    return;
+  }
+  const visibleEntry = requestedEntry || (syncContextHelpDefaultVisible ? contextualHelpEntries[3] : null);
+  contextualHelpEntries.forEach((entry) => entry.block.classList.toggle("hidden", entry !== visibleEntry));
+}
+
+function revealContextualHelp(entry) {
+  contextualHelpActiveEntry = entry;
+  renderContextualHelp(entry);
+}
+
+function retreatContextualHelp(entry) {
+  if (contextualHelpActiveEntry !== entry || contextualHelpIsSticky(entry)) {
+    renderContextualHelp();
+    return;
+  }
+  contextualHelpActiveEntry = null;
+  renderContextualHelp();
+}
+
+function refreshContextualHelpAfterRender(entry) {
+  if (contextualHelpIsSticky(entry)) contextualHelpActiveEntry = entry;
+  else if (contextualHelpActiveEntry === entry && !entry.group.contains(document.activeElement)) {
+    contextualHelpActiveEntry = null;
+  }
+  renderContextualHelp();
+}
+
+contextualHelpEntries.forEach((entry) => {
+  entry.group.addEventListener("focusin", () => revealContextualHelp(entry));
+  entry.group.addEventListener("change", () => revealContextualHelp(entry));
+  entry.group.addEventListener("focusout", (event) => {
+    if (event.relatedTarget && entry.group.contains(event.relatedTarget)) return;
+    queueMicrotask(() => {
+      if (!entry.group.contains(document.activeElement)) retreatContextualHelp(entry);
+    });
+  });
+});
 
 function renderProfileSyncIntroduction() {
   const step = PROFILE_SYNC_INTRO_STEPS[profileSyncIntroState.stepIndex];
@@ -522,6 +654,7 @@ function renderProfileSyncIntroduction() {
   profileSyncIntroClose.classList.toggle("hidden", !actions.close);
   profileSyncIntroNext.classList.toggle("hidden", !actions.next);
   profileSyncIntroDone.classList.toggle("hidden", !actions.done);
+  renderContextualHelp();
 }
 
 function dispatchProfileSyncIntroduction(event) {
@@ -782,7 +915,7 @@ profileSyncIntroClose.addEventListener("click", () => {
 profileSyncIntroSkip.addEventListener("click", () => {
   dispatchProfileSyncIntroduction({ type: "skip" });
 });
-profileSyncIntroReplay.addEventListener("click", () => {
+profileSyncHelpBtn.addEventListener("click", () => {
   // [WHY: replay deliberately does not alter profileSyncIntroSeen. It is a
   // manual view of the same material, never a request to auto-open it again.]
   dispatchProfileSyncIntroduction({ type: "replay" });
@@ -1025,8 +1158,9 @@ function syncAssociateButtonVisibility() {
   // [WHY: the benefit line follows the action's own availability — there is no
   // point explaining a control that is not being offered. Copy is owned by the
   // pure mapper beside actionLabel; this only applies it.]
-  fsaAssociateHelp.textContent = shouldShow ? (associationUi.actionHelp || "") : "";
-  fsaAssociateHelp.classList.toggle("hidden", !shouldShow || !associationUi.actionHelp);
+  const actionHelpIsCurrent = dismissedAssociationHelpKey !== associationHelpKey(associationUi);
+  fsaAssociateHelp.textContent = shouldShow && actionHelpIsCurrent ? (associationUi.actionHelp || "") : "";
+  fsaAssociateHelp.classList.toggle("hidden", !shouldShow || !associationUi.actionHelp || !actionHelpIsCurrent);
   // [UI-REDESIGN / Stage 6] Ordered after updateAssociatedStatusRow() on
   // purpose — the compact header mirrors that function's output, so it must
   // read the row only once the row is current.
@@ -5308,6 +5442,8 @@ async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
 // reconsider before adding logic here.
 fsaAssociateBtn.addEventListener("click", () => {
   if (currentSourceKind === "none") return;
+  dismissedAssociationHelpKey = null;
+  syncAssociateButtonVisibility();
   // [SYNCV3 / STAGE-07 / MOBILE-ASSOCIATION-HANDOFF]
   // [WHY: a mobile association shortcut must complete the navigation it
   // initiates; opening Profile beneath the Media Folder takeover leaves the
@@ -5372,6 +5508,8 @@ function closeAssociationEditor({ returnFocus = true } = {}) {
 }
 
 profileAssociateBtn.addEventListener("click", () => {
+  dismissedAssociationHelpKey = null;
+  syncAssociateButtonVisibility();
   if (profileAssociationRow.classList.contains("hidden")) openAssociationEditor();
   else closeAssociationEditor();
 });
@@ -5393,6 +5531,11 @@ profileAssociationSaveBtn.addEventListener("click", async () => {
     profileAssociationResult.textContent = selectedProfileName
       ? `Now remembered with ${selectedProfileName}.`
       : "This Media Library now has No Curation.";
+    // [SYNCV3 / STAGE-10 / COMPLETED-EXPLAINER]
+    // [WHY: the old action's benefit has finished its job. Scope dismissal to
+    // this exact Library/association state so a new state or later interaction
+    // can explain its own current action without a timer or forced blur.]
+    dismissedAssociationHelpKey = associationHelpKey(getCurrentAssociationUiState());
     syncAssociateButtonVisibility();
     closeAssociationEditor();
   } catch (error) {
@@ -5451,13 +5594,13 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   profileFolderLinkRow.classList.toggle("hidden", !showSelector);
   if (!showSelector) {
     clearFolderLinkConflict();
-    profileFolderActionHelp.classList.add("hidden");
+    profileFolderActionHelp.textContent = "";
+    refreshContextualHelpAfterRender(contextualHelpEntries[1]);
     return linkUi;
   }
   if (wasHidden) populateFolderLinkPicker();
 
   profileFolderActionHelp.textContent = linkUi.actionHelp;
-  profileFolderActionHelp.classList.toggle("hidden", !linkUi.actionHelp);
 
   const linkedId = activeLibraryRecord?.libraryId || "";
   const selected = profileFolderLinkSelect.value;
@@ -5540,6 +5683,7 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   const canUnlink = Boolean(linkedId) && !pendingChange;
   profileFolderUnlinkBtn.classList.toggle("hidden", !canUnlink);
   profileFolderUnlinkHelp.classList.toggle("hidden", !canUnlink);
+  refreshContextualHelpAfterRender(contextualHelpEntries[1]);
   return linkUi;
 }
 
@@ -10095,6 +10239,8 @@ function renderProfileSync() {
   const productStatus = mapSyncStatusCopy(status);
   profileSyncProductStatus.textContent = productStatus.line;
   applyProductStatusTone(profileSyncProductStatus, productStatus.tone);
+  syncContextHelpDefaultVisible = !status.configured && !status.v3Configured;
+  refreshContextualHelpAfterRender(contextualHelpEntries[3]);
 
   // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
   // [WHY: every V1/V2 control below is additionally gated on `!isV3`. Under V3
@@ -10285,14 +10431,13 @@ function renderSyncV3State(status, isV3) {
   //  an empty field honestly means "you have not named this device". Pre-filling
   //  it with "Chromebook" would make a Save look like a no-op while actually
   //  freezing a detected value as a custom one. The status line underneath is
-  //  where the effective name and the id suffix are shown together — that is the
-  //  answer to "which machine am I looking at", and it needs both halves.]
+  //  where the effective customer-facing name is shown. Durable identity stays
+  //  in the Advanced diagnostic line below; the human name never becomes identity.]
   if (document.activeElement !== profileSyncV3DeviceNameInput) {
     profileSyncV3DeviceNameInput.value = status.deviceName || "";
   }
-  const shortId = status.deviceId ? String(status.deviceId).replace(/^dev-/, "").replace(/[^0-9a-zA-Z]/g, "").slice(0, 8) : "";
   profileSyncV3DeviceNameStatus.textContent = status.deviceDisplayName
-    ? `This device: ${status.deviceDisplayName}${shortId ? ` · ${shortId}` : ""}${status.deviceName ? "" : " (detected)"}`
+    ? `This device: ${status.deviceDisplayName}${status.deviceName ? "" : " (detected)"}`
     : "This device: unknown";
   profileSyncV3DeviceNameResetBtn.disabled = !status.deviceName;
 
@@ -10325,6 +10470,7 @@ function renderSyncV3State(status, isV3) {
       ? " This tab is the Drive writer for this device."
       : " This tab is read-only; another tab or browser holds the writer role.";
   }
+  if (status.deviceId) line += ` Device ID: ${status.deviceId}.`;
   profileSyncV3StatusText.textContent = line;
 }
 
