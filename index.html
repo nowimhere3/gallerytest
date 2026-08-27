@@ -1410,6 +1410,23 @@
             </div>
           </section>
           <p id="reverse-curation-offer-result" class="hint" role="status" aria-live="polite"></p>
+
+          <!-- [NORTH-STAR / N2 / DEVICE-AWARE-HUMAN-QUESTION]
+               Shown only after N5 identifies one strong peer candidate. The
+               device name presents that evidence; it never creates it. -->
+          <section
+            id="device-aware-media-question"
+            class="ambient-profile-offer hidden"
+            aria-labelledby="device-aware-media-question-heading"
+          >
+            <h4 id="device-aware-media-question-heading">Same media?</h4>
+            <p id="device-aware-media-question-text" aria-live="polite"></p>
+            <div class="ambient-profile-offer-actions">
+              <button id="device-aware-media-question-yes" class="secondary" type="button">Yes</button>
+              <button id="device-aware-media-question-no" class="secondary" type="button">No</button>
+            </div>
+          </section>
+          <p id="device-aware-media-question-result" class="hint" role="status" aria-live="polite"></p>
           <button
             id="profile-associate-btn"
             class="secondary hidden"

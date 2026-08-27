@@ -74,6 +74,10 @@ import {
   resolveReverseCurationSuggestion,
 } from "./profile/reverse-curation-suggestion.js";
 import {
+  performDeviceAwareMediaQuestionAction,
+  resolveDeviceAwareMediaQuestion,
+} from "./profile/device-aware-media-question.js";
+import {
   buildAmbientProfileOfferView,
   performAmbientProfileAction,
 } from "./profile/ambient-profile-action.js";
@@ -239,6 +243,11 @@ const reverseCurationOfferText = document.getElementById("reverse-curation-offer
 const reverseCurationOfferYes = document.getElementById("reverse-curation-offer-yes");
 const reverseCurationOfferNo = document.getElementById("reverse-curation-offer-no");
 const reverseCurationOfferResult = document.getElementById("reverse-curation-offer-result");
+const deviceAwareMediaQuestion = document.getElementById("device-aware-media-question");
+const deviceAwareMediaQuestionText = document.getElementById("device-aware-media-question-text");
+const deviceAwareMediaQuestionYes = document.getElementById("device-aware-media-question-yes");
+const deviceAwareMediaQuestionNo = document.getElementById("device-aware-media-question-no");
+const deviceAwareMediaQuestionResult = document.getElementById("device-aware-media-question-result");
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
 const profileFolderLinkAdvancedSummary = document.getElementById("profile-folder-link-advanced-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
@@ -1002,6 +1011,8 @@ let ambientProfileOfferRenderedKey = null;
 let ambientProfileActionPending = false;
 let pendingReverseCurationSuggestion = null;
 let reverseCurationActionPending = false;
+let pendingDeviceAwareMediaQuestion = null;
+let deviceAwareMediaActionPending = false;
 
 // [P1-DIAGNOSTIC / TEMPORARY] See the DevTools-callable probe block at the
 // bottom of this file. Holds the most recently loaded FSA root handle (and
@@ -4510,6 +4521,107 @@ async function handleReverseCurationSuggestionAction(kind) {
   }
 }
 
+function resolveDeviceAwareMediaQuestionForLoad({ rootId, currentSample }) {
+  if (profileSync.getStatus().mode !== "v3" || !rootId || !currentSample) return null;
+  return resolveDeviceAwareMediaQuestion({
+    currentRootId: rootId,
+    currentLibrary: activeLibraryRecord,
+    currentSample,
+    structure: profile.getStructure(),
+    libraries: profile.getLibraries(),
+    associations: profile.getAssociations(),
+    knownProfileIds: profile.listProfiles().map((entry) => entry.id),
+    ownDeviceId: profile.getDeviceId(),
+  });
+}
+
+function clearDeviceAwareMediaQuestion() {
+  pendingDeviceAwareMediaQuestion = null;
+  deviceAwareMediaActionPending = false;
+  deviceAwareMediaQuestionResult.textContent = "";
+  renderDeviceAwareMediaQuestion();
+}
+
+function armDeviceAwareMediaQuestion(candidate, loadToken, currentSample) {
+  if (!candidate
+    || libraryLoadGeneration !== loadToken
+    || activeLibraryRecord?.id !== candidate.currentRootId) return false;
+  // Device names present evidence that already exists; they never participate
+  // in candidate selection.
+  const deviceName = profileSync.resolveDeviceName(candidate.sourceDeviceId);
+  if (!deviceName) return false;
+  pendingDeviceAwareMediaQuestion = Object.freeze({ ...candidate, deviceName, loadToken, currentSample });
+  deviceAwareMediaQuestionResult.textContent = "";
+  renderDeviceAwareMediaQuestion();
+  return true;
+}
+
+function renderDeviceAwareMediaQuestion() {
+  const question = pendingDeviceAwareMediaQuestion;
+  const visible = Boolean(question
+    && question.loadToken === libraryLoadGeneration
+    && activeLibraryRecord?.id === question.currentRootId
+    && question.deviceName);
+  deviceAwareMediaQuestion.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  deviceAwareMediaQuestionText.textContent = `Is this the same media you use on ${question.deviceName}?`;
+  deviceAwareMediaQuestionYes.disabled = deviceAwareMediaActionPending;
+  deviceAwareMediaQuestionNo.disabled = deviceAwareMediaActionPending;
+}
+
+async function linkDeviceAwareMediaCandidate(localRootId, sharedLibraryId) {
+  if (activeLibraryRecord?.id !== localRootId) return null;
+  const result = await profile.linkLocalLibraryToShared(localRootId, sharedLibraryId);
+  if (!result || result.ok === false) return result;
+  const refreshed = await getLibraryById(localRootId);
+  if (!refreshed || refreshed.libraryId !== sharedLibraryId || activeLibraryRecord?.id !== localRootId) return null;
+  activeLibraryRecord = refreshed;
+  associationWriteSuppression.setLoadedLibrary(activeLibraryRecord);
+  establishAmbientProfileContext(activeLibraryRecord);
+  syncAssociateButtonVisibility();
+  await renderRecentLibraries();
+  return result;
+}
+
+async function handleDeviceAwareMediaQuestionAction(kind) {
+  if (deviceAwareMediaActionPending || !pendingDeviceAwareMediaQuestion) return;
+  const pending = pendingDeviceAwareMediaQuestion;
+  deviceAwareMediaActionPending = true;
+  deviceAwareMediaQuestionResult.textContent = "";
+  renderDeviceAwareMediaQuestion();
+  try {
+    const result = await performDeviceAwareMediaQuestionAction({
+      kind,
+      pendingQuestion: pending,
+      getCurrentRootId: () => activeLibraryRecord?.id || null,
+      resolveCurrentQuestion: () => resolveDeviceAwareMediaQuestionForLoad({
+        rootId: pending.currentRootId,
+        currentSample: pending.currentSample,
+      }),
+      linkLocalLibrary: (localRootId, sharedLibraryId) =>
+        linkDeviceAwareMediaCandidate(localRootId, sharedLibraryId),
+    });
+    if (result.status === "linked") {
+      pendingDeviceAwareMediaQuestion = null;
+      if (result.profileId && profile.getProfileId() !== result.profileId) {
+        await profile.switchProfile(result.profileId);
+      }
+      deviceAwareMediaQuestionResult.textContent = "Got it — this media will use the same Curation.";
+    } else if (result.status === "declined" || result.status === "stale") {
+      // Retiring the load-scoped context prevents an immediate repeat. NO
+      // writes no identity, association, Curation, or evidence state.
+      pendingDeviceAwareMediaQuestion = null;
+    } else if (result.status === "claimed") {
+      deviceAwareMediaQuestionResult.textContent = "That media is already connected to another folder on this device.";
+    } else {
+      deviceAwareMediaQuestionResult.textContent = "Could not remember that choice. Try again.";
+    }
+  } finally {
+    deviceAwareMediaActionPending = false;
+    renderDeviceAwareMediaQuestion();
+  }
+}
+
 async function recordPortableStructureForLoad(localLibraryId, items) {
   // N5 belongs only to SyncV3. Keeping the mode gate here prevents a V1/V2
   // transport from ever receiving a replica key it does not serialize.
@@ -4577,6 +4689,17 @@ async function prepareMediaIdentityForLoad({
       })
     : null;
 
+  // [NORTH-STAR / N2 / DEVICE-AWARE-HUMAN-QUESTION]
+  // A unique N5 match licenses only a proposal. Same-device structural policy
+  // above gets first refusal, and candidate production has no write seam.
+  const portableCurrentSample = sourceKind === "fsa" ? buildPortableStructureSample(items) : null;
+  const deviceAwareQuestion = sourceKind === "fsa"
+    && !inheritedCuration
+    && !reverseSuggestion
+    && Date.now() <= loadTimePolicyDeadlineAt
+    ? resolveDeviceAwareMediaQuestionForLoad({ rootId, currentSample: portableCurrentSample })
+    : null;
+
   // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
   // [WHY: `factKeys` is a CALLBACK, not a captured array, and `profileId` is
   //  read through one too. ProfileStore starts #loadSavedRecords() in its
@@ -4621,7 +4744,7 @@ async function prepareMediaIdentityForLoad({
       `${describeProjection(index)}`
   );
 
-  return { scope, index, inheritedCuration, reverseSuggestion };
+  return { scope, index, inheritedCuration, reverseSuggestion, deviceAwareQuestion, portableCurrentSample };
 }
 
 // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
@@ -4865,6 +4988,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] A fresh attempt
   // clears any failure the PREVIOUS attempt left showing.
   lastMobileLoadFailed = false;
@@ -5104,6 +5228,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Same reset as
   // loadFiles() above — covers a fresh pick AND every remembered-library
   // resume call into this same function.
@@ -5274,6 +5399,11 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
         fsaStatusText.textContent;
     }
     armReverseCurationSuggestion(preparedMediaIdentity?.reverseSuggestion || null, loadToken);
+    armDeviceAwareMediaQuestion(
+      preparedMediaIdentity?.deviceAwareQuestion || null,
+      loadToken,
+      preparedMediaIdentity?.portableCurrentSample || null
+    );
 
     finishLoadingItems(result.items);
     await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
@@ -8825,6 +8955,7 @@ clearBtn.addEventListener("click", () => {
   activeLibraryRecord = null;
   associationWriteSuppression.setLoadedLibrary(null);
   clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
   activeLibraryDisplayName = null;
@@ -10152,6 +10283,24 @@ reverseCurationOfferNo.addEventListener("click", () => {
     reverseCurationActionPending = false;
     pendingReverseCurationSuggestion = null;
     renderReverseCurationSuggestion();
+  });
+});
+
+deviceAwareMediaQuestionYes.addEventListener("click", () => {
+  handleDeviceAwareMediaQuestionAction("yes").catch((error) => {
+    console.warn("[NORTH-STAR / N2] Device-aware YES failed.", error);
+    deviceAwareMediaActionPending = false;
+    deviceAwareMediaQuestionResult.textContent = "Could not remember that choice. Try again.";
+    renderDeviceAwareMediaQuestion();
+  });
+});
+
+deviceAwareMediaQuestionNo.addEventListener("click", () => {
+  handleDeviceAwareMediaQuestionAction("no").catch((error) => {
+    console.warn("[NORTH-STAR / N2] Device-aware NO failed.", error);
+    deviceAwareMediaActionPending = false;
+    pendingDeviceAwareMediaQuestion = null;
+    renderDeviceAwareMediaQuestion();
   });
 });
 
