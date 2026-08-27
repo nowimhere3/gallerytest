@@ -69,6 +69,10 @@ import { createAmbientProfileObserver } from "./profile/ambient-profile-observer
 import { applyLoadTimeProfileRestoration } from "./profile/load-time-profile-restoration.js";
 import { resolveProvenParentCuration } from "./profile/parent-curation-inheritance.js";
 import {
+  performReverseCurationSuggestionAction,
+  resolveReverseCurationSuggestion,
+} from "./profile/reverse-curation-suggestion.js";
+import {
   buildAmbientProfileOfferView,
   performAmbientProfileAction,
 } from "./profile/ambient-profile-action.js";
@@ -229,6 +233,11 @@ const ambientProfileOfferNo = document.getElementById("ambient-profile-offer-no"
 const ambientProfileOfferLater = document.getElementById("ambient-profile-offer-later");
 const ambientProfileOfferClose = document.getElementById("ambient-profile-offer-close");
 const ambientProfileOfferResult = document.getElementById("ambient-profile-offer-result");
+const reverseCurationOffer = document.getElementById("reverse-curation-offer");
+const reverseCurationOfferText = document.getElementById("reverse-curation-offer-text");
+const reverseCurationOfferYes = document.getElementById("reverse-curation-offer-yes");
+const reverseCurationOfferNo = document.getElementById("reverse-curation-offer-no");
+const reverseCurationOfferResult = document.getElementById("reverse-curation-offer-result");
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
 const profileFolderLinkAdvancedSummary = document.getElementById("profile-folder-link-advanced-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
@@ -990,6 +999,8 @@ let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
 let libraryLoadGeneration = 0;
 let ambientProfileOfferRenderedKey = null;
 let ambientProfileActionPending = false;
+let pendingReverseCurationSuggestion = null;
+let reverseCurationActionPending = false;
 
 // [P1-DIAGNOSTIC / TEMPORARY] See the DevTools-callable probe block at the
 // bottom of this file. Holds the most recently loaded FSA root handle (and
@@ -4392,6 +4403,112 @@ async function applyProvenParentCurationForLoad({ rootId, scope }) {
   }
 }
 
+async function resolveReverseCurationSuggestionForLoad({
+  rootId,
+  scopeId,
+  deferredScopeMerges = [],
+}) {
+  if (!rootId || !scopeId) return null;
+  const roots = (await listRoots()).filter((root) => root && root.scopeId === scopeId);
+  const libraries = (await Promise.all(roots.map((root) => getLibraryById(root.rootId)))).filter(Boolean);
+  const candidate = resolveReverseCurationSuggestion({
+    currentRootId: rootId,
+    currentRoot: roots.find((root) => root.rootId === rootId) || null,
+    roots,
+    libraries,
+    associations: profile.getAssociations(),
+    knownProfileIds: profile.listProfiles().map((entry) => entry.id),
+    deferredScopeMerges,
+  });
+  if (!candidate) return null;
+  return Object.freeze({
+    ...candidate,
+    scopeId,
+    profileName: getProfileNameById(candidate.profileId),
+  });
+}
+
+function clearReverseCurationSuggestion() {
+  pendingReverseCurationSuggestion = null;
+  reverseCurationActionPending = false;
+  reverseCurationOfferResult.textContent = "";
+  renderReverseCurationSuggestion();
+}
+
+function armReverseCurationSuggestion(candidate, loadToken) {
+  if (!candidate
+    || libraryLoadGeneration !== loadToken
+    || !activeLibraryRecord
+    || activeLibraryRecord.id !== candidate.currentRootId) return false;
+  pendingReverseCurationSuggestion = Object.freeze({ ...candidate, loadToken });
+  reverseCurationOfferResult.textContent = "";
+  renderReverseCurationSuggestion();
+  return true;
+}
+
+function renderReverseCurationSuggestion() {
+  const suggestion = pendingReverseCurationSuggestion;
+  const visible = Boolean(suggestion
+    && suggestion.loadToken === libraryLoadGeneration
+    && activeLibraryRecord?.id === suggestion.currentRootId
+    && suggestion.profileName);
+  reverseCurationOffer.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  const subject = suggestion.descendantCount === 1 ? "A folder" : "Folders";
+  reverseCurationOfferText.textContent =
+    `${subject} inside this one use${suggestion.descendantCount === 1 ? "s" : ""} ${suggestion.profileName}. ` +
+    "Use that Curation here too?";
+  reverseCurationOfferYes.textContent = `Use ${suggestion.profileName}`;
+  reverseCurationOfferYes.disabled = reverseCurationActionPending;
+  reverseCurationOfferNo.disabled = reverseCurationActionPending;
+}
+
+async function writeReverseCurationAssociation(rootId, profileId) {
+  if (!activeLibraryRecord || activeLibraryRecord.id !== rootId) return false;
+  const updated = await associateThroughSyncV2(rootId, profileId);
+  if (!updated || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return false;
+  activeLibraryRecord = updated;
+  establishAmbientProfileContext(activeLibraryRecord);
+  syncAssociateButtonVisibility();
+  await renderRecentLibraries();
+  return true;
+}
+
+async function handleReverseCurationSuggestionAction(kind) {
+  if (reverseCurationActionPending || !pendingReverseCurationSuggestion) return;
+  const pending = pendingReverseCurationSuggestion;
+  reverseCurationActionPending = true;
+  reverseCurationOfferResult.textContent = "";
+  renderReverseCurationSuggestion();
+  try {
+    const result = await performReverseCurationSuggestionAction({
+      kind,
+      pendingSuggestion: pending,
+      getCurrentRootId: () => activeLibraryRecord?.id || null,
+      resolveCurrentSuggestion: () => resolveReverseCurationSuggestionForLoad({
+        rootId: pending.currentRootId,
+        scopeId: pending.scopeId,
+      }),
+      writeAssociation: (profileId) => writeReverseCurationAssociation(pending.currentRootId, profileId),
+    });
+
+    if (result.status === "applied") {
+      pendingReverseCurationSuggestion = null;
+      reverseCurationOfferResult.textContent = `Now remembered with ${pending.profileName}.`;
+    } else if (result.status === "declined" || result.status === "stale") {
+      // Ephemeral per-load dismissal. No re-evaluation path exists in this
+      // context, so NO cannot immediately nag again.
+      pendingReverseCurationSuggestion = null;
+    } else if (result.status === "write-failed") {
+      reverseCurationOfferResult.textContent = "Could not save that Curation. Try again.";
+    }
+  } finally {
+    reverseCurationActionPending = false;
+    renderReverseCurationSuggestion();
+  }
+}
+
 /**
  * Resolves the media scope structurally, then builds this load's alias index.
  *
@@ -4438,6 +4555,19 @@ async function prepareMediaIdentityForLoad({
     ? await applyProvenParentCurationForLoad({ rootId, scope })
     : null;
 
+  // [NORTH-STAR / N4 / REVERSE-SUGGESTION]
+  // Upward evidence may prepare a question only. There is intentionally no
+  // association writer on this path; YES is the sole write boundary below.
+  const reverseSuggestion = sourceKind === "fsa"
+    && !inheritedCuration
+    && Date.now() <= loadTimePolicyDeadlineAt
+    ? await resolveReverseCurationSuggestionForLoad({
+        rootId,
+        scopeId: scope.scopeId,
+        deferredScopeMerges: scope.diagnostics?.deferredScopeMerges || [],
+      })
+    : null;
+
   // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
   // [WHY: `factKeys` is a CALLBACK, not a captured array, and `profileId` is
   //  read through one too. ProfileStore starts #loadSavedRecords() in its
@@ -4482,7 +4612,7 @@ async function prepareMediaIdentityForLoad({
       `${describeProjection(index)}`
   );
 
-  return { scope, index, inheritedCuration };
+  return { scope, index, inheritedCuration, reverseSuggestion };
 }
 
 // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
@@ -4725,6 +4855,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
 
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
+  clearReverseCurationSuggestion();
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] A fresh attempt
   // clears any failure the PREVIOUS attempt left showing.
   lastMobileLoadFailed = false;
@@ -4962,6 +5093,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
 
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
+  clearReverseCurationSuggestion();
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Same reset as
   // loadFiles() above — covers a fresh pick AND every remembered-library
   // resume call into this same function.
@@ -5131,6 +5263,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
         `✓ Using ${preparedMediaIdentity.inheritedCuration.profileName}, remembered from a parent folder. ` +
         fsaStatusText.textContent;
     }
+    armReverseCurationSuggestion(preparedMediaIdentity?.reverseSuggestion || null, loadToken);
 
     finishLoadingItems(result.items);
     await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
@@ -8680,6 +8813,7 @@ clearBtn.addEventListener("click", () => {
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
   associationWriteSuppression.setLoadedLibrary(null);
+  clearReverseCurationSuggestion();
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
   activeLibraryDisplayName = null;
@@ -9989,6 +10123,24 @@ ambientProfileOfferClose.addEventListener("click", () => {
   chooseAmbientProfileLater().catch((error) => {
     console.warn("[SYNCV3 / STAGE-09] Ambient close/LATER failed.", error);
     ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+  });
+});
+
+reverseCurationOfferYes.addEventListener("click", () => {
+  handleReverseCurationSuggestionAction("yes").catch((error) => {
+    console.warn("[NORTH-STAR / N4] Reverse-suggestion YES failed.", error);
+    reverseCurationActionPending = false;
+    reverseCurationOfferResult.textContent = "Could not save that Curation. Try again.";
+    renderReverseCurationSuggestion();
+  });
+});
+
+reverseCurationOfferNo.addEventListener("click", () => {
+  handleReverseCurationSuggestionAction("no").catch((error) => {
+    console.warn("[NORTH-STAR / N4] Reverse-suggestion NO failed.", error);
+    reverseCurationActionPending = false;
+    pendingReverseCurationSuggestion = null;
+    renderReverseCurationSuggestion();
   });
 });
 
