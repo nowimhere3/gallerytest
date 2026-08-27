@@ -11,6 +11,7 @@ import {
   getLibraryById,
   getLibraryByLibraryId,
 } from "./storage/library-registry.js";
+import { decideBootRestore } from "./storage/boot-restore.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -11250,12 +11251,81 @@ window.addEventListener("beforeunload", () => {
   fsaProvider.dispose(); // [FSA]
 });
 
+// [BOOT-RESTORE / N6]
+// [WHY: queryPermission ONLY, wrapped so a missing API, a missing handle, or
+//  a thrown error all resolve to a non-"granted" string instead of
+//  throwing — the same defensive shape fsa-ancestry.js's readPermission()
+//  already uses for background permission reads. Deliberately separate from
+//  resumeLibrary()'s own permission check below rather than shared with it:
+//  resumeLibrary() must still requestPermission() and prune Recents on
+//  failure (P1/P6), and folding those two different failure behaviours
+//  behind one shared query helper risks quietly changing which branch a
+//  thrown queryPermission error takes there. See P3/P6 in the N6 handoff.]
+async function readFolderPermissionForBootRestore(handle) {
+  if (!handle || typeof handle.queryPermission !== "function") return "unavailable";
+  try {
+    return await handle.queryPermission({ mode: "read" });
+  } catch (error) {
+    return `error:${error && error.name ? error.name : "unknown"}`;
+  }
+}
+
+// [BOOT-RESTORE / N6]
+// BREADCRUMBS — IS: at boot, if the most recently opened durable FSA folder
+// still reports queryPermission() === "granted", load it silently through
+// the SAME granted-folder load path a Recent-row click uses
+// (loadFromFsaHandle) — so Curation restoration, Stage 09, MEDIA-ID and the
+// N2/N3/N4 arming all behave exactly as on a manual open. Anything other
+// than "granted" — "prompt", "denied", a missing handle, a missing API, or
+// a thrown error — does nothing at all. Never requestPermission() here;
+// that needs a user gesture this boot path does not have. Never falls
+// through to a second candidate — see decideBootRestore()'s own comment.
+// [WHY: the explicit-click failure behaviour in resumeLibrary() —
+//  requestPermission() and removeFromRecents() on a bad handle — is
+//  deliberately NOT reused here. A transient boot-time failure must not
+//  silently delete the customer's remembered folder (P6); only a customer
+//  watching an explicit click gets that pruning.]
+async function attemptBootRestore() {
+  let rows;
+  try {
+    rows = await listLibraries();
+  } catch (error) {
+    console.warn("[BOOT-RESTORE] Could not read saved libraries.", error);
+    return;
+  }
+
+  const candidate = rows[0];
+  if (!candidate) return;
+
+  const state = await readFolderPermissionForBootRestore(candidate.handle);
+  const decision = decideBootRestore({
+    rows,
+    permissionStates: candidate.id ? { [candidate.id]: state } : {},
+  });
+  if (!decision.restore) return;
+
+  // [WHY: a customer gesture always wins (P5). loadFromFsaHandle() bumps
+  //  libraryLoadGeneration into a fresh loadToken and every N2/N3/N4/Stage
+  //  09 arming call already gates on that token — an explicit folder pick
+  //  or Recent-row click started (or finished) after this one began simply
+  //  supersedes it, with no new staleness machinery needed here.]
+  await loadFromFsaHandle(candidate.handle, candidate);
+}
+
 // [LIBRARY-REGISTRY] Boot-time: render whatever libraries were previously
 // remembered so the user sees "Recent Libraries" immediately. This is a
-// pure metadata read — it does NOT check/request permission or load
-// anything on its own (requestPermission needs a user gesture, and
-// queryPermission-only would still mean silently touching folder access
-// on every page load without the user asking).
+// pure metadata read — renderRecentLibraries() itself does NOT check/request
+// permission or load anything on its own.
+//
+// [BOOT-RESTORE / N6] BREADCRUMBS — WAS: this comment used to say the whole
+// boot sequence stayed hands-off because "queryPermission-only would still
+// mean silently touching folder access on every page load without the user
+// asking", and refused to do it. That reasoning predates the North Star.
+// queryPermission is now called from non-gesture background paths in six
+// other modules, and profileSync.init() (just below) already silently
+// reconnects a remembered Sync Folder on the same basis. attemptBootRestore()
+// below — the one deliberate exception, added by N6 — extends that same
+// proven pattern to the folder the customer actually cares about.
 (async function initFsaLibraries() {
   if (!isFsaSupported()) {
     fsaChooseFolderBtn.disabled = true;
@@ -11264,6 +11334,11 @@ window.addEventListener("beforeunload", () => {
   }
 
   await renderRecentLibraries();
+
+  // Not awaited — same reasoning profileSync.init() below documents: a
+  // permission check should never block the rest of boot, and nothing here
+  // depends on boot restore having settled.
+  attemptBootRestore();
 })();
 
 // [PROFILE-SYNC] Boot-time: silently reconnect to a remembered sync folder
