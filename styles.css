@@ -295,8 +295,16 @@ input {
   margin-bottom: 20px;
 }
 
+/* [STREAMLOOP-INTEGRATION / N6-6]
+   [WHY: was `margin-top: 0`, which collapsed the gap between "Advanced
+    Settings" and its first nested disclosure entirely. A small nonzero
+    value reads as "a little more" rather than a redesign, and stays well
+    under the 20px every other nested <details> already uses above/below
+    itself. Kept on the generic :first-of-type selector rather than a fix
+    targeted at "Media Library diagnostics" specifically, so any future
+    section reordered to be first inherits this spacing automatically.] */
 .advanced-settings-section > details:first-of-type {
-  margin-top: 0;
+  margin-top: 12px;
 }
 
 .advanced-settings-section > details > summary {
@@ -309,6 +317,21 @@ input {
 
 .advanced-settings-section > details[open] > summary {
   margin-bottom: 10px;
+}
+
+/* [STREAMLOOP-INTEGRATION / N6-6]
+   Two independent policy blocks inside the one "Startup Media" disclosure —
+   not two more nested <details>, just labeled groups, per the N6-5 handoff's
+   "no redesign" constraint. */
+.startup-media-context-group + .startup-media-context-group {
+  margin-top: 20px;
+}
+
+.startup-media-context-heading {
+  margin: 0 0 8px;
+  font-size: 0.95em;
+  font-weight: 700;
+  color: var(--text);
 }
 
 .startup-media-eligible-list {

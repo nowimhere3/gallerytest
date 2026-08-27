@@ -224,35 +224,37 @@ console.log("\n12. decideBootRestore() is untouched — test-boot-restore.mjs st
   assert(bootRestoreSource.includes("export function decideStartupMedia("), "decideStartupMedia() is exported alongside it, extending the same module");
 }
 
-// ---- 13. preferences: startup section round-trips and normalizes ----------
+// ---- 13. preferences: startup.browser round-trips and normalizes ----------
 
-console.log("\n13. preferences: startup section round-trips and normalizes");
+console.log("\n13. preferences: startup.browser round-trips and normalizes");
 {
   installFakeIndexedDB();
   const Preferences = await import(src("storage/app-preferences.js"));
 
   let preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.startup.policy, "last-used", "startup policy defaults to last-used");
-  assertEqual(preferences.startup.eligibleLibraryIds.length, 0, "eligibleLibraryIds defaults to empty");
+  assertEqual(preferences.startup.browser.policy, "last-used", "browser startup policy defaults to last-used");
+  assertEqual(preferences.startup.browser.eligibleLibraryIds.length, 0, "browser eligibleLibraryIds defaults to empty");
+  assertEqual(preferences.startup.streamloop.policy, "last-used", "streamloop startup policy also defaults to last-used");
+  assertEqual(preferences.startup.streamloop.eligibleLibraryIds.length, 0, "streamloop eligibleLibraryIds also defaults to empty");
 
-  await Preferences.saveStartupPreferences({ policy: "random-remembered" });
+  await Preferences.saveStartupPreferences("browser", { policy: "random-remembered" });
   preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.startup.policy, "random-remembered", "saved policy survives a reload");
+  assertEqual(preferences.startup.browser.policy, "random-remembered", "saved browser policy survives a reload");
 
-  await Preferences.saveStartupPreferences({ eligibleLibraryIds: ["lib-a", "lib-b", "lib-a", "", 42, null] });
+  await Preferences.saveStartupPreferences("browser", { eligibleLibraryIds: ["lib-a", "lib-b", "lib-a", "", 42, null] });
   preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.startup.eligibleLibraryIds.length, 2, "eligibleLibraryIds normalizes to unique non-empty strings only");
+  assertEqual(preferences.startup.browser.eligibleLibraryIds.length, 2, "eligibleLibraryIds normalizes to unique non-empty strings only");
   assert(
-    preferences.startup.eligibleLibraryIds.includes("lib-a") && preferences.startup.eligibleLibraryIds.includes("lib-b"),
+    preferences.startup.browser.eligibleLibraryIds.includes("lib-a") && preferences.startup.browser.eligibleLibraryIds.includes("lib-b"),
     "the two valid ids both survive normalization"
   );
   // The prior save already proved policy survives one reload; this confirms a
-  // LATER save of a different section (eligibleLibraryIds) does not revert it.
-  assertEqual(preferences.startup.policy, "random-remembered", "saving eligibleLibraryIds does not revert a previously saved policy");
+  // LATER save of a different field (eligibleLibraryIds) does not revert it.
+  assertEqual(preferences.startup.browser.policy, "random-remembered", "saving eligibleLibraryIds does not revert a previously saved policy");
 
-  await Preferences.saveStartupPreferences({ policy: "not-a-real-policy" });
+  await Preferences.saveStartupPreferences("browser", { policy: "not-a-real-policy" });
   preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.startup.policy, "last-used", "an unrecognized stored policy string normalizes to last-used");
+  assertEqual(preferences.startup.browser.policy, "last-used", "an unrecognized stored policy string normalizes to last-used");
 }
 
 // ---- 14. saving startup leaves every sibling section intact ---------------
@@ -267,7 +269,7 @@ console.log("\n14. saving startup leaves playback / presentation / microArcade /
   await Preferences.saveMicroArcadePreferences({ animationOrder: "sequential" });
   await Preferences.saveOnboardingPreferences({ profileSyncIntroSeen: true });
 
-  await Preferences.saveStartupPreferences({ policy: "random-selected", eligibleLibraryIds: ["lib-x"] });
+  await Preferences.saveStartupPreferences("browser", { policy: "random-selected", eligibleLibraryIds: ["lib-x"] });
   const preferences = await Preferences.loadPreferences();
 
   assertEqual(preferences.playback.intervalSeconds, 42, "playback.intervalSeconds survives a startup save");
@@ -275,8 +277,83 @@ console.log("\n14. saving startup leaves playback / presentation / microArcade /
   assertEqual(preferences.presentation.ghostOpacityPercent, 77, "presentation.ghostOpacityPercent survives a startup save");
   assertEqual(preferences.microArcade.animationOrder, "sequential", "microArcade.animationOrder survives a startup save");
   assertEqual(preferences.onboarding.profileSyncIntroSeen, true, "onboarding.profileSyncIntroSeen survives a startup save");
-  assertEqual(preferences.startup.policy, "random-selected", "the startup save itself still lands");
-  assertEqual(preferences.startup.eligibleLibraryIds[0], "lib-x", "the startup save's eligible set still lands");
+  assertEqual(preferences.startup.browser.policy, "random-selected", "the startup save itself still lands");
+  assertEqual(preferences.startup.browser.eligibleLibraryIds[0], "lib-x", "the startup save's eligible set still lands");
+}
+
+// ---- 14b. browser and streamloop contexts are fully independent -----------
+
+console.log("\n14b. browser and streamloop startup contexts are fully independent");
+{
+  installFakeIndexedDB();
+  const Preferences = await import(src("storage/app-preferences.js"));
+
+  await Preferences.saveStartupPreferences("browser", { policy: "random-remembered", eligibleLibraryIds: ["lib-b1"] });
+  await Preferences.saveStartupPreferences("streamloop", { policy: "random-selected", eligibleLibraryIds: ["lib-s1", "lib-s2"] });
+
+  let preferences = await Preferences.loadPreferences();
+  assertEqual(preferences.startup.browser.policy, "random-remembered", "browser policy set independently");
+  assertEqual(preferences.startup.streamloop.policy, "random-selected", "streamloop policy set independently");
+  assertEqual(preferences.startup.browser.eligibleLibraryIds.join(","), "lib-b1", "browser pool unaffected by streamloop's save");
+  assertEqual(preferences.startup.streamloop.eligibleLibraryIds.join(","), "lib-s1,lib-s2", "streamloop pool unaffected by browser's save");
+
+  // The two-level-merge gotcha: saving ONLY streamloop's policy must not drop
+  // streamloop's own already-saved eligibleLibraryIds, and must not touch
+  // browser's policy or pool at all.
+  await Preferences.saveStartupPreferences("streamloop", { policy: "last-used" });
+  preferences = await Preferences.loadPreferences();
+  assertEqual(preferences.startup.streamloop.policy, "last-used", "streamloop policy updated");
+  assertEqual(
+    preferences.startup.streamloop.eligibleLibraryIds.join(","),
+    "lib-s1,lib-s2",
+    "streamloop's own eligibleLibraryIds survive a sibling-field save within the SAME context (the two-level merge)"
+  );
+  assertEqual(preferences.startup.browser.policy, "random-remembered", "browser policy untouched by a streamloop-only save");
+  assertEqual(preferences.startup.browser.eligibleLibraryIds.join(","), "lib-b1", "browser pool untouched by a streamloop-only save");
+}
+
+// ---- 14c. migration: a legacy N6-4 flat startup record becomes `browser` --
+
+console.log("\n14c. migration: a legacy N6-4 flat startup record becomes the browser context");
+{
+  installFakeIndexedDB();
+  const Preferences = await import(src("storage/app-preferences.js"));
+
+  // Simulate a record written before N6-6 existed: `startup: {policy, eligibleLibraryIds}`
+  // directly, no `browser`/`streamloop` keys.
+  const rawDatabaseName = "loop-browser-gallery-preferences";
+  await new Promise((resolve, reject) => {
+    const request = indexedDB.open(rawDatabaseName, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("preferences")) db.createObjectStore("preferences", { keyPath: "id" });
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction("preferences", "readwrite");
+      tx.objectStore("preferences").put({
+        id: "global",
+        schemaVersion: 1,
+        startup: { policy: "random-remembered", eligibleLibraryIds: ["legacy-lib"] },
+      });
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => reject(tx.error);
+    };
+    request.onerror = () => reject(request.error);
+  });
+
+  const preferences = await Preferences.loadPreferences();
+  assertEqual(preferences.startup.browser.policy, "random-remembered", "the legacy flat policy migrates into the browser context verbatim");
+  assertEqual(
+    preferences.startup.browser.eligibleLibraryIds.join(","),
+    "legacy-lib",
+    "the legacy flat eligible set migrates into the browser context verbatim"
+  );
+  assertEqual(preferences.startup.streamloop.policy, "last-used", "streamloop starts at today's safe default, not inherited from the legacy value");
+  assertEqual(preferences.startup.streamloop.eligibleLibraryIds.length, 0, "streamloop's pool starts empty, not inherited from the legacy value");
 }
 
 // ---- 15. DOM: the four Advanced disclosures exist as closed <details> -----
@@ -319,29 +396,92 @@ console.log("\n15. DOM: each of the four advanced sections is a closed <details>
   assert(!/\sopen(\s|>)/.test(html.slice(outerTagStart, outerTagEnd + 1)), "the outer Advanced Settings <details> is still closed by default");
 }
 
-// ---- 16. main.js wiring: attemptStartupMedia() reuses the shared load path
+// ---- 15b. DOM: both browser and streamloop Startup Media control groups ---
 
-console.log("\n16. integration: attemptStartupMedia() wiring in main.js");
+console.log("\n15b. DOM: both browser and streamloop Startup Media id sets are present");
+{
+  const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
+  for (const context of ["browser", "streamloop"]) {
+    for (const suffix of ["policy-select", "policy-helper", "eligible-section", "eligible-empty", "eligible-list"]) {
+      const id = `startup-media-${context}-${suffix}`;
+      assert(html.includes(`id="${id}"`), `#${id} is present in index.html`);
+    }
+    assert(
+      html.includes(`for="startup-media-${context}-policy-select"`),
+      `the ${context} policy <label> targets its own <select>, not the other context's`
+    );
+  }
+  // The N6-4 flat ids must NOT still exist — this slice renamed them, it did
+  // not add new ones alongside the old.
+  for (const staleId of [
+    "startup-media-policy-select",
+    "startup-media-policy-helper",
+    "startup-media-eligible-section",
+    "startup-media-eligible-empty",
+    "startup-media-eligible-list",
+  ]) {
+    assert(!html.includes(`id="${staleId}"`), `the un-prefixed N6-4 id #${staleId} no longer exists — it was renamed, not duplicated`);
+  }
+  assert(html.includes(">Normal Browser Gallery<"), "the browser context has a customer-facing label");
+  assert(html.includes(">When launched by StreamLoop<"), "the streamloop context has a customer-facing label");
+}
+
+// ---- 15c. CSS: the Advanced Settings first-child spacing fix --------------
+
+console.log("\n15c. CSS: Advanced Settings first-child spacing is no longer zeroed");
+{
+  const css = fs.readFileSync(path.join(ROOT, "styles.css"), "utf8");
+  const at = css.indexOf(".advanced-settings-section > details:first-of-type");
+  assert(at !== -1, "the :first-of-type rule still exists");
+  if (at !== -1) {
+    const ruleEnd = css.indexOf("}", at);
+    const rule = css.slice(at, ruleEnd + 1);
+    assert(!/margin-top:\s*0\b/.test(rule), "margin-top is no longer hard-zeroed");
+    assert(/margin-top:\s*\d/.test(rule), "margin-top is a small nonzero structural value");
+  }
+}
+
+// ---- 16. main.js wiring: runStartupMediaLoad() reuses the shared load path
+// [STREAMLOOP-INTEGRATION / N6-7] N6-4/N6-6's original attemptStartupMedia()
+// body was renamed to runStartupMediaLoad() and is now wrapped by a thin
+// attemptStartupMedia() — see tools/test-streamloop-autofill.mjs for
+// assertions about the wrapper's own settle-sequencing behavior.
+
+console.log("\n16. integration: runStartupMediaLoad() wiring in main.js");
 {
   const mainSource = fs.readFileSync(path.join(ROOT, "src/main.js"), "utf8");
 
-  const start = mainSource.indexOf("async function attemptStartupMedia");
-  assert(start !== -1, "attemptStartupMedia() is defined in main.js");
+  const start = mainSource.indexOf("async function runStartupMediaLoad");
+  assert(start !== -1, "runStartupMediaLoad() is defined in main.js");
   const end = mainSource.indexOf("\n}\n", start);
   const fnBody = mainSource.slice(start, end);
 
-  assert(fnBody.includes("decideStartupMedia("), "attemptStartupMedia() consults the pure decision function");
+  assert(fnBody.includes("decideStartupMedia("), "runStartupMediaLoad() consults the pure decision function");
   assert(fnBody.includes("await attemptBootRestore()"), "the default (last-used) policy delegates to the SAME attemptBootRestore() N6 already tests");
   assert(
     fnBody.includes("await loadFromFsaHandle(candidate.handle, candidate)"),
     "the random-policy branch loads through the SAME loadFromFsaHandle() every other caller uses — the shared load path"
   );
-  assert(!fnBody.includes("requestPermission"), "attemptStartupMedia() never calls requestPermission() — no prompting at boot");
-  assert(!fnBody.includes("removeFromRecents"), "attemptStartupMedia() never calls removeFromRecents()");
+  assert(!fnBody.includes("requestPermission"), "runStartupMediaLoad() never calls requestPermission() — no prompting at boot");
+  assert(!fnBody.includes("removeFromRecents"), "runStartupMediaLoad() never calls removeFromRecents()");
+
+  // [STREAMLOOP-INTEGRATION / N6-6]
+  assert(
+    fnBody.includes("LAUNCH_CONTEXT_STREAMLOOP") && fnBody.includes("launchContext"),
+    "runStartupMediaLoad() resolves which dual-context preference applies from the live launchContext"
+  );
+  assert(
+    fnBody.includes('currentStartupPreferences[activeContext]') || fnBody.includes("currentStartupPreferences && currentStartupPreferences[activeContext]"),
+    "runStartupMediaLoad() reads the resolved context's record out of currentStartupPreferences before calling decideStartupMedia()"
+  );
 
   assert(
     mainSource.includes("attemptStartupMedia();") && mainSource.includes("await renderRecentLibraries();"),
-    "boot calls attemptStartupMedia() (not attemptBootRestore() directly) after rendering Recent Libraries"
+    "boot calls attemptStartupMedia() (not attemptBootRestore() or runStartupMediaLoad() directly) after rendering Recent Libraries"
+  );
+  assert(
+    mainSource.includes("await runStartupMediaLoad();"),
+    "attemptStartupMedia() awaits runStartupMediaLoad() — the completion seam every settle decision depends on"
   );
 
   // attemptBootRestore() itself — N6's frozen function — must still be

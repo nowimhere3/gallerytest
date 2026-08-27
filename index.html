@@ -1676,29 +1676,75 @@
             <p id="arcade-animation-order-helper" class="hint">Every loading animation is picked randomly. Repeats can happen.</p>
           </details>
 
-          <!-- [STARTUP-MEDIA / N6-4]
+          <!-- [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
                [WHY: an Advanced preference choosing what loads at launch.
                 "Last used folder" is the default and is exactly N6's
-                existing zero-ceremony-reopen behaviour, unchanged. The
-                eligible-folder checkbox list is populated by
-                renderStartupMediaSettings() in main.js from the same
+                existing zero-ceremony-reopen behaviour, unchanged. Since
+                N6-6 there are TWO fully independent such preferences — one
+                for ordinary Browser Gallery use, one for a tab explicitly
+                launched with ?launch=streamloop — each with its own
+                eligible-folder checkbox list, populated by
+                renderStartupMediaSettings(context) in main.js from the same
                 remembered-durable-FSA-folder population Recent Libraries
-                already shows — see boot-restore.js's decideStartupMedia()
-                for the selection policy itself.] -->
+                already shows. Both blocks stay visible/editable here
+                regardless of the CURRENT tab's launch context — only
+                boot-time restore reads the live context to pick which one
+                applies. See boot-restore.js's decideStartupMedia() for the
+                selection policy itself, and launch-context.js for how the
+                live context is determined.] -->
           <details class="advanced-startup-media-section">
             <summary>Startup Media</summary>
-            <label for="startup-media-policy-select" class="hint">What loads when Browser Gallery opens</label>
-            <select id="startup-media-policy-select" class="field-control">
-              <option value="last-used">Last used folder</option>
-              <option value="random-remembered">Random remembered folder</option>
-              <option value="random-selected">Random from selected folders</option>
-            </select>
-            <p id="startup-media-policy-helper" class="hint">Opens whichever folder you used last, if Browser Gallery still has access.</p>
 
-            <div id="startup-media-eligible-section" class="startup-media-eligible-section hidden">
-              <p id="startup-media-eligible-empty" class="hint hidden">No remembered folders yet — choose a folder first, then come back here to include it.</p>
-              <div id="startup-media-eligible-list" class="startup-media-eligible-list"></div>
+            <div class="startup-media-context-group">
+              <h4 class="startup-media-context-heading">Normal Browser Gallery</h4>
+              <label for="startup-media-browser-policy-select" class="hint">What loads when Browser Gallery opens</label>
+              <select id="startup-media-browser-policy-select" class="field-control">
+                <option value="last-used">Last used folder</option>
+                <option value="random-remembered">Random remembered folder</option>
+                <option value="random-selected">Random from selected folders</option>
+              </select>
+              <p id="startup-media-browser-policy-helper" class="hint">Opens whichever folder you used last, if Browser Gallery still has access.</p>
+
+              <div id="startup-media-browser-eligible-section" class="startup-media-eligible-section hidden">
+                <p id="startup-media-browser-eligible-empty" class="hint hidden">No remembered folders yet — choose a folder first, then come back here to include it.</p>
+                <div id="startup-media-browser-eligible-list" class="startup-media-eligible-list"></div>
+              </div>
             </div>
+
+            <div class="startup-media-context-group">
+              <h4 class="startup-media-context-heading">When launched by StreamLoop</h4>
+              <label for="startup-media-streamloop-policy-select" class="hint">What loads when StreamLoop launches Browser Gallery</label>
+              <select id="startup-media-streamloop-policy-select" class="field-control">
+                <option value="last-used">Last used folder</option>
+                <option value="random-remembered">Random remembered folder</option>
+                <option value="random-selected">Random from selected folders</option>
+              </select>
+              <p id="startup-media-streamloop-policy-helper" class="hint">Opens whichever folder you used last, if Browser Gallery still has access.</p>
+
+              <div id="startup-media-streamloop-eligible-section" class="startup-media-eligible-section hidden">
+                <p id="startup-media-streamloop-eligible-empty" class="hint hidden">No remembered folders yet — choose a folder first, then come back here to include it.</p>
+                <div id="startup-media-streamloop-eligible-list" class="startup-media-eligible-list"></div>
+              </div>
+            </div>
+          </details>
+
+          <!-- [STREAMLOOP-INTEGRATION / N6-7]
+               [WHY: BG-owned configuration for behavior that applies ONLY
+                when this tab was explicitly launched with
+                ?launch=streamloop (see launch-context.js) — never a
+                StreamLoop/GS3-side settings panel. Kept deliberately small:
+                only Auto Fill Panel today. See the N6-7 handoff's Part 1 for
+                why StreamLoop-specific playback (shuffle/interval/loop)
+                overrides are NOT added here — existing BG Playback Settings
+                remain authoritative for both launch contexts.] -->
+          <details class="advanced-streamloop-integration-section">
+            <summary>StreamLoop Integration</summary>
+            <p class="hint">Applies only when Browser Gallery is launched by StreamLoop.</p>
+
+            <label class="compact-check wide-check" title="Automatically enter Fill Panel once StreamLoop's media has finished loading">
+              <input id="streamloop-auto-fill-panel-input" type="checkbox" />
+              <span>Auto Fill Panel after media loads</span>
+            </label>
           </details>
 
         <!-- [PROFILE-SYNC]

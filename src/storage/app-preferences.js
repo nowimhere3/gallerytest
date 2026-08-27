@@ -67,9 +67,40 @@ const DEFAULT_ONBOARDING = {
 //  also means removing a folder from Recents can never silently rewrite a
 //  customer's startup choice (see normalizeStartupEligibleLibraryIds()
 //  below, which deliberately never prunes).]
-const DEFAULT_STARTUP = {
+const DEFAULT_STARTUP_POLICY = {
   policy: "last-used",
   eligibleLibraryIds: [],
+};
+
+// [STREAMLOOP-INTEGRATION / N6-6]
+// BREADCRUMBS — IS: two fully independent startup policy records, one per
+// launch context. "Normal Browser Gallery" and "When launched by StreamLoop"
+// each get their own policy AND their own eligible-folder pool — checking a
+// folder for one context never touches the other's set. Both blocks stay
+// visible/editable in Advanced Settings regardless of which context the
+// current tab was actually launched in; only main.js's boot-time decision
+// (which record it reads before calling decideStartupMedia()) depends on
+// the live launch context. See src/runtime/launch-context.js.
+const DEFAULT_STARTUP = {
+  browser: { ...DEFAULT_STARTUP_POLICY },
+  streamloop: { ...DEFAULT_STARTUP_POLICY },
+};
+
+// [STREAMLOOP-INTEGRATION / N6-7]
+// [WHY: a NEW top-level section, deliberately not nested inside
+//  `startup.streamloop`. `startup.streamloop` answers "which folder loads";
+//  this answers a different question — "what BG does AFTER a folder has
+//  already loaded" — and belongs conceptually with playback/presentation
+//  behavior, not source selection. Nesting it under `startup.streamloop`
+//  would also create a confusing near-duplicate name one level down. Named
+//  to match the "StreamLoop Integration" Advanced disclosure exactly, so a
+//  future reader maps this section to its UI without cross-referencing
+//  anything. `autoFillPanel` defaults OFF: entering Fill Panel is a screen
+//  takeover the customer did not just click a button for, so — unlike
+//  `autoplayOnFill` above, which only applies once Fill Panel is already
+//  being entered deliberately — this default stays conservative.]
+const DEFAULT_STREAMLOOP_INTEGRATION = {
+  autoFillPanel: false,
 };
 
 // Exposed so main.js can apply the same built-in fallback when
@@ -156,6 +187,46 @@ function normalizeStartupEligibleLibraryIds(value) {
   return [...seen];
 }
 
+// [STREAMLOOP-INTEGRATION / N6-6]
+function normalizeStartupSection(value) {
+  return {
+    policy: startupPolicy(value && typeof value === "object" ? value.policy : undefined),
+    eligibleLibraryIds: normalizeStartupEligibleLibraryIds(value && typeof value === "object" ? value.eligibleLibraryIds : undefined),
+  };
+}
+
+// [WHY: a record written by N6-4 stores `startup: { policy, eligibleLibraryIds }`
+//  directly — no `browser`/`streamloop` keys. That customer's existing choice
+//  becomes their Normal Browser Gallery policy verbatim; StreamLoop starts at
+//  today's safe default ("last-used", empty pool) rather than inheriting it,
+//  since nobody had a StreamLoop-specific choice before this slice existed.
+//  Detected structurally (no `browser`/`streamloop` key present, but a
+//  `policy`/`eligibleLibraryIds` key is) rather than by a schema-version
+//  bump — same reasoning autoplayOnFill's own comment above already uses:
+//  the object store's shape hasn't changed, only the record's, and every
+//  record is reshaped on every read.]
+function normalizeStartupContexts(startupSource) {
+  const isLegacyFlatShape =
+    startupSource &&
+    typeof startupSource === "object" &&
+    !("browser" in startupSource) &&
+    !("streamloop" in startupSource) &&
+    ("policy" in startupSource || "eligibleLibraryIds" in startupSource);
+
+  if (isLegacyFlatShape) {
+    return {
+      browser: normalizeStartupSection(startupSource),
+      streamloop: normalizeStartupSection(undefined),
+    };
+  }
+
+  const source = startupSource && typeof startupSource === "object" ? startupSource : {};
+  return {
+    browser: normalizeStartupSection(source.browser),
+    streamloop: normalizeStartupSection(source.streamloop),
+  };
+}
+
 function arcadeAnimationOrder(value, temporaryShuffleValue) {
   if (value === "sequential" || value === "true-random" || value === "shuffle-loop") return value;
   // Minimal compatibility for the temporary boolean used by the preceding
@@ -178,6 +249,8 @@ function normalizeRecord(raw) {
   const microArcadeSource = source.microArcade && typeof source.microArcade === "object" ? source.microArcade : {};
   const onboardingSource = source.onboarding && typeof source.onboarding === "object" ? source.onboarding : {};
   const startupSource = source.startup && typeof source.startup === "object" ? source.startup : {};
+  const streamloopIntegrationSource =
+    source.streamloopIntegration && typeof source.streamloopIntegration === "object" ? source.streamloopIntegration : {};
 
   return {
     id: RECORD_ID,
@@ -208,10 +281,15 @@ function normalizeRecord(raw) {
     onboarding: {
       profileSyncIntroSeen: bool(onboardingSource.profileSyncIntroSeen, DEFAULT_ONBOARDING.profileSyncIntroSeen),
     },
-    // [STARTUP-MEDIA / N6-4]
-    startup: {
-      policy: startupPolicy(startupSource.policy),
-      eligibleLibraryIds: normalizeStartupEligibleLibraryIds(startupSource.eligibleLibraryIds),
+    // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
+    startup: normalizeStartupContexts(startupSource),
+    // [STREAMLOOP-INTEGRATION / N6-7] Net-new key — no migration beyond the
+    // usual missing-field-defaults-individually pattern this function already
+    // uses for every other section (see `onboarding`/`microArcade`'s own
+    // history). No DATABASE_VERSION bump: the store's shape hasn't changed,
+    // only the record's, and every record is reshaped on every read.
+    streamloopIntegration: {
+      autoFillPanel: bool(streamloopIntegrationSource.autoFillPanel, DEFAULT_STREAMLOOP_INTEGRATION.autoFillPanel),
     },
   };
 }
@@ -315,6 +393,47 @@ export function saveOnboardingPreferences(partial) {
   return savePartial("onboarding", partial);
 }
 
-export function saveStartupPreferences(partial) {
-  return savePartial("startup", partial);
+// [STREAMLOOP-INTEGRATION / N6-6]
+// [WHY: savePartial() only merges ONE level deep — `{...current[section],
+//  ...partial}`. Handed a `browser`/`streamloop` sub-object directly as
+//  `partial`, it would REPLACE that whole sub-object, silently dropping
+//  whichever of policy/eligibleLibraryIds the caller didn't include. This
+//  function does its own two-level read-merge instead, so saving one field
+//  in one context can never clobber a sibling field in the SAME context or
+//  touch the OTHER context at all. `context` is a plain string the caller
+//  passes explicitly ("browser" or "streamloop") — never the live
+//  launchContext reinterpreted, since a customer editing Advanced Settings
+//  from an ordinary browser tab must still be able to set the StreamLoop
+//  pool.]
+export function saveStartupPreferences(context, partial) {
+  const key = context === "streamloop" ? "streamloop" : "browser";
+  return enqueueWrite(async () => {
+    try {
+      const database = await openDatabase();
+      try {
+        const current = await readCurrentRecord(database);
+        const merged = normalizeRecord({
+          ...current,
+          startup: { ...current.startup, [key]: { ...current.startup[key], ...partial } },
+        });
+        await writeRecord(database, merged);
+        return merged;
+      } finally {
+        database.close();
+      }
+    } catch (error) {
+      console.warn(`[app-preferences] Could not save startup (${key}) preferences.`, error);
+      return null;
+    }
+  });
+}
+
+// [STREAMLOOP-INTEGRATION / N6-7]
+// [WHY: unlike saveStartupPreferences() above, this section has exactly one
+//  flat boolean field — no per-context nesting — so the generic one-level
+//  savePartial() is sufficient here. Do not reuse the two-level merge
+//  pattern; it would be unnecessary machinery for a section with no
+//  nesting.]
+export function saveStreamloopIntegrationPreferences(partial) {
+  return savePartial("streamloopIntegration", partial);
 }

@@ -44,6 +44,7 @@ import {
   saveMicroArcadePreferences,
   saveOnboardingPreferences,
   saveStartupPreferences,
+  saveStreamloopIntegrationPreferences,
   DEFAULT_GHOST_OPACITY_PERCENT,
 } from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
@@ -89,6 +90,17 @@ import {
   saveAmbientProfileDecision,
 } from "./profile/indexeddb.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
+import { parseLaunchContext, LAUNCH_CONTEXT_STREAMLOOP } from "./runtime/launch-context.js";
+import { parseStreamLoopMessage, nextPendingIntent } from "./runtime/streamloop-bridge.js";
+
+// [STREAMLOOP-INTEGRATION / N6-6]
+// BREADCRUMBS — IS: parsed once, here, from the URL this tab was actually
+// opened with. Runtime-only — never written to app-preferences.js or any
+// other persistence, so every load re-derives it fresh rather than letting a
+// context from one launch survive into an unrelated later one. See
+// launch-context.js for why this must stay the only place StreamLoop
+// identity is decided.
+const launchContext = parseLaunchContext(window.location.search);
 
 const provider = new LocalFileInputProvider();
 // [FSA] A second, independent provider for the File System Access folder
@@ -186,12 +198,29 @@ const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
 const shuffleInput = document.getElementById("shuffle-input");
 const arcadeAnimationOrderSelect = document.getElementById("arcade-animation-order-select");
 const arcadeAnimationOrderHelper = document.getElementById("arcade-animation-order-helper");
-// [STARTUP-MEDIA / N6-4]
-const startupMediaPolicySelect = document.getElementById("startup-media-policy-select");
-const startupMediaPolicyHelper = document.getElementById("startup-media-policy-helper");
-const startupMediaEligibleSection = document.getElementById("startup-media-eligible-section");
-const startupMediaEligibleEmpty = document.getElementById("startup-media-eligible-empty");
-const startupMediaEligibleList = document.getElementById("startup-media-eligible-list");
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
+// Two independent control groups — one per launch context. Keyed by the same
+// "browser" | "streamloop" strings app-preferences.js's saveStartupPreferences()
+// and normalizeStartupContexts() use, so a context string can be passed
+// straight through without translation at any layer.
+const startupMediaControls = {
+  browser: {
+    policySelect: document.getElementById("startup-media-browser-policy-select"),
+    policyHelper: document.getElementById("startup-media-browser-policy-helper"),
+    eligibleSection: document.getElementById("startup-media-browser-eligible-section"),
+    eligibleEmpty: document.getElementById("startup-media-browser-eligible-empty"),
+    eligibleList: document.getElementById("startup-media-browser-eligible-list"),
+  },
+  streamloop: {
+    policySelect: document.getElementById("startup-media-streamloop-policy-select"),
+    policyHelper: document.getElementById("startup-media-streamloop-policy-helper"),
+    eligibleSection: document.getElementById("startup-media-streamloop-eligible-section"),
+    eligibleEmpty: document.getElementById("startup-media-streamloop-eligible-empty"),
+    eligibleList: document.getElementById("startup-media-streamloop-eligible-list"),
+  },
+};
+// [STREAMLOOP-INTEGRATION / N6-7]
+const streamloopAutoFillPanelInput = document.getElementById("streamloop-auto-fill-panel-input");
 const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
@@ -3973,9 +4002,18 @@ let arcadePreviousScene = null;
 let arcadeAnimationOrder = DEFAULT_ARCADE_ANIMATION_ORDER;
 let arcadeShuffleLoopVisitedScenes = [];
 
-// [STARTUP-MEDIA / N6-4] Safe default while IndexedDB preferences load
-// asynchronously — mirrors DEFAULT_STARTUP in app-preferences.js.
-let currentStartupPreferences = { policy: "last-used", eligibleLibraryIds: [] };
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] Safe default while
+// IndexedDB preferences load asynchronously — mirrors DEFAULT_STARTUP in
+// app-preferences.js.
+let currentStartupPreferences = {
+  browser: { policy: "last-used", eligibleLibraryIds: [] },
+  streamloop: { policy: "last-used", eligibleLibraryIds: [] },
+};
+
+// [STREAMLOOP-INTEGRATION / N6-7] Safe default while IndexedDB preferences
+// load asynchronously — mirrors DEFAULT_STREAMLOOP_INTEGRATION in
+// app-preferences.js.
+let currentStreamloopIntegrationPreferences = { autoFillPanel: false };
 
 // [PLAYBACK / MICRO-ARCADE / ANIMATION-ORDER]
 // Keep the existing key so sequential review resumes at the same scene across
@@ -5685,11 +5723,13 @@ async function renderRecentLibraries() {
     fsaRecentLibrariesEl.appendChild(row);
   }
 
-  // [STARTUP-MEDIA / N6-4] Keeps the "Startup Media" eligible-folder
-  // checklist in sync with this same population every time it changes —
-  // see renderStartupMediaSettings()'s own comment for why this is called
-  // from here rather than duplicating the listLibraries() read.
-  await renderStartupMediaSettings();
+  // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] Keeps BOTH
+  // contexts' "Startup Media" eligible-folder checklists in sync with this
+  // same population every time it changes — see renderStartupMediaSettings()'s
+  // own comment for why this is called from here rather than duplicating the
+  // listLibraries() read.
+  await renderStartupMediaSettings("browser");
+  await renderStartupMediaSettings("streamloop");
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -8559,25 +8599,30 @@ arcadeAnimationOrderSelect.addEventListener("change", () => {
   saveMicroArcadePreferences({ animationOrder: arcadeAnimationOrder });
 });
 
-// [STARTUP-MEDIA / N6-4]
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
 function startupMediaPolicyHelperText(policy) {
   if (policy === "random-remembered") return "Randomly picks among every remembered folder Browser Gallery can still open.";
   if (policy === "random-selected") return "Randomly picks among the folders you check below.";
   return "Opens whichever folder you used last, if Browser Gallery still has access.";
 }
 
-function updateStartupMediaPolicyHelper() {
-  startupMediaPolicyHelper.textContent = startupMediaPolicyHelperText(startupMediaPolicySelect.value);
-  startupMediaEligibleSection.classList.toggle("hidden", startupMediaPolicySelect.value !== "random-selected");
+function updateStartupMediaPolicyHelper(context) {
+  const controls = startupMediaControls[context];
+  controls.policyHelper.textContent = startupMediaPolicyHelperText(controls.policySelect.value);
+  controls.eligibleSection.classList.toggle("hidden", controls.policySelect.value !== "random-selected");
 }
 
 // [WHY: rebuilt from scratch each call rather than diffed — same reasoning
 //  renderRecentLibraries() immediately below already documents for its own
 //  list ("list is small — a handful of libraries at most"). Called from
-//  renderRecentLibraries() itself so the two lists — Recent Libraries and
-//  this eligible-folder checklist — can never drift out of sync with each
-//  other.]
-async function renderStartupMediaSettings() {
+//  renderRecentLibraries() itself, once per context, so the three lists —
+//  Recent Libraries and each context's eligible-folder checklist — can never
+//  drift out of sync with each other. `context` is "browser" or "streamloop";
+//  each draws from the same listLibraries() population but keeps its own
+//  independent eligible set, per the N6-5 handoff's "strong product
+//  preference" that each context owns its own selected-folder pool.]
+async function renderStartupMediaSettings(context) {
+  const controls = startupMediaControls[context];
   let rows;
   try {
     rows = await listLibraries();
@@ -8586,14 +8631,14 @@ async function renderStartupMediaSettings() {
     rows = [];
   }
 
-  startupMediaEligibleList.innerHTML = "";
-  startupMediaEligibleEmpty.classList.toggle("hidden", rows.length > 0);
+  controls.eligibleList.innerHTML = "";
+  controls.eligibleEmpty.classList.toggle("hidden", rows.length > 0);
 
   // [WHY: stale ids (folders no longer in `rows`, e.g. removed from Recents)
   //  are deliberately never pruned from the saved set here — only the ones
   //  still present get a checkbox at all. See
   //  normalizeStartupEligibleLibraryIds() in app-preferences.js.]
-  const eligibleSet = new Set(currentStartupPreferences.eligibleLibraryIds);
+  const eligibleSet = new Set(currentStartupPreferences[context].eligibleLibraryIds);
   for (const record of rows) {
     const label = document.createElement("label");
     label.className = "startup-media-library-checkbox";
@@ -8602,11 +8647,14 @@ async function renderStartupMediaSettings() {
     checkbox.type = "checkbox";
     checkbox.checked = eligibleSet.has(record.id);
     checkbox.addEventListener("change", () => {
-      const nextIds = new Set(currentStartupPreferences.eligibleLibraryIds);
+      const nextIds = new Set(currentStartupPreferences[context].eligibleLibraryIds);
       if (checkbox.checked) nextIds.add(record.id);
       else nextIds.delete(record.id);
-      currentStartupPreferences = { ...currentStartupPreferences, eligibleLibraryIds: [...nextIds] };
-      saveStartupPreferences({ eligibleLibraryIds: currentStartupPreferences.eligibleLibraryIds });
+      currentStartupPreferences = {
+        ...currentStartupPreferences,
+        [context]: { ...currentStartupPreferences[context], eligibleLibraryIds: [...nextIds] },
+      };
+      saveStartupPreferences(context, { eligibleLibraryIds: currentStartupPreferences[context].eligibleLibraryIds });
     });
 
     const nameSpan = document.createElement("span");
@@ -8614,15 +8662,20 @@ async function renderStartupMediaSettings() {
 
     label.appendChild(checkbox);
     label.appendChild(nameSpan);
-    startupMediaEligibleList.appendChild(label);
+    controls.eligibleList.appendChild(label);
   }
 }
 
-startupMediaPolicySelect.addEventListener("change", () => {
-  currentStartupPreferences = { ...currentStartupPreferences, policy: startupMediaPolicySelect.value };
-  updateStartupMediaPolicyHelper();
-  saveStartupPreferences({ policy: currentStartupPreferences.policy });
-});
+for (const context of ["browser", "streamloop"]) {
+  startupMediaControls[context].policySelect.addEventListener("change", () => {
+    currentStartupPreferences = {
+      ...currentStartupPreferences,
+      [context]: { ...currentStartupPreferences[context], policy: startupMediaControls[context].policySelect.value },
+    };
+    updateStartupMediaPolicyHelper(context);
+    saveStartupPreferences(context, { policy: currentStartupPreferences[context].policy });
+  });
+}
 
 skipDuplicatesInput.addEventListener("change", () => {
   const currentItem = runtime.getState().currentItem;
@@ -8673,6 +8726,20 @@ videoLoopInput.addEventListener("change", () => {
 // anything on screen.
 autoplayOnFillInput.addEventListener("change", () => {
   savePlaybackPreferences({ autoplayOnFill: autoplayOnFillInput.checked });
+});
+
+// [STREAMLOOP-INTEGRATION / N6-7] Pure preference, same shape as
+// autoplayOnFillInput above — read only at the point attemptStartupMedia()
+// decides whether to auto-enter Fill Panel after a StreamLoop-driven load,
+// never acted on here. Configurable from an ordinary browser tab like every
+// other Advanced setting; it is only ever CONSULTED when launchContext is
+// "streamloop" — see attemptStartupMedia().
+streamloopAutoFillPanelInput.addEventListener("change", () => {
+  currentStreamloopIntegrationPreferences = {
+    ...currentStreamloopIntegrationPreferences,
+    autoFillPanel: streamloopAutoFillPanelInput.checked,
+  };
+  saveStreamloopIntegrationPreferences({ autoFillPanel: currentStreamloopIntegrationPreferences.autoFillPanel });
 });
 
 // [UI-REDESIGN / Stage 4 fix]
@@ -11274,20 +11341,28 @@ renderProfileSync();
 // before the user unchecked "Remember this value", and unchecked launches
 // must always show the built-in fallback, not that old number.
 function applyLoadedPreferences(preferences) {
-  const { playback, presentation, microArcade, startup } = preferences;
+  const { playback, presentation, microArcade, startup, streamloopIntegration } = preferences;
 
   intervalInput.value = String(playback.intervalSeconds);
   shuffleInput.checked = playback.shuffle;
   arcadeAnimationOrderSelect.value = microArcade.animationOrder;
   arcadeAnimationOrder = microArcade.animationOrder;
   updateArcadeAnimationOrderHelper();
-  // [STARTUP-MEDIA / N6-4] currentStartupPreferences must be set before
-  // renderRecentLibraries() (and the renderStartupMediaSettings() it calls)
-  // first runs — applyLoadedPreferences() always runs earlier in boot, well
-  // before initFsaLibraries().
+  // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
+  // currentStartupPreferences must be set before renderRecentLibraries() (and
+  // the renderStartupMediaSettings() calls it makes for BOTH contexts) first
+  // runs — applyLoadedPreferences() always runs earlier in boot, well before
+  // initFsaLibraries().
   currentStartupPreferences = startup;
-  startupMediaPolicySelect.value = startup.policy;
-  updateStartupMediaPolicyHelper();
+  for (const context of ["browser", "streamloop"]) {
+    startupMediaControls[context].policySelect.value = startup[context].policy;
+    updateStartupMediaPolicyHelper(context);
+  }
+  // [STREAMLOOP-INTEGRATION / N6-7] Must also be set before initFsaLibraries()
+  // -> attemptStartupMedia() first runs, for the same reason as
+  // currentStartupPreferences above.
+  currentStreamloopIntegrationPreferences = streamloopIntegration;
+  streamloopAutoFillPanelInput.checked = streamloopIntegration.autoFillPanel;
   skipDuplicatesInput.checked = playback.skipDuplicates;
   skipDuplicates = playback.skipDuplicates;
   loopInput.checked = playback.loopPlaylist;
@@ -11339,6 +11414,92 @@ window.addEventListener("beforeunload", () => {
   provider.dispose();
   fsaProvider.dispose(); // [FSA]
 });
+
+// [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-7]
+// BREADCRUMBS — IS: consumes StreamLoop's existing LAUNCHPAD_PLAY/
+// LAUNCHPAD_PAUSE postMessage contract (see streamloop-bridge.js's header for
+// the exact confirmed shape). Mutates playback through the SAME
+// runtime.play()/runtime.stop() calls togglePlay() already uses (see
+// togglePlay() above) — a StreamLoop PLAY/PAUSE is indistinguishable,
+// downstream, from a human click.
+//
+// [WHY: source validation checks event.source === window.parent rather than
+//  event.origin, because GS3 posts with target origin '*' and has no fixed
+//  origin of its own to validate against (self-hosted GS3 may run at any
+//  dev/staging/prod origin) — see the N6-5 handoff's Part 3. This still
+//  rejects messages from any window other than the one actually framing this
+//  tab, including this tab's own window.]
+//
+// [WHY / N6-7 CORRECTION: N6-6 treated state.hasVisibleItems alone as
+//  readiness. That is real but too early — hasVisibleItems flips true inside
+//  loadFromFsaHandle()'s finishLoadingItems() call, BEFORE that same
+//  function's own remaining Curation/registry bookkeeping (armDeferredLoadTimeOffer,
+//  touchLibrary, recordLibraryLoaded, recordPortableStructureForLoad,
+//  renderRecentLibraries) has settled — see loadFromFsaHandle()'s own
+//  `finally` comment naming ITS completion the authoritative one. Readiness
+//  now additionally requires streamLoopStartupSettled, which only becomes
+//  true once attemptStartupMedia() itself has returned — see that function
+//  below. This also guarantees Auto Fill Panel enters BEFORE any pending
+//  PLAY/PAUSE is applied, exactly the ordering the N6-7 handoff proves.]
+//
+// This shared state is declared unconditionally (module scope), since
+// attemptStartupMedia() below — reachable regardless of launch context —
+// needs to set streamLoopStartupSettled and call tryBecomeStreamLoopReady().
+// It stays completely inert for an ordinary browser tab: nothing calls into
+// it, because the only two things that DO — the message listener and the
+// extra runtime.subscribe() below — stay behind the launchContext guard, and
+// attemptStartupMedia()'s own StreamLoop branch is itself gated the same way.
+let streamLoopPendingIntent = null;
+let streamLoopReady = false;
+let streamLoopStartupSettled = false;
+
+function applyStreamLoopIntent(intent) {
+  if (intent === "play") runtime.play();
+  else if (intent === "pause") runtime.stop();
+}
+
+// Shared by both trigger paths below — the boot-settle path
+// (attemptStartupMedia()) and the fallback runtime.subscribe() path — so
+// neither can double-apply a pending intent.
+function tryBecomeStreamLoopReady() {
+  if (streamLoopReady) return;
+  if (!streamLoopStartupSettled) return;
+  if (!runtime.getState().hasVisibleItems) return;
+  streamLoopReady = true;
+  if (streamLoopPendingIntent) applyStreamLoopIntent(streamLoopPendingIntent);
+  streamLoopPendingIntent = null;
+}
+
+function isTrustedStreamLoopSource(event) {
+  return event.source != null && event.source === window.parent && event.source !== window;
+}
+
+// Registered ONLY when this tab was explicitly launched with
+// `?launch=streamloop` — an ordinary browser tab never adds this listener or
+// the extra runtime.subscribe() below, so there is no dormant surface for a
+// normal customer session.
+if (launchContext === LAUNCH_CONTEXT_STREAMLOOP) {
+  window.addEventListener("message", (event) => {
+    if (!isTrustedStreamLoopSource(event)) return;
+    const intent = parseStreamLoopMessage(event.data);
+    if (!intent) return;
+    if (streamLoopReady) {
+      applyStreamLoopIntent(intent);
+    } else {
+      streamLoopPendingIntent = nextPendingIntent(intent);
+    }
+  });
+
+  // Fallback ONLY: covers the boot-time StreamLoop load finding nothing to
+  // restore, with media appearing later through some other path in the same
+  // tab (e.g. a manual folder pick). Does NOT trigger Auto Fill Panel — see
+  // attemptStartupMedia() below for why that stays scoped to the boot-time
+  // load alone.
+  runtime.subscribe((state) => {
+    if (streamLoopReady || !state.hasVisibleItems) return;
+    tryBecomeStreamLoopReady();
+  });
+}
 
 // [BOOT-RESTORE / N6]
 // [WHY: queryPermission ONLY, wrapped so a missing API, a missing handle, or
@@ -11430,19 +11591,37 @@ async function attemptBootRestore() {
   attemptStartupMedia();
 })();
 
-// [STARTUP-MEDIA / N6-4]
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
 // BREADCRUMBS — IS: an Advanced "Startup Media" preference (default
 // "last-used", which is exactly N6's zero-ceremony reopen, unchanged) chooses
-// what loads at boot. "random-remembered" and "random-selected" query
-// permission — never request it — for every remembered durable folder in the
-// relevant pool and hand the granted subset to decideStartupMedia()
-// (boot-restore.js), which picks one row using an injected random(). The
-// winning row loads through the SAME loadFromFsaHandle() every other caller
-// uses — see attemptBootRestore() above, which this function delegates to
-// unchanged for the default policy so N6's own frozen test/behavior never
-// has to move for this slice.
-async function attemptStartupMedia() {
-  const startup = currentStartupPreferences || { policy: "last-used", eligibleLibraryIds: [] };
+// what loads at boot. Since N6-6, TWO independent such preferences exist —
+// "browser" and "streamloop" — and this function resolves which one applies
+// by reading the live `launchContext` (parsed once from the URL at module
+// load — see launch-context.js), BEFORE calling decideStartupMedia(). That
+// function's own signature and decision table are untouched by this slice —
+// it stays single-policy-in/single-decision-out; the dual-context resolution
+// happens here, at the boundary that already knows launchContext, not inside
+// the pure decision function itself.
+//
+// "random-remembered" and "random-selected" query permission — never request
+// it — for every remembered durable folder in the relevant pool and hand the
+// granted subset to decideStartupMedia() (boot-restore.js), which picks one
+// row using an injected random(). The winning row loads through the SAME
+// loadFromFsaHandle() every other caller uses — see attemptBootRestore()
+// above, which this function delegates to unchanged for the default policy
+// so N6's own frozen test/behavior never has to move for this slice.
+//
+// [STREAMLOOP-INTEGRATION / N6-7] Renamed from attemptStartupMedia() to
+// runStartupMediaLoad() — this function's OWN body is unchanged; it is now
+// wrapped by the real attemptStartupMedia() below, which awaits it (the
+// authoritative "this load has settled" seam — see the N6-7 handoff's Part
+// 2) before deciding anything about Auto Fill Panel or pending StreamLoop
+// intent.
+async function runStartupMediaLoad() {
+  const activeContext = launchContext === LAUNCH_CONTEXT_STREAMLOOP ? "streamloop" : "browser";
+  const startup =
+    (currentStartupPreferences && currentStartupPreferences[activeContext]) ||
+    { policy: "last-used", eligibleLibraryIds: [] };
 
   if (startup.policy !== "random-remembered" && startup.policy !== "random-selected") {
     await attemptBootRestore();
@@ -11484,6 +11663,41 @@ async function attemptStartupMedia() {
   //  owns the one generation/token guard every caller shares, so no new
   //  staleness machinery is needed here either.]
   await loadFromFsaHandle(candidate.handle, candidate);
+}
+
+// [STREAMLOOP-INTEGRATION / N6-7]
+// BREADCRUMBS — IS: the thin settle-sequence wrapper around
+// runStartupMediaLoad() (N6-4/N6-6's original attemptStartupMedia() body,
+// renamed but otherwise untouched above). Awaiting it IS the authoritative
+// "this load has settled" seam — see the N6-7 handoff's Part 2 for why
+// state.hasVisibleItems alone is a weaker, earlier-firing proxy that this
+// deliberately does not use.
+//
+// Sequencing (verified against the real code in the N6-7 handoff, not
+// assumed): mark settled -> Auto Fill Panel (if enabled and there is
+// visible media) THROUGH enterFillPanelDeliberately(), the same shared entry
+// point the `Fill ⛶` button and `F` shortcut use -> only THEN apply whatever
+// StreamLoop PLAY/PAUSE intent is currently pending. Applying the pending
+// intent strictly after Fill Panel entry is what guarantees the most recent
+// explicit StreamLoop signal always outranks BG's own "Autoplay on Fill"
+// default, however that default already resolved a moment earlier inside
+// enterFillPanelDeliberately() — see the N6-7 handoff's ordering table.
+//
+// Auto Fill Panel is deliberately scoped to THIS one call only — this
+// function runs exactly once per page load, from initFsaLibraries() below —
+// so it can never re-fire for a later manual folder pick in the same tab.
+async function attemptStartupMedia() {
+  await runStartupMediaLoad();
+
+  if (launchContext !== LAUNCH_CONTEXT_STREAMLOOP) return;
+
+  streamLoopStartupSettled = true;
+
+  if (runtime.getState().hasVisibleItems && currentStreamloopIntegrationPreferences.autoFillPanel) {
+    enterFillPanelDeliberately();
+  }
+
+  tryBecomeStreamLoopReady();
 }
 
 // [PROFILE-SYNC] Boot-time: silently reconnect to a remembered sync folder
