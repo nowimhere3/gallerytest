@@ -356,15 +356,19 @@ console.log("\n14c. migration: a legacy N6-4 flat startup record becomes the bro
   assertEqual(preferences.startup.streamloop.eligibleLibraryIds.length, 0, "streamloop's pool starts empty, not inherited from the legacy value");
 }
 
-// ---- 15. DOM: the four Advanced disclosures exist as closed <details> -----
+// ---- 15. DOM: the five Advanced disclosures exist as closed <details> -----
+// [STREAMLOOP-INTEGRATION / N6-9] "StreamLoop Integration" joined this list
+// in N6-7 but was never added here — corrected now that N6-9 relies on this
+// same section list for the Advanced Settings regrouping.
 
-console.log("\n15. DOM: each of the four advanced sections is a closed <details>");
+console.log("\n15. DOM: each of the five advanced sections is a closed <details>");
 {
   const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
   const sections = [
     { needle: 'class="advanced-media-library-section"', summary: "Media Library diagnostics" },
     { needle: 'class="advanced-playback-section"', summary: "Arcade animations" },
     { needle: 'class="advanced-startup-media-section"', summary: "Startup Media" },
+    { needle: 'class="advanced-streamloop-integration-section"', summary: "StreamLoop Integration" },
     { needle: 'class="profile-sync-section" id="profile-sync-section"', summary: "Sync Your Curations" },
   ];
   for (const { needle, summary } of sections) {
@@ -427,18 +431,49 @@ console.log("\n15b. DOM: both browser and streamloop Startup Media id sets are p
 }
 
 // ---- 15c. CSS: the Advanced Settings first-child spacing fix --------------
+// [STARTUP-CONTEXT-PARITY / N6-9] The N6-6 attempt left the actual visible
+// gap dependent on browser margin-collapsing behavior between the OUTER
+// summary's margin-bottom and the first nested <details>'s margin-top (two
+// different declared values, 16 and 12, collapsing unpredictably). N6-9
+// makes the gap deterministic by zeroing the outer summary's own
+// margin-bottom specifically (a child-combinator rule that cannot affect
+// any NESTED summary), so the first nested <details>'s margin-top is the
+// gap's only remaining source.
 
-console.log("\n15c. CSS: Advanced Settings first-child spacing is no longer zeroed");
+console.log("\n15c. CSS: Advanced Settings first-child spacing is deterministic, not collapse-dependent");
 {
   const css = fs.readFileSync(path.join(ROOT, "styles.css"), "utf8");
-  const at = css.indexOf(".advanced-settings-section > details:first-of-type");
-  assert(at !== -1, "the :first-of-type rule still exists");
-  if (at !== -1) {
-    const ruleEnd = css.indexOf("}", at);
-    const rule = css.slice(at, ruleEnd + 1);
+
+  const firstOfTypeAt = css.indexOf(".advanced-settings-section > details:first-of-type");
+  assert(firstOfTypeAt !== -1, "the :first-of-type rule still exists");
+  if (firstOfTypeAt !== -1) {
+    const ruleEnd = css.indexOf("}", firstOfTypeAt);
+    const rule = css.slice(firstOfTypeAt, ruleEnd + 1);
     assert(!/margin-top:\s*0\b/.test(rule), "margin-top is no longer hard-zeroed");
     assert(/margin-top:\s*\d/.test(rule), "margin-top is a small nonzero structural value");
   }
+
+  const outerSummaryZeroAt = css.indexOf(".advanced-settings-section[open] > summary");
+  assert(outerSummaryZeroAt !== -1, "a child-combinator rule targets the OUTER summary specifically");
+  if (outerSummaryZeroAt !== -1) {
+    const ruleEnd = css.indexOf("}", outerSummaryZeroAt);
+    const rule = css.slice(outerSummaryZeroAt, ruleEnd + 1);
+    assert(/margin-bottom:\s*0\b/.test(rule), "the outer summary's own margin-bottom is zeroed, removing the collapsing ambiguity");
+  }
+
+  // Source order: the new, more specific-in-intent rule must come AFTER the
+  // broader descendant-combinator rule so it wins the specificity tie for
+  // the element they both match (the outer summary).
+  const broadRuleAt = css.indexOf(".advanced-settings-section[open] summary {");
+  assert(
+    broadRuleAt !== -1 && outerSummaryZeroAt !== -1 && broadRuleAt < outerSummaryZeroAt,
+    "the outer-summary-specific rule appears AFTER the broader rule, so it wins the specificity tie in the cascade"
+  );
+
+  // The broader rule must still exist unmodified — nested disclosures' own
+  // open-state summary spacing (governed by a MORE specific selector further
+  // down) must not have been disturbed by this fix.
+  assert(css.includes(".advanced-settings-section > details[open] > summary"), "nested-disclosure open-summary spacing is untouched");
 }
 
 // ---- 16. main.js wiring: runStartupMediaLoad() reuses the shared load path

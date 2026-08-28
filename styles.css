@@ -307,6 +307,26 @@ input {
   margin-top: 12px;
 }
 
+/* [STARTUP-CONTEXT-PARITY / N6-9]
+   [WHY: the previous fix above set the first nested <details>'s margin-top
+    to 12px, but `.advanced-settings-section[open] summary` (below) ALSO
+    matches the OUTER "Advanced Settings" summary itself — its descendant
+    combinator has no way to exclude it — giving that summary its own
+    margin-bottom of 16px. Adjoining block margins collapse to the LARGER
+    of the two rather than adding, so the actual rendered gap depended on
+    browser collapsing behavior resolving two different declared values
+    (16 and 12) against each other instead of on any single value this
+    stylesheet pins down. This more specific child-combinator rule zeroes
+    the OUTER summary's own margin-bottom specifically — a nested summary
+    is never a direct child of .advanced-settings-section, so this cannot
+    affect the spacing between LATER nested disclosures at all. With one
+    side of the pair always exactly 0, the first nested <details>'s own
+    12px margin-top is the gap's only source, deterministically, whether a
+    browser collapses adjoining margins or (incorrectly) sums them.] */
+.advanced-settings-section[open] > summary {
+  margin-bottom: 0;
+}
+
 .advanced-settings-section > details > summary {
   cursor: pointer;
   font-size: 1rem;

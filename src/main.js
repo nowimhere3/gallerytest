@@ -44,7 +44,6 @@ import {
   saveMicroArcadePreferences,
   saveOnboardingPreferences,
   saveStartupPreferences,
-  saveStreamloopIntegrationPreferences,
   DEFAULT_GHOST_OPACITY_PERCENT,
 } from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
@@ -198,11 +197,15 @@ const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
 const shuffleInput = document.getElementById("shuffle-input");
 const arcadeAnimationOrderSelect = document.getElementById("arcade-animation-order-select");
 const arcadeAnimationOrderHelper = document.getElementById("arcade-animation-order-helper");
-// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-9]
 // Two independent control groups — one per launch context. Keyed by the same
 // "browser" | "streamloop" strings app-preferences.js's saveStartupPreferences()
 // and normalizeStartupContexts() use, so a context string can be passed
-// straight through without translation at any layer.
+// straight through without translation at any layer. Since N6-9, each
+// context's ENTIRE startup+post-load configuration lives together in that
+// context's own Advanced disclosure (Startup Media for browser, StreamLoop
+// Integration for streamloop) — so each group now also owns its own Auto
+// Fill checkbox/helper, not a separate top-level control.
 const startupMediaControls = {
   browser: {
     policySelect: document.getElementById("startup-media-browser-policy-select"),
@@ -210,6 +213,8 @@ const startupMediaControls = {
     eligibleSection: document.getElementById("startup-media-browser-eligible-section"),
     eligibleEmpty: document.getElementById("startup-media-browser-eligible-empty"),
     eligibleList: document.getElementById("startup-media-browser-eligible-list"),
+    autoFillInput: document.getElementById("startup-media-browser-auto-fill-panel-input"),
+    autoFillHelper: document.getElementById("startup-media-browser-auto-fill-helper"),
   },
   streamloop: {
     policySelect: document.getElementById("startup-media-streamloop-policy-select"),
@@ -217,10 +222,10 @@ const startupMediaControls = {
     eligibleSection: document.getElementById("startup-media-streamloop-eligible-section"),
     eligibleEmpty: document.getElementById("startup-media-streamloop-eligible-empty"),
     eligibleList: document.getElementById("startup-media-streamloop-eligible-list"),
+    autoFillInput: document.getElementById("streamloop-auto-fill-panel-input"),
+    autoFillHelper: document.getElementById("streamloop-auto-fill-helper"),
   },
 };
-// [STREAMLOOP-INTEGRATION / N6-7]
-const streamloopAutoFillPanelInput = document.getElementById("streamloop-auto-fill-panel-input");
 const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
@@ -4002,18 +4007,15 @@ let arcadePreviousScene = null;
 let arcadeAnimationOrder = DEFAULT_ARCADE_ANIMATION_ORDER;
 let arcadeShuffleLoopVisitedScenes = [];
 
-// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] Safe default while
-// IndexedDB preferences load asynchronously — mirrors DEFAULT_STARTUP in
-// app-preferences.js.
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-9]
+// Safe default while IndexedDB preferences load asynchronously — mirrors
+// DEFAULT_STARTUP in app-preferences.js. `autoFillPanel` lives per-context
+// here too, since N6-9 — see that file's own breadcrumb for why it moved
+// beside the policy it acts on instead of a separate section.
 let currentStartupPreferences = {
-  browser: { policy: "last-used", eligibleLibraryIds: [] },
-  streamloop: { policy: "last-used", eligibleLibraryIds: [] },
+  browser: { policy: "last-used", eligibleLibraryIds: [], autoFillPanel: false },
+  streamloop: { policy: "last-used", eligibleLibraryIds: [], autoFillPanel: false },
 };
-
-// [STREAMLOOP-INTEGRATION / N6-7] Safe default while IndexedDB preferences
-// load asynchronously — mirrors DEFAULT_STREAMLOOP_INTEGRATION in
-// app-preferences.js.
-let currentStreamloopIntegrationPreferences = { autoFillPanel: false };
 
 // [PLAYBACK / MICRO-ARCADE / ANIMATION-ORDER]
 // Keep the existing key so sequential review resumes at the same scene across
@@ -8599,17 +8601,34 @@ arcadeAnimationOrderSelect.addEventListener("change", () => {
   saveMicroArcadePreferences({ animationOrder: arcadeAnimationOrder });
 });
 
-// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-9]
 function startupMediaPolicyHelperText(policy) {
+  if (policy === "off") return "Browser Gallery won't open any folder automatically — choose one yourself whenever you like.";
   if (policy === "random-remembered") return "Randomly picks among every remembered folder Browser Gallery can still open.";
   if (policy === "random-selected") return "Randomly picks among the folders you check below.";
   return "Opens whichever folder you used last, if Browser Gallery still has access.";
+}
+
+// [STREAMLOOP-INTEGRATION / N6-9]
+// BREADCRUMBS — IS: a context's Auto Fill checkbox is only meaningful when
+// that same context's startup policy can actually load something — "off"
+// has no startup media load for Auto Fill to act upon. Disabling the
+// control (never unchecking it) is what lets a customer's saved true/false
+// value survive untouched while policy is "off" and reappear the moment
+// they pick an automatic mode again — see normalizeStartupSection() in
+// app-preferences.js for the persistence half of this same guarantee.
+function updateStartupMediaAutoFillAvailability(context) {
+  const controls = startupMediaControls[context];
+  const isOff = controls.policySelect.value === "off";
+  controls.autoFillInput.disabled = isOff;
+  controls.autoFillHelper.classList.toggle("hidden", !isOff);
 }
 
 function updateStartupMediaPolicyHelper(context) {
   const controls = startupMediaControls[context];
   controls.policyHelper.textContent = startupMediaPolicyHelperText(controls.policySelect.value);
   controls.eligibleSection.classList.toggle("hidden", controls.policySelect.value !== "random-selected");
+  updateStartupMediaAutoFillAvailability(context);
 }
 
 // [WHY: rebuilt from scratch each call rather than diffed — same reasoning
@@ -8667,13 +8686,30 @@ async function renderStartupMediaSettings(context) {
 }
 
 for (const context of ["browser", "streamloop"]) {
-  startupMediaControls[context].policySelect.addEventListener("change", () => {
+  const controls = startupMediaControls[context];
+
+  controls.policySelect.addEventListener("change", () => {
     currentStartupPreferences = {
       ...currentStartupPreferences,
-      [context]: { ...currentStartupPreferences[context], policy: startupMediaControls[context].policySelect.value },
+      [context]: { ...currentStartupPreferences[context], policy: controls.policySelect.value },
     };
     updateStartupMediaPolicyHelper(context);
     saveStartupPreferences(context, { policy: currentStartupPreferences[context].policy });
+  });
+
+  // [STREAMLOOP-INTEGRATION / N6-9] Pure preference, same shape as
+  // autoplayOnFillInput above — read only at the point attemptStartupMedia()
+  // decides whether to auto-enter Fill Panel after THIS context's own
+  // startup load, never acted on here. Ticking it never itself enters Fill
+  // Panel, starts playback, or changes anything on screen. Independent per
+  // context: toggling browser's checkbox never touches streamloop's saved
+  // value or vice versa — see saveStartupPreferences()'s own two-level merge.
+  controls.autoFillInput.addEventListener("change", () => {
+    currentStartupPreferences = {
+      ...currentStartupPreferences,
+      [context]: { ...currentStartupPreferences[context], autoFillPanel: controls.autoFillInput.checked },
+    };
+    saveStartupPreferences(context, { autoFillPanel: currentStartupPreferences[context].autoFillPanel });
   });
 }
 
@@ -8726,20 +8762,6 @@ videoLoopInput.addEventListener("change", () => {
 // anything on screen.
 autoplayOnFillInput.addEventListener("change", () => {
   savePlaybackPreferences({ autoplayOnFill: autoplayOnFillInput.checked });
-});
-
-// [STREAMLOOP-INTEGRATION / N6-7] Pure preference, same shape as
-// autoplayOnFillInput above — read only at the point attemptStartupMedia()
-// decides whether to auto-enter Fill Panel after a StreamLoop-driven load,
-// never acted on here. Configurable from an ordinary browser tab like every
-// other Advanced setting; it is only ever CONSULTED when launchContext is
-// "streamloop" — see attemptStartupMedia().
-streamloopAutoFillPanelInput.addEventListener("change", () => {
-  currentStreamloopIntegrationPreferences = {
-    ...currentStreamloopIntegrationPreferences,
-    autoFillPanel: streamloopAutoFillPanelInput.checked,
-  };
-  saveStreamloopIntegrationPreferences({ autoFillPanel: currentStreamloopIntegrationPreferences.autoFillPanel });
 });
 
 // [UI-REDESIGN / Stage 4 fix]
@@ -11341,28 +11363,25 @@ renderProfileSync();
 // before the user unchecked "Remember this value", and unchecked launches
 // must always show the built-in fallback, not that old number.
 function applyLoadedPreferences(preferences) {
-  const { playback, presentation, microArcade, startup, streamloopIntegration } = preferences;
+  const { playback, presentation, microArcade, startup } = preferences;
 
   intervalInput.value = String(playback.intervalSeconds);
   shuffleInput.checked = playback.shuffle;
   arcadeAnimationOrderSelect.value = microArcade.animationOrder;
   arcadeAnimationOrder = microArcade.animationOrder;
   updateArcadeAnimationOrderHelper();
-  // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
+  // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-9]
   // currentStartupPreferences must be set before renderRecentLibraries() (and
   // the renderStartupMediaSettings() calls it makes for BOTH contexts) first
   // runs — applyLoadedPreferences() always runs earlier in boot, well before
-  // initFsaLibraries().
+  // initFsaLibraries(). Each context's Auto Fill checkbox is seeded here too,
+  // now that it lives alongside that context's own policy.
   currentStartupPreferences = startup;
   for (const context of ["browser", "streamloop"]) {
     startupMediaControls[context].policySelect.value = startup[context].policy;
+    startupMediaControls[context].autoFillInput.checked = startup[context].autoFillPanel;
     updateStartupMediaPolicyHelper(context);
   }
-  // [STREAMLOOP-INTEGRATION / N6-7] Must also be set before initFsaLibraries()
-  // -> attemptStartupMedia() first runs, for the same reason as
-  // currentStartupPreferences above.
-  currentStreamloopIntegrationPreferences = streamloopIntegration;
-  streamloopAutoFillPanelInput.checked = streamloopIntegration.autoFillPanel;
   skipDuplicatesInput.checked = playback.skipDuplicates;
   skipDuplicates = playback.skipDuplicates;
   loopInput.checked = playback.loopPlaylist;
@@ -11621,7 +11640,17 @@ async function runStartupMediaLoad() {
   const activeContext = launchContext === LAUNCH_CONTEXT_STREAMLOOP ? "streamloop" : "browser";
   const startup =
     (currentStartupPreferences && currentStartupPreferences[activeContext]) ||
-    { policy: "last-used", eligibleLibraryIds: [] };
+    { policy: "last-used", eligibleLibraryIds: [], autoFillPanel: false };
+
+  // [STREAMLOOP-INTEGRATION / N6-9]
+  // BREADCRUMBS — IS: "off" ("Do not load media automatically") performs no
+  // remembered-folder load, no random selection, no permission query of any
+  // kind, and no Auto Fill — it returns before any of that machinery runs,
+  // leaving Browser Gallery exactly as available for a normal manual folder
+  // pick as it always is. Checked BEFORE the "fall back to last-used"
+  // branch below, which would otherwise treat "off" as an unrecognized
+  // policy string and silently restore anyway.
+  if (startup.policy === "off") return;
 
   if (startup.policy !== "random-remembered" && startup.policy !== "random-selected") {
     await attemptBootRestore();
@@ -11665,38 +11694,50 @@ async function runStartupMediaLoad() {
   await loadFromFsaHandle(candidate.handle, candidate);
 }
 
-// [STREAMLOOP-INTEGRATION / N6-7]
+// [STREAMLOOP-INTEGRATION / N6-7] [STREAMLOOP-INTEGRATION / N6-9]
 // BREADCRUMBS — IS: the thin settle-sequence wrapper around
 // runStartupMediaLoad() (N6-4/N6-6's original attemptStartupMedia() body,
 // renamed but otherwise untouched above). Awaiting it IS the authoritative
 // "this load has settled" seam — see the N6-7 handoff's Part 2 for why
 // state.hasVisibleItems alone is a weaker, earlier-firing proxy that this
-// deliberately does not use.
+// deliberately does not use. Since N6-9, Auto Fill Panel is symmetric:
+// Normal Browser Gallery and StreamLoop each read THEIR OWN
+// currentStartupPreferences[activeContext].autoFillPanel and each get the
+// identical guarantee — Auto Fill may occur only after this same
+// authoritative completion, never from an early or duplicated signal.
 //
 // Sequencing (verified against the real code in the N6-7 handoff, not
-// assumed): mark settled -> Auto Fill Panel (if enabled and there is
+// assumed): Auto Fill Panel (if enabled for the active context and there is
 // visible media) THROUGH enterFillPanelDeliberately(), the same shared entry
-// point the `Fill ⛶` button and `F` shortcut use -> only THEN apply whatever
-// StreamLoop PLAY/PAUSE intent is currently pending. Applying the pending
-// intent strictly after Fill Panel entry is what guarantees the most recent
-// explicit StreamLoop signal always outranks BG's own "Autoplay on Fill"
-// default, however that default already resolved a moment earlier inside
-// enterFillPanelDeliberately() — see the N6-7 handoff's ordering table.
+// point the `Fill ⛶` button and `F` shortcut use -> only THEN, for a
+// StreamLoop launch specifically, apply whatever PLAY/PAUSE intent is
+// currently pending. Applying the pending intent strictly after Fill Panel
+// entry is what guarantees the most recent explicit StreamLoop signal
+// always outranks BG's own "Autoplay on Fill" default, however that default
+// already resolved a moment earlier inside enterFillPanelDeliberately() —
+// see the N6-7 handoff's ordering table. Normal Browser Gallery has no
+// PLAY/PAUSE concept at all, so its own path ends at Auto Fill Panel.
 //
 // Auto Fill Panel is deliberately scoped to THIS one call only — this
 // function runs exactly once per page load, from initFsaLibraries() below —
-// so it can never re-fire for a later manual folder pick in the same tab.
+// so it can never re-fire for a later manual folder pick in the same tab,
+// for either context. If startup.policy for the active context is "off",
+// runStartupMediaLoad() above returns without loading anything, so
+// hasVisibleItems stays false and Auto Fill correctly never fires even if a
+// customer had previously saved Auto Fill as ON for that context.
 async function attemptStartupMedia() {
   await runStartupMediaLoad();
+
+  const activeContext = launchContext === LAUNCH_CONTEXT_STREAMLOOP ? "streamloop" : "browser";
+  const autoFillEnabled = Boolean(currentStartupPreferences?.[activeContext]?.autoFillPanel);
+
+  if (runtime.getState().hasVisibleItems && autoFillEnabled) {
+    enterFillPanelDeliberately();
+  }
 
   if (launchContext !== LAUNCH_CONTEXT_STREAMLOOP) return;
 
   streamLoopStartupSettled = true;
-
-  if (runtime.getState().hasVisibleItems && currentStreamloopIntegrationPreferences.autoFillPanel) {
-    enterFillPanelDeliberately();
-  }
-
   tryBecomeStreamLoopReady();
 }
 

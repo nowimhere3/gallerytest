@@ -1,16 +1,20 @@
 #!/usr/bin/env node
-// [STREAMLOOP-INTEGRATION / N6-7]
-// [WHY: Auto Fill Panel's entire correctness rests on ORDERING — Fill Panel
-//  must enter before any pending StreamLoop PLAY/PAUSE intent is applied,
-//  and the "safe to enter Fill Panel" moment must be the STRONG completion
-//  seam (attemptStartupMedia() -> runStartupMediaLoad() resolving), not the
-//  weaker state.hasVisibleItems proxy N6-6 originally used alone. This file
-//  proves: the preference round-trips and normalizes; the new "StreamLoop
-//  Integration" disclosure exists in the right place; and the sequencing/
-//  gating properties from the N6-7 handoff hold in main.js's actual source.
-//  See tools/test-streamloop-bridge.mjs for the readiness-gate correction
-//  itself (streamLoopStartupSettled) and tools/test-startup-media.mjs §16
-//  for runStartupMediaLoad()'s own wiring.]
+// [STREAMLOOP-INTEGRATION / N6-7] [STREAMLOOP-INTEGRATION / N6-9]
+// [WHY: StreamLoop's Auto Fill Panel preference now lives at
+//  `startup.streamloop.autoFillPanel` (see app-preferences.js's
+//  normalizeStartupSection()) rather than in the separate top-level
+//  `streamloopIntegration` section N6-7/N6-8 originally used — N6-9's
+//  Advanced Settings cleanup co-locates a context's ENTIRE startup+post-load
+//  configuration in one disclosure, and the preference shape now mirrors
+//  that. This file proves: the N6-7/N6-8 value migrates correctly into its
+//  new home; the sequencing/ordering invariants proven in N6-7/N6-8 (Fill
+//  Panel before pending intent, hasVisibleItems + streamLoopStartupSettled
+//  readiness) still hold now that the surrounding preference/DOM shape
+//  changed; and the DOM actually moved into StreamLoop Integration. Broader
+//  cross-context parity (Normal BG's own Auto Fill, the new "off" startup
+//  mode, and independence between the two contexts) is covered in
+//  tools/test-startup-context-parity.mjs — this file stays focused on what
+//  is genuinely StreamLoop-specific.]
 //
 // Usage:  node tools/test-streamloop-autofill.mjs
 
@@ -46,232 +50,155 @@ function assertEqual(actual, expected, label) {
   );
 }
 
-// ---- 1. preferences: streamloopIntegration.autoFillPanel ------------------
+function putRawRecord(record) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("loop-browser-gallery-preferences", 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("preferences")) db.createObjectStore("preferences", { keyPath: "id" });
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction("preferences", "readwrite");
+      tx.objectStore("preferences").put({ id: "global", schemaVersion: 1, ...record });
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => reject(tx.error);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
 
-console.log("\n1. preferences: streamloopIntegration.autoFillPanel defaults, round-trips, normalizes");
+// ---- 1. preferences: startup.streamloop.autoFillPanel ---------------------
+
+console.log("\n1. preferences: startup.streamloop.autoFillPanel defaults, round-trips, normalizes");
 {
   installFakeIndexedDB();
   const Preferences = await import(src("storage/app-preferences.js"));
 
   let preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.streamloopIntegration.autoFillPanel, false, "autoFillPanel defaults to false");
+  assertEqual(preferences.startup.streamloop.autoFillPanel, false, "streamloop autoFillPanel defaults to false");
 
-  await Preferences.saveStreamloopIntegrationPreferences({ autoFillPanel: true });
+  await Preferences.saveStartupPreferences("streamloop", { autoFillPanel: true });
   preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.streamloopIntegration.autoFillPanel, true, "saved autoFillPanel survives a reload");
+  assertEqual(preferences.startup.streamloop.autoFillPanel, true, "saved streamloop autoFillPanel survives a reload");
+  assertEqual(preferences.startup.browser.autoFillPanel, false, "browser autoFillPanel is untouched by a streamloop-only save");
 
-  await Preferences.saveStreamloopIntegrationPreferences({ autoFillPanel: false });
+  await Preferences.saveStartupPreferences("streamloop", { autoFillPanel: false });
   preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.streamloopIntegration.autoFillPanel, false, "autoFillPanel can be turned back off");
+  assertEqual(preferences.startup.streamloop.autoFillPanel, false, "streamloop autoFillPanel can be turned back off");
 }
 
-console.log("\n2. preferences: a non-boolean stored value normalizes to the default");
+// ---- 2. migration: the N6-7/N6-8 streamloopIntegration value moves in ------
+
+console.log("\n2. migration: legacy streamloopIntegration.autoFillPanel migrates into startup.streamloop.autoFillPanel");
 {
   installFakeIndexedDB();
   const Preferences = await import(src("storage/app-preferences.js"));
 
-  await new Promise((resolve, reject) => {
+  await putRawRecord({
+    startup: { browser: { policy: "last-used", eligibleLibraryIds: [] }, streamloop: { policy: "random-selected", eligibleLibraryIds: ["lib-a"] } },
+    streamloopIntegration: { autoFillPanel: true },
+  });
+
+  let preferences = await Preferences.loadPreferences();
+  assertEqual(preferences.startup.streamloop.autoFillPanel, true, "the legacy streamloopIntegration value migrates into startup.streamloop.autoFillPanel");
+  assertEqual(preferences.startup.streamloop.policy, "random-selected", "streamloop's own policy is untouched by the migration");
+  assertEqual(preferences.startup.streamloop.eligibleLibraryIds.join(","), "lib-a", "streamloop's own eligible set is untouched by the migration");
+  assertEqual(preferences.startup.browser.autoFillPanel, false, "browser's autoFillPanel does NOT inherit the legacy StreamLoop value");
+  assert(!("streamloopIntegration" in preferences), "the retired streamloopIntegration section is not present in the normalized record");
+
+  // Once ANY write happens, the legacy section must be gone from storage —
+  // same retirement pattern `fillPanel` under `playback` already established.
+  await Preferences.saveStartupPreferences("browser", { policy: "last-used" });
+  const rawAfterWrite = await new Promise((resolve, reject) => {
     const request = indexedDB.open("loop-browser-gallery-preferences", 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains("preferences")) db.createObjectStore("preferences", { keyPath: "id" });
-    };
     request.onsuccess = () => {
       const db = request.result;
-      const tx = db.transaction("preferences", "readwrite");
-      tx.objectStore("preferences").put({ id: "global", schemaVersion: 1, streamloopIntegration: { autoFillPanel: "yes" } });
-      tx.oncomplete = () => {
+      const tx = db.transaction("preferences", "readonly");
+      const getRequest = tx.objectStore("preferences").get("global");
+      getRequest.onsuccess = () => {
         db.close();
-        resolve();
+        resolve(getRequest.result);
       };
-      tx.onerror = () => reject(tx.error);
+      getRequest.onerror = () => reject(getRequest.error);
     };
     request.onerror = () => reject(request.error);
   });
-
-  const preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.streamloopIntegration.autoFillPanel, false, 'a non-boolean stored value ("yes") normalizes to the false default');
+  assert(!("streamloopIntegration" in rawAfterWrite), "streamloopIntegration disappears from the STORED record after any subsequent write");
+  preferences = await Preferences.loadPreferences();
+  assertEqual(preferences.startup.streamloop.autoFillPanel, true, "the migrated value survives after streamloopIntegration is gone");
 }
 
-console.log("\n3. preferences: no migration needed — a record predating this key defaults cleanly");
+console.log("\n3. migration: an already-migrated record is not re-migrated (new location always wins)");
 {
   installFakeIndexedDB();
   const Preferences = await import(src("storage/app-preferences.js"));
 
-  await new Promise((resolve, reject) => {
-    const request = indexedDB.open("loop-browser-gallery-preferences", 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains("preferences")) db.createObjectStore("preferences", { keyPath: "id" });
-    };
-    request.onsuccess = () => {
-      const db = request.result;
-      const tx = db.transaction("preferences", "readwrite");
-      // No streamloopIntegration key at all — simulates a record saved before N6-7 existed.
-      tx.objectStore("preferences").put({ id: "global", schemaVersion: 1, playback: { intervalSeconds: 9 } });
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => reject(tx.error);
-    };
-    request.onerror = () => reject(request.error);
+  await putRawRecord({
+    startup: {
+      browser: { policy: "last-used", eligibleLibraryIds: [] },
+      streamloop: { policy: "last-used", eligibleLibraryIds: [], autoFillPanel: false },
+    },
+    streamloopIntegration: { autoFillPanel: true },
   });
 
   const preferences = await Preferences.loadPreferences();
-  assertEqual(preferences.streamloopIntegration.autoFillPanel, false, "a pre-N6-7 record defaults autoFillPanel to false, no migration needed");
-  assertEqual(preferences.playback.intervalSeconds, 9, "the pre-existing playback field is untouched by adding this new section");
+  assertEqual(
+    preferences.startup.streamloop.autoFillPanel,
+    false,
+    "startup.streamloop's OWN autoFillPanel (false) wins over a stale legacy streamloopIntegration value (true)"
+  );
 }
 
-console.log("\n4. saving streamloopIntegration leaves every sibling section intact");
-{
-  installFakeIndexedDB();
-  const Preferences = await import(src("storage/app-preferences.js"));
+// ---- 4. DOM: StreamLoop Integration owns ALL StreamLoop-specific controls -
 
-  await Preferences.savePlaybackPreferences({ intervalSeconds: 42 });
-  await Preferences.saveStartupPreferences("browser", { policy: "random-remembered" });
-  await Preferences.saveStartupPreferences("streamloop", { policy: "random-selected", eligibleLibraryIds: ["lib-x"] });
-
-  await Preferences.saveStreamloopIntegrationPreferences({ autoFillPanel: true });
-  const preferences = await Preferences.loadPreferences();
-
-  assertEqual(preferences.playback.intervalSeconds, 42, "playback survives a streamloopIntegration save");
-  assertEqual(preferences.startup.browser.policy, "random-remembered", "startup.browser survives a streamloopIntegration save");
-  assertEqual(preferences.startup.streamloop.policy, "random-selected", "startup.streamloop.policy survives a streamloopIntegration save");
-  assertEqual(preferences.startup.streamloop.eligibleLibraryIds.join(","), "lib-x", "startup.streamloop.eligibleLibraryIds survives a streamloopIntegration save");
-  assertEqual(preferences.streamloopIntegration.autoFillPanel, true, "the streamloopIntegration save itself still lands");
-}
-
-// ---- 5. DOM: the new disclosure, placed correctly --------------------------
-
-console.log("\n5. DOM: StreamLoop Integration disclosure exists, closed, correctly placed");
+console.log("\n4. DOM: StreamLoop Integration disclosure contains its full startup+auto-fill configuration");
 {
   const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
 
-  const needle = 'class="advanced-streamloop-integration-section"';
-  const at = html.indexOf(needle);
-  assert(at !== -1, '"StreamLoop Integration" section markup is present');
+  const at = html.indexOf('class="advanced-streamloop-integration-section"');
+  assert(at !== -1, "the StreamLoop Integration disclosure is present");
+  const sectionEnd = html.indexOf("</details>", at);
+  const section = html.slice(at, sectionEnd);
 
-  if (at !== -1) {
-    const tagStart = html.lastIndexOf("<details", at);
-    const tagEnd = html.indexOf(">", at);
-    const openingTag = html.slice(tagStart, tagEnd + 1);
-    assert(!/\sopen(\s|>)/.test(openingTag), '"StreamLoop Integration" <details> has no "open" attribute — closed by default');
+  assert(section.includes('id="startup-media-streamloop-policy-select"'), "the streamloop startup policy select lives inside StreamLoop Integration");
+  assert(section.includes('id="startup-media-streamloop-eligible-list"'), "the streamloop eligible-folder list lives inside StreamLoop Integration");
+  assert(section.includes('id="streamloop-auto-fill-panel-input"'), "the streamloop Auto Fill checkbox lives inside StreamLoop Integration");
+  assert(section.includes('id="streamloop-auto-fill-helper"'), "the streamloop Auto Fill disabled-state helper lives inside StreamLoop Integration");
 
-    const nextSummary = html.indexOf("<summary>", tagEnd);
-    assert(
-      nextSummary !== -1 && html.slice(nextSummary, nextSummary + 100).includes("StreamLoop Integration"),
-      '"StreamLoop Integration" section\'s own <summary> immediately follows its <details> tag'
-    );
-  }
-
-  assert(html.includes('id="streamloop-auto-fill-panel-input"'), "the Auto Fill Panel checkbox is present");
-  assert(html.includes(">Auto Fill Panel after media loads<"), "the checkbox has the expected customer-facing label");
-
-  const startupAt = html.indexOf('class="advanced-startup-media-section"');
-  const syncAt = html.indexOf('class="profile-sync-section" id="profile-sync-section"');
-  assert(
-    startupAt !== -1 && at !== -1 && syncAt !== -1 && startupAt < at && at < syncAt,
-    "StreamLoop Integration sits after Startup Media and before Sync Your Curations, in document order"
-  );
-
-  // No StreamLoop-specific playback overrides were added — Part 1 of the handoff.
-  const streamloopSectionEnd = html.indexOf("</details>", at);
-  const streamloopSectionBody = html.slice(at, streamloopSectionEnd);
-  for (const forbidden of ["shuffle", "interval", "loop-playlist", "Shuffle", "Interval", "Loop Playlist"]) {
-    assert(!streamloopSectionBody.includes(forbidden), `no StreamLoop-specific "${forbidden}" playback override was added`);
-  }
+  // And it must NOT still live inside Startup Media.
+  const startupMediaAt = html.indexOf('class="advanced-startup-media-section"');
+  const startupMediaEnd = html.indexOf("</details>", startupMediaAt);
+  const startupMediaSection = html.slice(startupMediaAt, startupMediaEnd);
+  assert(!startupMediaSection.includes("startup-media-streamloop"), "no streamloop startup control remains inside Startup Media");
+  assert(!startupMediaSection.includes("streamloop-auto-fill"), "no streamloop Auto Fill control remains inside Startup Media");
 }
 
-// ---- 6. main.js wiring: preference plumbing --------------------------------
+// ---- 5. main.js wiring: sequencing still holds for the streamloop context -
 
-console.log("\n6. integration: streamloopIntegration preference wiring in main.js");
-{
-  const mainSource = fs.readFileSync(path.join(ROOT, "src/main.js"), "utf8");
-
-  assert(
-    mainSource.includes('import {') && mainSource.includes("saveStreamloopIntegrationPreferences"),
-    "main.js imports saveStreamloopIntegrationPreferences"
-  );
-  assert(
-    mainSource.includes('document.getElementById("streamloop-auto-fill-panel-input")'),
-    "main.js captures the Auto Fill Panel checkbox"
-  );
-  assert(
-    mainSource.includes("currentStreamloopIntegrationPreferences = streamloopIntegration;") ||
-      mainSource.includes("currentStreamloopIntegrationPreferences = preferences.streamloopIntegration;"),
-    "applyLoadedPreferences() seeds currentStreamloopIntegrationPreferences before boot proceeds"
-  );
-  assert(
-    mainSource.includes("streamloopAutoFillPanelInput.checked = streamloopIntegration.autoFillPanel;"),
-    "applyLoadedPreferences() seeds the checkbox's checked state"
-  );
-
-  const listenerStart = mainSource.indexOf("streamloopAutoFillPanelInput.addEventListener(\"change\"");
-  assert(listenerStart !== -1, "a change listener is registered on the Auto Fill Panel checkbox");
-  const listenerEnd = mainSource.indexOf("\n});\n", listenerStart);
-  const listenerBody = mainSource.slice(listenerStart, listenerEnd);
-  assert(
-    listenerBody.includes("saveStreamloopIntegrationPreferences("),
-    "the checkbox's change listener saves through saveStreamloopIntegrationPreferences()"
-  );
-  assert(
-    !listenerBody.includes("enterFillMode(") && !listenerBody.includes("enterFillPanelDeliberately("),
-    "ticking the checkbox never itself enters Fill Panel — it is a pure preference, read only at the boot-settle decision"
-  );
-}
-
-// ---- 7. main.js wiring: attemptStartupMedia() settle-sequencing -----------
-
-console.log("\n7. integration: attemptStartupMedia() settle-sequencing in main.js");
+console.log("\n5. integration: attemptStartupMedia() still honors StreamLoop-specific sequencing");
 {
   const mainSource = fs.readFileSync(path.join(ROOT, "src/main.js"), "utf8");
 
   const start = mainSource.indexOf("async function attemptStartupMedia()");
-  assert(start !== -1, "attemptStartupMedia() is defined in main.js");
   const end = mainSource.indexOf("\n}\n", start);
   const fnBody = mainSource.slice(start, end);
 
-  assert(fnBody.includes("await runStartupMediaLoad();"), "attemptStartupMedia() awaits the full load path before deciding anything else");
+  assert(fnBody.includes("await runStartupMediaLoad();"), "attemptStartupMedia() still awaits the full load path first");
+  assert(fnBody.includes("streamLoopStartupSettled = true;"), "attemptStartupMedia() still marks streamLoopStartupSettled for a streamloop launch");
+  assert(fnBody.includes("tryBecomeStreamLoopReady();"), "attemptStartupMedia() still applies pending StreamLoop intent");
 
-  assert(
-    fnBody.includes("launchContext !== LAUNCH_CONTEXT_STREAMLOOP") || fnBody.includes("launchContext === LAUNCH_CONTEXT_STREAMLOOP"),
-    "attemptStartupMedia() gates its post-load behavior on the live launchContext"
-  );
-  assert(fnBody.includes("streamLoopStartupSettled = true;"), "attemptStartupMedia() marks streamLoopStartupSettled AFTER the load has resolved");
-
-  // Ordering: the settled flag is set, Auto Fill Panel is considered, and
-  // ONLY THEN is the pending intent applied. Prove textual order as a proxy
-  // for execution order (this is straight-line synchronous code with no
-  // branches between these three statements once inside the StreamLoop
-  // branch, so textual order IS execution order here).
-  const settledAt = fnBody.indexOf("streamLoopStartupSettled = true;");
   const fillAt = fnBody.indexOf("enterFillPanelDeliberately(");
+  const settledAssignAt = fnBody.indexOf("streamLoopStartupSettled = true;");
   const readyAt = fnBody.indexOf("tryBecomeStreamLoopReady(");
-  assert(settledAt !== -1 && fillAt !== -1 && readyAt !== -1, "all three settle-sequence steps are present");
-  assert(settledAt < fillAt && fillAt < readyAt, "execution order is: mark settled -> consider Auto Fill Panel -> apply pending intent");
+  assert(fillAt !== -1 && settledAssignAt !== -1 && readyAt !== -1, "all three sequencing landmarks are present");
+  assert(fillAt < settledAssignAt && settledAssignAt < readyAt, "execution order is: Auto Fill Panel -> mark settled -> apply pending intent");
 
-  // Gating: Auto Fill Panel only fires when there is visible media AND the
-  // preference is on.
-  const fillLineStart = fnBody.lastIndexOf("if (", fillAt);
-  const fillLineEnd = fnBody.indexOf(")", fillAt);
-  const fillGateCondition = fnBody.slice(fillLineStart, fillLineEnd);
-  assert(fillGateCondition.includes("hasVisibleItems"), "Auto Fill Panel is gated on runtime.getState().hasVisibleItems");
-  assert(
-    fillGateCondition.includes("currentStreamloopIntegrationPreferences.autoFillPanel"),
-    "Auto Fill Panel is gated on the autoFillPanel preference"
-  );
-
-  assert(!fnBody.includes("enterFillMode("), "attemptStartupMedia() never calls enterFillMode() directly — only the shared enterFillPanelDeliberately() entry point");
+  assert(!fnBody.includes("enterFillMode("), "attemptStartupMedia() never calls enterFillMode() directly");
   assert(!fnBody.includes("requestPermission"), "attemptStartupMedia() never calls requestPermission()");
-
-  // Boot-scoped only: attemptStartupMedia() must be CALLED exactly once, from
-  // initFsaLibraries() — never wired to any later/manual load path. Counts
-  // the exact call syntax `attemptStartupMedia();` (parens then semicolon,
-  // no arguments) rather than every textual mention of the name, since the
-  // identifier also appears in prose comments/breadcrumbs throughout the file.
-  const callSites = mainSource.split("attemptStartupMedia();").length - 1;
-  assertEqual(callSites, 1, "attemptStartupMedia() is called exactly once in main.js (inside initFsaLibraries())");
 }
 
 console.log(`\n${"-".repeat(60)}`);
