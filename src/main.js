@@ -45,6 +45,8 @@ import {
   saveOnboardingPreferences,
   saveStartupPreferences,
   DEFAULT_GHOST_OPACITY_PERCENT,
+  DEFAULT_TOOLBAR_OPACITY_PERCENT,
+  DEFAULT_HOVER_OPACITY_PERCENT,
 } from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
 import {
@@ -482,12 +484,23 @@ const workspaceCookbookPanel = document.getElementById("workspace-cookbook");
 const workspaceSettingsPanel = document.getElementById("workspace-settings");
 
 const presentationControls = document.getElementById("presentation-controls");
+const presentationControlsBar = document.getElementById("presentation-controls-bar");
 const presentationSettings = document.getElementById("presentation-settings");
 const ghostToggleBtn = document.getElementById("ghost-toggle-btn");
 const ghostPopunder = document.getElementById("ghost-popunder");
 const ghostOpacityInput = document.getElementById("ghost-opacity-input");
 const ghostOpacityLabel = document.getElementById("ghost-opacity-label");
 const ghostRememberInput = document.getElementById("ghost-remember-input");
+// [PM-TOOLBAR-OPACITY] Toolbar Opacity / Hover Opacity — siblings of Ghost
+// Opacity above, same slider/Remember pattern, independent preference and
+// independent target element (presentationControlsBar, not
+// presentationControls). See applyToolbarOpacity()/applyHoverOpacity().
+const toolbarOpacityInput = document.getElementById("toolbar-opacity-input");
+const toolbarOpacityLabel = document.getElementById("toolbar-opacity-label");
+const toolbarRememberInput = document.getElementById("toolbar-remember-input");
+const hoverOpacityInput = document.getElementById("hover-opacity-input");
+const hoverOpacityLabel = document.getElementById("hover-opacity-label");
+const hoverRememberInput = document.getElementById("hover-remember-input");
 const presentationTagsEmpty = document.getElementById("presentation-tags-empty");
 const presentationTagsRow = document.getElementById("presentation-tags-row");
 const presentationTagsOverflow = document.getElementById("presentation-tags-overflow");
@@ -7457,6 +7470,24 @@ function applyGhostOpacity(percent) {
   ghostOpacityLabel.textContent = `${percent}%`;
 }
 
+// [PM-TOOLBAR-OPACITY] Presentation Mode toolbar opacity has two independent
+// states: normal opacity (--pm-toolbar-opacity, this function) and temporary
+// hover opacity (--pm-toolbar-hover-opacity, applyHoverOpacity() below).
+// Hover never changes the stored normal value — unlike Ghost Opacity's
+// mouseenter/mouseleave JS pattern, the hover state itself is plain CSS
+// :hover on presentationControlsBar (see styles.css), so there is no
+// "current" value to track/restore here the way currentGhostOpacityPercent
+// does above.
+function applyToolbarOpacity(percent) {
+  presentationControlsBar.style.setProperty("--pm-toolbar-opacity", String(percent / 100));
+  toolbarOpacityLabel.textContent = `${percent}%`;
+}
+
+function applyHoverOpacity(percent) {
+  presentationControlsBar.style.setProperty("--pm-toolbar-hover-opacity", String(percent / 100));
+  hoverOpacityLabel.textContent = `${percent}%`;
+}
+
 // UI/UX Polish — the Ghost Opacity slider moved out of always-visible space
 // in #presentation-settings into its own compact 👻 pop-under. Purely a
 // relocation: applyGhostOpacity above (and everything that calls it) is
@@ -9431,6 +9462,45 @@ ghostRememberInput.addEventListener("change", () => {
   savePresentationPreferences(partial);
 });
 
+// [PM-TOOLBAR-OPACITY] Same input/change/Remember pattern as Ghost Opacity
+// above, for Toolbar Opacity and Hover Opacity — two separate preferences,
+// never merged into one.
+toolbarOpacityInput.addEventListener("input", () => {
+  applyToolbarOpacity(Number(toolbarOpacityInput.value));
+});
+
+toolbarOpacityInput.addEventListener("change", () => {
+  if (!toolbarRememberInput.checked) return;
+  savePresentationPreferences({ toolbarOpacityPercent: Number(toolbarOpacityInput.value) });
+});
+
+toolbarRememberInput.addEventListener("change", () => {
+  const remember = toolbarRememberInput.checked;
+  const partial = { rememberToolbarOpacity: remember };
+  if (remember) {
+    partial.toolbarOpacityPercent = Number(toolbarOpacityInput.value);
+  }
+  savePresentationPreferences(partial);
+});
+
+hoverOpacityInput.addEventListener("input", () => {
+  applyHoverOpacity(Number(hoverOpacityInput.value));
+});
+
+hoverOpacityInput.addEventListener("change", () => {
+  if (!hoverRememberInput.checked) return;
+  savePresentationPreferences({ hoverOpacityPercent: Number(hoverOpacityInput.value) });
+});
+
+hoverRememberInput.addEventListener("change", () => {
+  const remember = hoverRememberInput.checked;
+  const partial = { rememberHoverOpacity: remember };
+  if (remember) {
+    partial.hoverOpacityPercent = Number(hoverOpacityInput.value);
+  }
+  savePresentationPreferences(partial);
+});
+
 // ---- Keyboard shortcuts (Presentation Mode only) -------------------------
 //
 // Single, centralized listener rather than scattering key handling across
@@ -11397,11 +11467,28 @@ function applyLoadedPreferences(preferences) {
     : DEFAULT_GHOST_OPACITY_PERCENT;
   ghostOpacityInput.value = String(ghostPercent);
 
+  // [PM-TOOLBAR-OPACITY] Same "unchecked Remember falls back to the
+  // built-in default, not a stale stored number" rule Ghost Opacity uses
+  // above, applied independently to Toolbar Opacity and Hover Opacity.
+  toolbarRememberInput.checked = presentation.rememberToolbarOpacity;
+  const toolbarPercent = presentation.rememberToolbarOpacity
+    ? presentation.toolbarOpacityPercent
+    : DEFAULT_TOOLBAR_OPACITY_PERCENT;
+  toolbarOpacityInput.value = String(toolbarPercent);
+
+  hoverRememberInput.checked = presentation.rememberHoverOpacity;
+  const hoverPercent = presentation.rememberHoverOpacity
+    ? presentation.hoverOpacityPercent
+    : DEFAULT_HOVER_OPACITY_PERCENT;
+  hoverOpacityInput.value = String(hoverPercent);
+
   runtime.setShuffle(shuffleInput.checked);
   runtime.setShuffleMode(playback.shuffleMode);
   runtime.setLoop(loopInput.checked);
   runtime.setIntervalMs(Number(intervalInput.value) * 1000);
   applyGhostOpacity(Number(ghostOpacityInput.value));
+  applyToolbarOpacity(Number(toolbarOpacityInput.value));
+  applyHoverOpacity(Number(hoverOpacityInput.value));
 }
 
 const loadedPreferences = await loadPreferences();

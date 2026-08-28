@@ -44,9 +44,20 @@ const DEFAULT_PLAYBACK = {
   autoplayOnFill: true,
 };
 
+// [PM-TOOLBAR-OPACITY] `toolbarOpacityPercent`/`hoverOpacityPercent` default
+// to 100 (fully opaque, matching the toolbar's pre-existing hardcoded
+// appearance) deliberately — see PM-TOOLBAR-OPACITY comment on
+// .presentation-controls-bar in styles.css for why 100/100 is the
+// no-visual-change default. These are independent from `ghostOpacityPercent`
+// (which fades the whole controls stack, not just the toolbar bar) and are
+// never merged with it.
 const DEFAULT_PRESENTATION = {
   rememberGhostOpacity: true,
   ghostOpacityPercent: 15,
+  rememberToolbarOpacity: true,
+  toolbarOpacityPercent: 100,
+  rememberHoverOpacity: true,
+  hoverOpacityPercent: 100,
 };
 
 const DEFAULT_MICRO_ARCADE = {
@@ -117,6 +128,10 @@ const DEFAULT_STARTUP = {
 // left over from before the user unchecked "Remember this value"), and the
 // UI must fall back to this constant rather than that stored number.
 export const DEFAULT_GHOST_OPACITY_PERCENT = DEFAULT_PRESENTATION.ghostOpacityPercent;
+// Same reasoning as DEFAULT_GHOST_OPACITY_PERCENT above, for the toolbar's
+// own two independent opacity preferences.
+export const DEFAULT_TOOLBAR_OPACITY_PERCENT = DEFAULT_PRESENTATION.toolbarOpacityPercent;
+export const DEFAULT_HOVER_OPACITY_PERCENT = DEFAULT_PRESENTATION.hoverOpacityPercent;
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
@@ -157,12 +172,19 @@ function clampInterval(value) {
   return rounded;
 }
 
-function clampOpacity(value) {
+// Generic 0-100 percent clamp shared by Ghost/Toolbar/Hover Opacity — each
+// caller passes its own fallback so an invalid/out-of-range stored value
+// falls back to THAT slider's own default, never another slider's.
+function clampPercent(value, fallback) {
   const num = Number(value);
-  if (!Number.isFinite(num)) return DEFAULT_PRESENTATION.ghostOpacityPercent;
+  if (!Number.isFinite(num)) return fallback;
   const rounded = Math.round(num);
-  if (rounded < 0 || rounded > 100) return DEFAULT_PRESENTATION.ghostOpacityPercent;
+  if (rounded < 0 || rounded > 100) return fallback;
   return rounded;
+}
+
+function clampOpacity(value) {
+  return clampPercent(value, DEFAULT_PRESENTATION.ghostOpacityPercent);
 }
 
 function bool(value, fallback) {
@@ -319,6 +341,21 @@ function normalizeRecord(raw) {
     presentation: {
       rememberGhostOpacity: bool(presentationSource.rememberGhostOpacity, DEFAULT_PRESENTATION.rememberGhostOpacity),
       ghostOpacityPercent: clampOpacity(presentationSource.ghostOpacityPercent ?? DEFAULT_PRESENTATION.ghostOpacityPercent),
+      // [PM-TOOLBAR-OPACITY] Independent from Ghost Opacity above: Toolbar
+      // Opacity is the PM toolbar bar's normal (not-hovered) opacity; Hover
+      // Opacity is its temporary opacity while the pointer is over it. Each
+      // has its own Remember checkbox and its own fallback default, exactly
+      // like Ghost Opacity's own pair of fields.
+      rememberToolbarOpacity: bool(presentationSource.rememberToolbarOpacity, DEFAULT_PRESENTATION.rememberToolbarOpacity),
+      toolbarOpacityPercent: clampPercent(
+        presentationSource.toolbarOpacityPercent ?? DEFAULT_PRESENTATION.toolbarOpacityPercent,
+        DEFAULT_PRESENTATION.toolbarOpacityPercent,
+      ),
+      rememberHoverOpacity: bool(presentationSource.rememberHoverOpacity, DEFAULT_PRESENTATION.rememberHoverOpacity),
+      hoverOpacityPercent: clampPercent(
+        presentationSource.hoverOpacityPercent ?? DEFAULT_PRESENTATION.hoverOpacityPercent,
+        DEFAULT_PRESENTATION.hoverOpacityPercent,
+      ),
     },
     microArcade: {
       animationOrder: arcadeAnimationOrder(microArcadeSource.animationOrder, microArcadeSource.shuffle),
