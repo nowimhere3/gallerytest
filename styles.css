@@ -295,16 +295,24 @@ input {
   margin-bottom: 20px;
 }
 
-/* [STREAMLOOP-INTEGRATION / N6-6]
+/* [STREAMLOOP-INTEGRATION / N6-6] [V6-POLISH / ADVANCED-SETTINGS-TOP-GAP]
    [WHY: was `margin-top: 0`, which collapsed the gap between "Advanced
-    Settings" and its first nested disclosure entirely. A small nonzero
-    value reads as "a little more" rather than a redesign, and stays well
-    under the 20px every other nested <details> already uses above/below
-    itself. Kept on the generic :first-of-type selector rather than a fix
-    targeted at "Media Library diagnostics" specifically, so any future
-    section reordered to be first inherits this spacing automatically.] */
+    Settings" and its first nested disclosure entirely. A first pass moved
+    this to 12px, deliberately kept under the 20px every other nested
+    <details> uses above/below itself so it wouldn't outweigh the rhythm
+    between disclosures — but the rendered result still read as too
+    compressed for "Media Library diagnostics" to clearly land as a CHILD
+    of "Advanced Settings" rather than a continuation of it. Raised to the
+    same 20px token used everywhere else in this stylesheet for a settings
+    block's own top spacing (.advanced-settings-section, .tags-admin-section,
+    the between-disclosure margin just above) rather than inventing a new
+    number — parent-to-first-child now reads as one consistent, deterministic
+    unit of space with child-to-child, not a smaller half-step. Kept on the
+    generic :first-of-type selector rather than a fix targeted at "Media
+    Library diagnostics" specifically, so any future section reordered to be
+    first inherits this spacing automatically.] */
 .advanced-settings-section > details:first-of-type {
-  margin-top: 12px;
+  margin-top: 20px;
 }
 
 /* [STARTUP-CONTEXT-PARITY / N6-9]
@@ -347,11 +355,65 @@ input {
   margin-top: 20px;
 }
 
+/* [V6-POLISH / NESTED-DISCLOSURE-HEADING-GAP]
+   [WHY: was `margin: 0 0 8px` — no top margin at all, so the only space
+    between a disclosure's <summary> (e.g. "Startup Media") and its inner
+    context heading (e.g. "Normal Browser Gallery") was the summary's own
+    10px margin-bottom, which read as too close for a heading that starts
+    a distinct labeled sub-block. 20px reuses this stylesheet's existing
+    section-spacing token (see .advanced-settings-section > details:
+    first-of-type just above) so the gap reads as a deliberate step down
+    in the hierarchy without needing a new magic number.] */
 .startup-media-context-heading {
-  margin: 0 0 8px;
+  margin: 20px 0 8px;
   font-size: 0.95em;
   font-weight: 700;
   color: var(--text);
+}
+
+/* [V6-POLISH / SETTINGS-DROPDOWN-GRAMMAR]
+   BREADCRUMBS — IS: every dropdown inside Settings sits on its own line,
+   left-aligned directly beneath its label/question, never inline to the
+   right of it. Settings uses a strict vertical control grammar: labels/
+   questions first, controls directly below and left-aligned. This is the
+   one authoritative place that rule is spelled out; apply it to any future
+   Settings dropdown by scoping the same two declarations below to its
+   container, the same way .advanced-playback-section .field-control
+   (above) already did for the Arcade animations dropdown — a block-level
+   <select> always starts a new line after an inline label, no label
+   change needed.
+   [WHY: .field-control had no display override here, so both startup
+    policy <select>s stayed inline-block and rendered beside their <label>
+    whenever there was room — "What loads when Browser Gallery opens
+    [ dropdown ]" — instead of stacking under it. max-width: 620px matches
+    this stylesheet's established Settings content column (see
+    .advanced-playback-section, .profile-settings-group, etc.) so `width:
+    100%` on the select fills its column instead of stretching across the
+    whole panel.] */
+.startup-media-context-group {
+  max-width: 620px;
+}
+
+.startup-media-context-group .field-control {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+}
+
+/* [V6-POLISH / AUTO-FILL-SPACING]
+   [WHY: the Auto Fill checkbox row had no margin separating it from
+    whatever policy content precedes it (the helper hint, or the
+    eligible-folder list when "Random from selected folders" is chosen),
+    so it read as glued to neighboring content instead of its own
+    deliberate control. Scoped to the shared .startup-media-context-group
+    container so Normal Browser Gallery and StreamLoop Integration get the
+    identical treatment from one rule.] */
+.startup-media-context-group .compact-check {
+  margin-top: 16px;
+}
+
+.startup-media-context-group .compact-check + .hint {
+  margin-top: 8px;
 }
 
 .startup-media-eligible-list {
