@@ -1890,11 +1890,7 @@
   </div>
 
   <div id="presentation-controls" class="presentation-controls hidden" tabindex="0" aria-label="Presentation controls">
-    <!-- [PM-TOOLBAR-OPACITY] id added so main.js can target the toolbar bar
-         itself (Toolbar Opacity / Hover Opacity below) separately from
-         #presentation-controls, which Ghost Opacity already fades as a
-         whole (bar + popunder + settings panels). -->
-    <div id="presentation-controls-bar" class="presentation-controls-bar">
+    <div class="presentation-controls-bar">
       <button id="overlay-favorite-btn" class="overlay-btn overlay-btn-favorite hidden" type="button" aria-label="Toggle favorite">♡</button>
       <!-- [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
            WHAT: The canonical PM Automations entry point at EVERY width now
@@ -1970,29 +1966,21 @@
     </div>
  
     <!-- Sits between the toolbar above and the ⚙ row below — a sibling of
-         both — and only occupies layout space while open. Three rows, each
-         the same shape: label, slider, percentage, Remember checkbox, left
-         to right. Ghost Opacity fades this whole controls stack (see
-         --ghost-opacity on .presentation-controls); Toolbar Opacity and
-         Hover Opacity below are independent preferences that fade ONLY the
-         toolbar bar itself (see PM-TOOLBAR-OPACITY comment in styles.css) —
-         three separate concepts, three separate rows, never merged. -->
+         both — and only occupies layout space while open. Two rows, same
+         shape: label, slider, percentage, Remember checkbox, left to right.
+         [PM-TOOLBAR-OPACITY] Exactly two configurable PM toolbar opacity
+         states, never a third: Toolbar Opacity (not-hovered — this is the
+         pre-existing "Ghost Opacity" mechanism, id/storage unchanged, only
+         its on-screen label changed) and Hover Opacity (hovered — replaces
+         what used to be a hardcoded 100%). Hover never changes the stored
+         Toolbar Opacity value. -->
     <div id="ghost-popunder" class="ghost-popunder hidden">
       <div class="ghost-popunder-row">
-        <label class="ghost-popunder-label" for="ghost-opacity-input">Ghost Opacity</label>
+        <label class="ghost-popunder-label" for="ghost-opacity-input">Toolbar Opacity</label>
         <input id="ghost-opacity-input" type="range" min="0" max="100" step="1" value="15" />
         <span id="ghost-opacity-label" class="ghost-popunder-value">15%</span>
         <label class="ghost-popunder-remember" for="ghost-remember-input">
           <input id="ghost-remember-input" type="checkbox" checked />
-          <span>Remember this value</span>
-        </label>
-      </div>
-      <div class="ghost-popunder-row">
-        <label class="ghost-popunder-label" for="toolbar-opacity-input">Toolbar Opacity</label>
-        <input id="toolbar-opacity-input" type="range" min="0" max="100" step="1" value="100" />
-        <span id="toolbar-opacity-label" class="ghost-popunder-value">100%</span>
-        <label class="ghost-popunder-remember" for="toolbar-remember-input">
-          <input id="toolbar-remember-input" type="checkbox" checked />
           <span>Remember this value</span>
         </label>
       </div>
@@ -2021,8 +2009,8 @@
           type="button"
           aria-haspopup="true"
           aria-expanded="false"
-          aria-label="Ghost Opacity"
-          title="Ghost Opacity"
+          aria-label="Toolbar Opacity"
+          title="Toolbar Opacity"
         >👻</button>
         <span class="presentation-settings-label">Tags</span>
         <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] Wording only — tag

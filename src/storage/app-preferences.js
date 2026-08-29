@@ -44,18 +44,17 @@ const DEFAULT_PLAYBACK = {
   autoplayOnFill: true,
 };
 
-// [PM-TOOLBAR-OPACITY] `toolbarOpacityPercent`/`hoverOpacityPercent` default
-// to 100 (fully opaque, matching the toolbar's pre-existing hardcoded
-// appearance) deliberately — see PM-TOOLBAR-OPACITY comment on
-// .presentation-controls-bar in styles.css for why 100/100 is the
-// no-visual-change default. These are independent from `ghostOpacityPercent`
-// (which fades the whole controls stack, not just the toolbar bar) and are
-// never merged with it.
+// [PM-TOOLBAR-OPACITY] `ghostOpacityPercent`/`rememberGhostOpacity` are the
+// pre-existing implementation of what the customer now sees labeled
+// "Toolbar Opacity" — its storage field names deliberately were NOT renamed
+// (this mechanism predates the rename and already governed the correct
+// resting-toolbar behavior; only its on-screen label changed). `hoverOpacityPercent`
+// defaults to 100 because it replaces what used to be a hardcoded 100%
+// hover state — a customer who never touches the new Hover Opacity slider
+// sees exactly the same hover behavior as before.
 const DEFAULT_PRESENTATION = {
   rememberGhostOpacity: true,
   ghostOpacityPercent: 15,
-  rememberToolbarOpacity: true,
-  toolbarOpacityPercent: 100,
   rememberHoverOpacity: true,
   hoverOpacityPercent: 100,
 };
@@ -128,9 +127,7 @@ const DEFAULT_STARTUP = {
 // left over from before the user unchecked "Remember this value"), and the
 // UI must fall back to this constant rather than that stored number.
 export const DEFAULT_GHOST_OPACITY_PERCENT = DEFAULT_PRESENTATION.ghostOpacityPercent;
-// Same reasoning as DEFAULT_GHOST_OPACITY_PERCENT above, for the toolbar's
-// own two independent opacity preferences.
-export const DEFAULT_TOOLBAR_OPACITY_PERCENT = DEFAULT_PRESENTATION.toolbarOpacityPercent;
+// Same reasoning as DEFAULT_GHOST_OPACITY_PERCENT above, for Hover Opacity.
 export const DEFAULT_HOVER_OPACITY_PERCENT = DEFAULT_PRESENTATION.hoverOpacityPercent;
 
 function openDatabase() {
@@ -339,18 +336,14 @@ function normalizeRecord(raw) {
       autoplayOnFill: bool(playbackSource.autoplayOnFill, DEFAULT_PLAYBACK.autoplayOnFill),
     },
     presentation: {
+      // Displayed on screen as "Toolbar Opacity" — see DEFAULT_PRESENTATION's
+      // own comment above for why the storage field names stay "ghost".
       rememberGhostOpacity: bool(presentationSource.rememberGhostOpacity, DEFAULT_PRESENTATION.rememberGhostOpacity),
       ghostOpacityPercent: clampOpacity(presentationSource.ghostOpacityPercent ?? DEFAULT_PRESENTATION.ghostOpacityPercent),
-      // [PM-TOOLBAR-OPACITY] Independent from Ghost Opacity above: Toolbar
-      // Opacity is the PM toolbar bar's normal (not-hovered) opacity; Hover
-      // Opacity is its temporary opacity while the pointer is over it. Each
-      // has its own Remember checkbox and its own fallback default, exactly
-      // like Ghost Opacity's own pair of fields.
-      rememberToolbarOpacity: bool(presentationSource.rememberToolbarOpacity, DEFAULT_PRESENTATION.rememberToolbarOpacity),
-      toolbarOpacityPercent: clampPercent(
-        presentationSource.toolbarOpacityPercent ?? DEFAULT_PRESENTATION.toolbarOpacityPercent,
-        DEFAULT_PRESENTATION.toolbarOpacityPercent,
-      ),
+      // [PM-TOOLBAR-OPACITY] Independent from Toolbar Opacity above: Hover
+      // Opacity is the PM toolbar's temporary opacity while the pointer is
+      // over it, with its own Remember checkbox and its own fallback
+      // default, exactly like Toolbar Opacity's own pair of fields.
       rememberHoverOpacity: bool(presentationSource.rememberHoverOpacity, DEFAULT_PRESENTATION.rememberHoverOpacity),
       hoverOpacityPercent: clampPercent(
         presentationSource.hoverOpacityPercent ?? DEFAULT_PRESENTATION.hoverOpacityPercent,

@@ -11,18 +11,12 @@
   --danger: #ef4444;
   --shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
   --radius: 16px;
+  /* [PM-TOOLBAR-OPACITY] Presentation Mode toolbar opacity has exactly two
+     configurable states: normal opacity ("Toolbar Opacity" on screen — this
+     var, driven by main.js's mouseenter/mouseleave handlers) and temporary
+     hover opacity ("Hover Opacity" on screen, also applied via that same
+     JS). Hover never changes the stored normal value. */
   --ghost-opacity: 0.18;
-  /* [PM-TOOLBAR-OPACITY] Fallback values only — main.js always sets these
-     explicitly (on #presentation-controls-bar) from loaded/default
-     preferences before Presentation Mode can be entered, so 1 here only
-     matters if that JS somehow never ran. Presentation Mode toolbar
-     opacity has two independent states: normal opacity
-     (--pm-toolbar-opacity) and temporary hover opacity
-     (--pm-toolbar-hover-opacity, applied only via :hover — see
-     .presentation-controls-bar below). Hover never changes the stored
-     normal value. */
-  --pm-toolbar-opacity: 1;
-  --pm-toolbar-hover-opacity: 1;
   /* Blue counterpart to the neon green already used for the Loop toggle
      and 🤖 Automation button (#00ff00, glow rgba(0, 170, 0, ...)) — same
      saturation/brightness family, just blue. Used for "selected tag". */
@@ -3280,23 +3274,6 @@ hr {
   border: 1px solid rgba(255, 255, 255, 0.14);
   backdrop-filter: blur(10px);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
-  /* [PM-TOOLBAR-OPACITY] Toolbar Opacity / Hover Opacity target THIS
-     element only, not #presentation-controls (Ghost Opacity's target,
-     which also covers the ghost/settings/automation popunders) — the two
-     opacities compose multiplicatively since this bar is a nested child,
-     which is exactly why their shared default (100%/100%) is a no-op
-     against Ghost Opacity's existing effect. Plain CSS :hover (not the
-     mouseenter/mouseleave JS pattern Ghost Opacity uses above) is safe
-     here: that JS existed to work around :focus-within getting stuck after
-     a button click, which :hover alone never suffers from. On a
-     hover-incapable pointer (touch), :hover simply never activates, so
-     --pm-toolbar-opacity stays authoritative — see main.js applyToolbarOpacity()/applyHoverOpacity(). */
-  opacity: var(--pm-toolbar-opacity, 1);
-  transition: opacity 0.15s ease;
-}
-
-.presentation-controls-bar:hover {
-  opacity: var(--pm-toolbar-hover-opacity, 1);
 }
 
 .overlay-btn {
@@ -3628,13 +3605,13 @@ hr {
 
 /* Sits between the toolbar above and the "⚙ row" below — a sibling of
    both, not nested inside either — and only occupies layout space while
-   open. Three stacked rows, same material as the toolbar: Ghost Opacity,
-   Toolbar Opacity, Hover Opacity, each "label far left, slider next,
-   percentage, Remember checkbox on the right". [PM-TOOLBAR-OPACITY]
-   Radius softened from the original single-row 999px pill to 20px —
-   same reasoning PM-AUTOMATIONS-CANONICAL already used on
-   .presentation-controls-bar above: a full pill looks broken once a
-   container holds more than one row. */
+   open. Two stacked rows, same material as the toolbar: Toolbar Opacity,
+   Hover Opacity, each "label far left, slider next, percentage, Remember
+   checkbox on the right". [PM-TOOLBAR-OPACITY] Radius softened from the
+   original single-row 999px pill to 20px — same reasoning
+   PM-AUTOMATIONS-CANONICAL already used on .presentation-controls-bar
+   above: a full pill looks broken once a container holds more than one
+   row. */
 .ghost-popunder {
   width: 100%;
   padding: 10px 16px;

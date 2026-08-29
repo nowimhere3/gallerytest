@@ -45,7 +45,6 @@ import {
   saveOnboardingPreferences,
   saveStartupPreferences,
   DEFAULT_GHOST_OPACITY_PERCENT,
-  DEFAULT_TOOLBAR_OPACITY_PERCENT,
   DEFAULT_HOVER_OPACITY_PERCENT,
 } from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
@@ -484,20 +483,20 @@ const workspaceCookbookPanel = document.getElementById("workspace-cookbook");
 const workspaceSettingsPanel = document.getElementById("workspace-settings");
 
 const presentationControls = document.getElementById("presentation-controls");
-const presentationControlsBar = document.getElementById("presentation-controls-bar");
 const presentationSettings = document.getElementById("presentation-settings");
 const ghostToggleBtn = document.getElementById("ghost-toggle-btn");
 const ghostPopunder = document.getElementById("ghost-popunder");
+// [PM-TOOLBAR-OPACITY] `ghost-*` ids/vars are the pre-existing implementation
+// — its customer-facing label is "Toolbar Opacity" now (see the <label> in
+// index.html), but the id/storage-field names stay "ghost" deliberately:
+// this mechanism predates the rename and already governed the correct
+// resting-opacity behavior, so nothing about its storage path or internal
+// naming changed, only what the customer reads on screen.
 const ghostOpacityInput = document.getElementById("ghost-opacity-input");
 const ghostOpacityLabel = document.getElementById("ghost-opacity-label");
 const ghostRememberInput = document.getElementById("ghost-remember-input");
-// [PM-TOOLBAR-OPACITY] Toolbar Opacity / Hover Opacity — siblings of Ghost
-// Opacity above, same slider/Remember pattern, independent preference and
-// independent target element (presentationControlsBar, not
-// presentationControls). See applyToolbarOpacity()/applyHoverOpacity().
-const toolbarOpacityInput = document.getElementById("toolbar-opacity-input");
-const toolbarOpacityLabel = document.getElementById("toolbar-opacity-label");
-const toolbarRememberInput = document.getElementById("toolbar-remember-input");
+// Hover Opacity — the new sibling preference that replaces the old
+// hardcoded 100% hover state (see the mouseenter listener below).
 const hoverOpacityInput = document.getElementById("hover-opacity-input");
 const hoverOpacityLabel = document.getElementById("hover-opacity-label");
 const hoverRememberInput = document.getElementById("hover-remember-input");
@@ -7464,6 +7463,8 @@ function exitFillMode() {
   resetLoopRuleToDefault();
 }
 
+// Renamed on screen to "Toolbar Opacity" — this function/id/storage field
+// keep their original "ghost" names (see the DOM-capture comment above).
 function applyGhostOpacity(percent) {
   currentGhostOpacityPercent = percent;
   presentationControls.style.setProperty("--ghost-opacity", String(percent / 100));
@@ -7471,21 +7472,23 @@ function applyGhostOpacity(percent) {
 }
 
 // [PM-TOOLBAR-OPACITY] Presentation Mode toolbar opacity has two independent
-// states: normal opacity (--pm-toolbar-opacity, this function) and temporary
-// hover opacity (--pm-toolbar-hover-opacity, applyHoverOpacity() below).
-// Hover never changes the stored normal value — unlike Ghost Opacity's
-// mouseenter/mouseleave JS pattern, the hover state itself is plain CSS
-// :hover on presentationControlsBar (see styles.css), so there is no
-// "current" value to track/restore here the way currentGhostOpacityPercent
-// does above.
-function applyToolbarOpacity(percent) {
-  presentationControlsBar.style.setProperty("--pm-toolbar-opacity", String(percent / 100));
-  toolbarOpacityLabel.textContent = `${percent}%`;
-}
-
+// states: normal opacity (Toolbar Opacity, applyGhostOpacity() above) and
+// temporary hover opacity (this function). Hover never changes the stored
+// normal value — see the mouseenter/mouseleave listeners below, where
+// mouseleave always restores currentGhostOpacityPercent, never something
+// this function touches.
+//
+// Also updates --ghost-opacity directly (not just currentHoverOpacityPercent
+// + the label) as a live preview: this slider can only be dragged while the
+// pointer is over #presentation-controls (the popunder that contains it is
+// nested inside it), so the toolbar bar IS in its hovered state for as long
+// as this slider is reachable — applying it immediately, rather than
+// waiting for a mouseenter that already fired, is what makes the slider
+// preview its own effect live, same as the resting slider already does.
 function applyHoverOpacity(percent) {
-  presentationControlsBar.style.setProperty("--pm-toolbar-hover-opacity", String(percent / 100));
+  currentHoverOpacityPercent = percent;
   hoverOpacityLabel.textContent = `${percent}%`;
+  presentationControls.style.setProperty("--ghost-opacity", String(percent / 100));
 }
 
 // UI/UX Polish — the Ghost Opacity slider moved out of always-visible space
@@ -9462,27 +9465,9 @@ ghostRememberInput.addEventListener("change", () => {
   savePresentationPreferences(partial);
 });
 
-// [PM-TOOLBAR-OPACITY] Same input/change/Remember pattern as Ghost Opacity
-// above, for Toolbar Opacity and Hover Opacity — two separate preferences,
-// never merged into one.
-toolbarOpacityInput.addEventListener("input", () => {
-  applyToolbarOpacity(Number(toolbarOpacityInput.value));
-});
-
-toolbarOpacityInput.addEventListener("change", () => {
-  if (!toolbarRememberInput.checked) return;
-  savePresentationPreferences({ toolbarOpacityPercent: Number(toolbarOpacityInput.value) });
-});
-
-toolbarRememberInput.addEventListener("change", () => {
-  const remember = toolbarRememberInput.checked;
-  const partial = { rememberToolbarOpacity: remember };
-  if (remember) {
-    partial.toolbarOpacityPercent = Number(toolbarOpacityInput.value);
-  }
-  savePresentationPreferences(partial);
-});
-
+// [PM-TOOLBAR-OPACITY] Same input/change/Remember pattern as Ghost/Toolbar
+// Opacity above, for Hover Opacity — its own independent preference, never
+// merged with Toolbar Opacity's.
 hoverOpacityInput.addEventListener("input", () => {
   applyHoverOpacity(Number(hoverOpacityInput.value));
 });
@@ -9865,7 +9850,7 @@ function handleTransportKeydown(event) {
 
 document.addEventListener("keydown", handleTransportKeydown);
 
-// ---- Ghost UI hover behavior ----------------------------------------------
+// ---- PM toolbar hover behavior (Toolbar Opacity / Hover Opacity) ----------
 //
 // Driven by literal pointer presence (mouseenter/mouseleave) rather than
 // CSS :hover/:focus-within. Clicking a button gives it DOM focus as a
@@ -9874,11 +9859,20 @@ document.addEventListener("keydown", handleTransportKeydown);
 // pointer directly sidesteps focus entirely: the bar reveals only while the
 // cursor is actually over it, and reverts the instant it isn't, regardless
 // of what has focus.
+//
+// [PM-TOOLBAR-OPACITY] Presentation Mode toolbar opacity has exactly two
+// configurable states: Toolbar Opacity (currentGhostOpacityPercent, applied
+// below on mouseleave) and Hover Opacity (currentHoverOpacityPercent,
+// applied on mouseenter — this used to be a hardcoded "1"/100%). Hover
+// never changes the stored Toolbar Opacity value: mouseleave always
+// restores currentGhostOpacityPercent exactly as it was, regardless of
+// whatever Hover Opacity did while hovered.
 
 let currentGhostOpacityPercent = Number(ghostOpacityInput.value);
+let currentHoverOpacityPercent = Number(hoverOpacityInput.value);
 
 presentationControls.addEventListener("mouseenter", () => {
-  presentationControls.style.setProperty("--ghost-opacity", "1");
+  presentationControls.style.setProperty("--ghost-opacity", String(currentHoverOpacityPercent / 100));
 });
 
 presentationControls.addEventListener("mouseleave", () => {
@@ -11461,21 +11455,16 @@ function applyLoadedPreferences(preferences) {
   // before the key existed, so an older stored record lands here as ON.
   autoplayOnFillInput.checked = playback.autoplayOnFill;
 
+  // "Toolbar Opacity" on screen; `ghost*`/`rememberGhostOpacity` internally
+  // — see the DOM-capture comment above for why the names differ.
   ghostRememberInput.checked = presentation.rememberGhostOpacity;
   const ghostPercent = presentation.rememberGhostOpacity
     ? presentation.ghostOpacityPercent
     : DEFAULT_GHOST_OPACITY_PERCENT;
   ghostOpacityInput.value = String(ghostPercent);
 
-  // [PM-TOOLBAR-OPACITY] Same "unchecked Remember falls back to the
-  // built-in default, not a stale stored number" rule Ghost Opacity uses
-  // above, applied independently to Toolbar Opacity and Hover Opacity.
-  toolbarRememberInput.checked = presentation.rememberToolbarOpacity;
-  const toolbarPercent = presentation.rememberToolbarOpacity
-    ? presentation.toolbarOpacityPercent
-    : DEFAULT_TOOLBAR_OPACITY_PERCENT;
-  toolbarOpacityInput.value = String(toolbarPercent);
-
+  // Same "unchecked Remember falls back to the built-in default, not a
+  // stale stored number" rule, applied independently to Hover Opacity.
   hoverRememberInput.checked = presentation.rememberHoverOpacity;
   const hoverPercent = presentation.rememberHoverOpacity
     ? presentation.hoverOpacityPercent
@@ -11487,8 +11476,12 @@ function applyLoadedPreferences(preferences) {
   runtime.setLoop(loopInput.checked);
   runtime.setIntervalMs(Number(intervalInput.value) * 1000);
   applyGhostOpacity(Number(ghostOpacityInput.value));
-  applyToolbarOpacity(Number(toolbarOpacityInput.value));
-  applyHoverOpacity(Number(hoverOpacityInput.value));
+  // Seed Hover Opacity's tracked value/label directly rather than through
+  // applyHoverOpacity() — at boot the pointer is not hovering the toolbar,
+  // so the toolbar must render at Toolbar Opacity (just applied above), not
+  // be forced into its hover look before any real hover has happened.
+  currentHoverOpacityPercent = Number(hoverOpacityInput.value);
+  hoverOpacityLabel.textContent = `${currentHoverOpacityPercent}%`;
 }
 
 const loadedPreferences = await loadPreferences();
