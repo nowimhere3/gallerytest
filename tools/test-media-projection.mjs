@@ -303,6 +303,17 @@ await test("a seed-floor winner falls back to the T0 key — status quo (24)", a
   assertEqual(Projection.resolveFavorite(ALIASES, real).on, true, "a real mutation beats the seed floor");
 });
 
+
+await test("a seed-floor winner with NO T0 fact safely reports exactly what it found", async () => {
+  const SEED = Projection.__TEST__.LOCAL_SEED_T;
+  const facts = {
+    "Animals/Cats/cat.jpg": { favorite: favFact(true, 7, SEED, "seed:devZ") },
+  };
+  // T0 key ("cat.jpg") has no fact at all. The fallback policy handles it cleanly.
+  assertEqual(Projection.resolveFavorite(ALIASES, facts).on, true, "the alias fact wins because T0 is absent");
+  assertEqual(Projection.resolveFavorite(ALIASES, facts).key, "Animals/Cats/cat.jpg", "and its key is reported");
+});
+
 await test("no facts at all resolves to nothing rather than guessing", async () => {
   assertEqual(Projection.resolveFavorite(ALIASES, {}).on, false, "absent favourite is false");
   assertEqual(Projection.resolveHidden(ALIASES, {}).hidden, false, "absent hidden is false");

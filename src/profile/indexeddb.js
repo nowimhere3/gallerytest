@@ -1,7 +1,7 @@
 // This module is deliberately the only boundary between profile data and
 // IndexedDB. ProfileStore deals exclusively in plain objects.
 //
-// Schema (v2 — Multi-Profile Foundation, Phase 8.1):
+// Schema (v3 — Multi-Profile Foundation + local Stage 09 decisions):
 //
 //   "profiles" store (keyPath "id"): one row per profile, id = that
 //     profile's stable profileId. Row shape: { id, items, tags }. This is
@@ -17,6 +17,11 @@
 //     there is exactly one profile in practice (migrated or freshly
 //     created) even though the shape already supports more.
 //
+//   "ambient-profile-decisions" store (keyPath "libraryId"): one local-only
+//     YES/NO/LATER decision per shared Library. These rows are deliberately
+//     outside Profile records and the registry row, so Profile export/import
+//     and synchronized replica construction cannot see them.
+//
 // Migration (v1 -> v2): a v1 database has exactly one possible row in
 // "profiles", keyed by the literal "default". That row's DATA (items,
 // tags) is preserved byte-for-byte; it is re-keyed under a freshly
@@ -29,9 +34,10 @@
 // itself, the same way it would for a brand-new install.
 
 const DATABASE_NAME = "loop-browser-gallery";
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const STORE_NAME = "profiles";
 const REGISTRY_STORE_NAME = "registry";
+const AMBIENT_DECISION_STORE_NAME = "ambient-profile-decisions";
 const REGISTRY_KEY = "registry";
 const LEGACY_PROFILE_KEY = "default";
 
@@ -68,6 +74,18 @@ function openDatabase() {
       const registryStoreIsNew = !database.objectStoreNames.contains(REGISTRY_STORE_NAME);
       if (registryStoreIsNew) {
         database.createObjectStore(REGISTRY_STORE_NAME, { keyPath: "id" });
+      }
+
+      // [SYNCV3 / STAGE-09 / LOCAL-DECISION-STORE]
+      // [WHY: YES/NO/LATER answers are a preference of THIS device, not a
+      // shared association fact, Profile fact, or physical-folder identity.
+      // Keeping them in their own store beside local Profile/device state makes
+      // their exclusion from export and replicas structural, while avoiding the
+      // FSA registry whose job is physical handles and Folder -> Library links.
+      // The upgrade is additive: same-value restamps have no schema meaning and
+      // never rewrite either existing store.]
+      if (!database.objectStoreNames.contains(AMBIENT_DECISION_STORE_NAME)) {
+        database.createObjectStore(AMBIENT_DECISION_STORE_NAME, { keyPath: "libraryId" });
       }
 
       // Only migrate legacy data the first time the registry store is
@@ -345,6 +363,99 @@ export async function saveRegistry({ activeProfileId, profiles }) {
     const transaction = database.transaction(REGISTRY_STORE_NAME, "readwrite");
     transaction.objectStore(REGISTRY_STORE_NAME).put({ id: REGISTRY_KEY, activeProfileId, profiles });
     await completeTransaction(transaction);
+  } finally {
+    database.close();
+  }
+}
+
+const AMBIENT_DECISION_KINDS = new Set(["yes", "no", "later"]);
+
+function normalizeAmbientProfileDecision(record, { throwOnInvalid = false } = {}) {
+  const invalid = (message) => {
+    if (throwOnInvalid) throw new TypeError(message);
+    return null;
+  };
+
+  if (!record || typeof record !== "object") return invalid("Ambient Profile decision must be an object.");
+  if (typeof record.libraryId !== "string" || !record.libraryId) {
+    return invalid("Ambient Profile decision requires a non-empty libraryId.");
+  }
+  if (!AMBIENT_DECISION_KINDS.has(record.kind)) {
+    return invalid('Ambient Profile decision kind must be "yes", "no", or "later".');
+  }
+  // Association -> null never has a Stage 09 decision UI. Reject it here so a
+  // future caller cannot accidentally turn "No Profile" into a switch target.
+  if (typeof record.observedValue !== "string" || !record.observedValue) {
+    return invalid("Ambient Profile decision requires a non-empty observedValue.");
+  }
+  if (
+    !record.stamp ||
+    typeof record.stamp !== "object" ||
+    !Number.isFinite(record.stamp.t) ||
+    typeof record.stamp.d !== "string" ||
+    !record.stamp.d
+  ) {
+    return invalid("Ambient Profile decision requires a valid diagnostic stamp.");
+  }
+  if (!Number.isFinite(record.decidedAt)) {
+    return invalid("Ambient Profile decision requires a finite decidedAt timestamp.");
+  }
+
+  // [SYNCV3 / STAGE-09 / LOCAL-DECISION-STORE]
+  // [WHY: observedValue is retained only for equality against future shared
+  // truth; stamp and decidedAt are diagnostics only. Rebuilding the exact
+  // allow-listed row prevents arbitrary caller state from becoming a second
+  // authority merely because IndexedDB can clone it.]
+  return {
+    libraryId: record.libraryId,
+    kind: record.kind,
+    observedValue: record.observedValue,
+    stamp: { t: record.stamp.t, d: record.stamp.d },
+    decidedAt: record.decidedAt,
+  };
+}
+
+export async function loadAmbientProfileDecision(libraryId) {
+  if (typeof libraryId !== "string" || !libraryId) return null;
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(AMBIENT_DECISION_STORE_NAME, "readonly");
+    const request = transaction.objectStore(AMBIENT_DECISION_STORE_NAME).get(libraryId);
+    const stored = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Could not read the ambient Profile decision."));
+    });
+    await completeTransaction(transaction);
+    return normalizeAmbientProfileDecision(stored);
+  } finally {
+    database.close();
+  }
+}
+
+export async function saveAmbientProfileDecision(record) {
+  const normalized = normalizeAmbientProfileDecision(record, { throwOnInvalid: true });
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(AMBIENT_DECISION_STORE_NAME, "readwrite");
+    transaction.objectStore(AMBIENT_DECISION_STORE_NAME).put(normalized);
+    await completeTransaction(transaction);
+    return { ...normalized, stamp: { ...normalized.stamp } };
+  } finally {
+    database.close();
+  }
+}
+
+export async function deleteAmbientProfileDecision(libraryId) {
+  if (typeof libraryId !== "string" || !libraryId) return false;
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(AMBIENT_DECISION_STORE_NAME, "readwrite");
+    transaction.objectStore(AMBIENT_DECISION_STORE_NAME).delete(libraryId);
+    await completeTransaction(transaction);
+    return true;
   } finally {
     database.close();
   }

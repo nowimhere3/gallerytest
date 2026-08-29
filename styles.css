@@ -3,6 +3,7 @@
   --panel: #121933;
   --panel-2: #182243;
   --border: #2b396d;
+  --field-bg: #0d1530;
   --text: #eef2ff;
   --muted: #a8b3d1;
   --accent: #6ea8fe;
@@ -10,6 +11,11 @@
   --danger: #ef4444;
   --shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
   --radius: 16px;
+  /* [PM-TOOLBAR-OPACITY] Presentation Mode toolbar opacity has exactly two
+     configurable states: normal opacity ("Toolbar Opacity" on screen — this
+     var, driven by main.js's mouseenter/mouseleave handlers) and temporary
+     hover opacity ("Hover Opacity" on screen, also applied via that same
+     JS). Hover never changes the stored normal value. */
   --ghost-opacity: 0.18;
   /* Blue counterpart to the neon green already used for the Loop toggle
      and 🤖 Automation button (#00ff00, glow rgba(0, 170, 0, ...)) — same
@@ -239,6 +245,194 @@ input {
 
 .profile-section[open] summary {
   margin-bottom: 16px;
+}
+
+/* [SYNCV3 / STAGE-06 / ADVANCED-SETTINGS] */
+.advanced-settings-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.advanced-settings-section summary {
+  cursor: pointer;
+  font-size: 1.5em;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.advanced-settings-section[open] summary {
+  margin-bottom: 16px;
+}
+
+.advanced-playback-section {
+  max-width: 620px;
+  margin-bottom: 20px;
+}
+
+.advanced-playback-section .field-control {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.advanced-playback-section .hint:last-child {
+  margin: 8px 0 0;
+}
+
+/* [N6-4 / ADVANCED-DISCLOSURES]
+   [WHY: each advanced function is now its own nested, closed-by-default
+    <details> inside .advanced-settings-section — "Advanced means complexity
+    is available on demand, not displayed all at once." Targeted structurally
+    (direct <details> children of .advanced-settings-section) rather than by
+    adding a shared class to each one: several of these elements keep their
+    own pre-existing class (.advanced-media-library-section,
+    .advanced-playback-section, .profile-sync-section), and other test/tool
+    code matches those classes as exact, single-class attribute strings — see
+    tools/test-media-library-selection.mjs. A structural selector gets the
+    same shared disclosure styling without touching those attributes at all.
+    The summary reuses .profile-sync-heading's exact size/weight (1rem/700)
+    so converting a plain heading into a summary here does not visually
+    demote what used to sit at the top of these sections; the disclosure
+    affordance is new, the visual weight is not.] */
+.advanced-settings-section > details {
+  margin-top: 20px;
+  margin-bottom: 20px;
+}
+
+/* [STREAMLOOP-INTEGRATION / N6-6] [V6-POLISH / ADVANCED-SETTINGS-TOP-GAP]
+   [WHY: was `margin-top: 0`, which collapsed the gap between "Advanced
+    Settings" and its first nested disclosure entirely. A first pass moved
+    this to 12px, deliberately kept under the 20px every other nested
+    <details> uses above/below itself so it wouldn't outweigh the rhythm
+    between disclosures — but the rendered result still read as too
+    compressed for "Media Library diagnostics" to clearly land as a CHILD
+    of "Advanced Settings" rather than a continuation of it. Raised to the
+    same 20px token used everywhere else in this stylesheet for a settings
+    block's own top spacing (.advanced-settings-section, .tags-admin-section,
+    the between-disclosure margin just above) rather than inventing a new
+    number — parent-to-first-child now reads as one consistent, deterministic
+    unit of space with child-to-child, not a smaller half-step. Kept on the
+    generic :first-of-type selector rather than a fix targeted at "Media
+    Library diagnostics" specifically, so any future section reordered to be
+    first inherits this spacing automatically.] */
+.advanced-settings-section > details:first-of-type {
+  margin-top: 20px;
+}
+
+/* [STARTUP-CONTEXT-PARITY / N6-9]
+   [WHY: the previous fix above set the first nested <details>'s margin-top
+    to 12px, but `.advanced-settings-section[open] summary` (below) ALSO
+    matches the OUTER "Advanced Settings" summary itself — its descendant
+    combinator has no way to exclude it — giving that summary its own
+    margin-bottom of 16px. Adjoining block margins collapse to the LARGER
+    of the two rather than adding, so the actual rendered gap depended on
+    browser collapsing behavior resolving two different declared values
+    (16 and 12) against each other instead of on any single value this
+    stylesheet pins down. This more specific child-combinator rule zeroes
+    the OUTER summary's own margin-bottom specifically — a nested summary
+    is never a direct child of .advanced-settings-section, so this cannot
+    affect the spacing between LATER nested disclosures at all. With one
+    side of the pair always exactly 0, the first nested <details>'s own
+    12px margin-top is the gap's only source, deterministically, whether a
+    browser collapses adjoining margins or (incorrectly) sums them.] */
+.advanced-settings-section[open] > summary {
+  margin-bottom: 0;
+}
+
+.advanced-settings-section > details > summary {
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  list-style-position: inside;
+}
+
+.advanced-settings-section > details[open] > summary {
+  margin-bottom: 10px;
+}
+
+/* [STREAMLOOP-INTEGRATION / N6-6]
+   Two independent policy blocks inside the one "Startup Media" disclosure —
+   not two more nested <details>, just labeled groups, per the N6-5 handoff's
+   "no redesign" constraint. */
+.startup-media-context-group + .startup-media-context-group {
+  margin-top: 20px;
+}
+
+/* [V6-POLISH / NESTED-DISCLOSURE-HEADING-GAP]
+   [WHY: was `margin: 0 0 8px` — no top margin at all, so the only space
+    between a disclosure's <summary> (e.g. "Startup Media") and its inner
+    context heading (e.g. "Normal Browser Gallery") was the summary's own
+    10px margin-bottom, which read as too close for a heading that starts
+    a distinct labeled sub-block. 20px reuses this stylesheet's existing
+    section-spacing token (see .advanced-settings-section > details:
+    first-of-type just above) so the gap reads as a deliberate step down
+    in the hierarchy without needing a new magic number.] */
+.startup-media-context-heading {
+  margin: 20px 0 8px;
+  font-size: 0.95em;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* [V6-POLISH / SETTINGS-DROPDOWN-GRAMMAR]
+   BREADCRUMBS — IS: every dropdown inside Settings sits on its own line,
+   left-aligned directly beneath its label/question, never inline to the
+   right of it. Settings uses a strict vertical control grammar: labels/
+   questions first, controls directly below and left-aligned. This is the
+   one authoritative place that rule is spelled out; apply it to any future
+   Settings dropdown by scoping the same two declarations below to its
+   container, the same way .advanced-playback-section .field-control
+   (above) already did for the Arcade animations dropdown — a block-level
+   <select> always starts a new line after an inline label, no label
+   change needed.
+   [WHY: .field-control had no display override here, so both startup
+    policy <select>s stayed inline-block and rendered beside their <label>
+    whenever there was room — "What loads when Browser Gallery opens
+    [ dropdown ]" — instead of stacking under it. max-width: 620px matches
+    this stylesheet's established Settings content column (see
+    .advanced-playback-section, .profile-settings-group, etc.) so `width:
+    100%` on the select fills its column instead of stretching across the
+    whole panel.] */
+.startup-media-context-group {
+  max-width: 620px;
+}
+
+.startup-media-context-group .field-control {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+}
+
+/* [V6-POLISH / AUTO-FILL-SPACING]
+   [WHY: the Auto Fill checkbox row had no margin separating it from
+    whatever policy content precedes it (the helper hint, or the
+    eligible-folder list when "Random from selected folders" is chosen),
+    so it read as glued to neighboring content instead of its own
+    deliberate control. Scoped to the shared .startup-media-context-group
+    container so Normal Browser Gallery and StreamLoop Integration get the
+    identical treatment from one rule.] */
+.startup-media-context-group .compact-check {
+  margin-top: 16px;
+}
+
+.startup-media-context-group .compact-check + .hint {
+  margin-top: 8px;
+}
+
+.startup-media-eligible-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.startup-media-library-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95em;
 }
 
 /* [UI-REDESIGN / STAGE 6] [PROFILE-TAGS-DISCLOSURE]
@@ -547,6 +741,26 @@ a:focus-visible,
   gap: 12px;
 }
 
+/* [SYNCV3 / STAGE-06 / FORM-CONTROL-CONTRACT] */
+.field-control {
+  min-width: 0;
+  min-height: 44px;
+  background: var(--field-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.field-control::placeholder {
+  color: var(--muted);
+}
+
+.field-control:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .media-picker-row {
   display: grid;
   grid-template-columns: 1fr 3fr;
@@ -620,6 +834,21 @@ a:focus-visible,
   width: 100%;
   margin-top: 8px;
   font-size: 0.9em;
+}
+
+/* [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+   The rail card's label above the button now carries the concept, so this label
+   is short enough to need no wrap handling at all. The `white-space: pre-line`
+   rule that honoured a hard-coded break in the old long label is retired with
+   it; only the centring remains. */
+#fsa-associate-btn-label {
+  text-align: center;
+}
+
+/* The card's closing benefit line. Sits after the action, matching DOM order. */
+.rail-profile-summary-help {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
 }
 
 .fsa-recent-library-row {
@@ -872,6 +1101,372 @@ button:not(:disabled):hover,
   max-width: 620px;
 }
 
+/* [SYNCV3 / STAGE-06 / PROFILE-SYNC-IA] */
+.profile-settings-group {
+  margin-top: 20px;
+}
+
+.profile-group-heading {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.profile-settings-group > .hint {
+  margin: 8px 0 0;
+}
+
+/* [SYNCV3 / STAGE-10 / HELP-COMPRESSION]
+   Help is the first quiet utility inside the expanded section, never a second
+   click target competing with the disclosure summary. */
+.profile-sync-help-btn {
+  min-height: 32px;
+  margin: 10px 0 2px;
+  padding: 4px 10px;
+  font-size: 0.9rem;
+}
+
+/* [SYNCV3 / STAGE-10 / SETTINGS-COMPRESSION]
+   Blocks are last in their group, so revealing one only moves content below.
+   Opacity is the sole animated property; height never animates. */
+.contextual-help {
+  max-width: 620px;
+  margin-top: 10px;
+  opacity: 1;
+  transition: opacity 120ms ease;
+}
+
+.contextual-help.hidden {
+  opacity: 0;
+}
+
+.contextual-help > :first-child {
+  margin-top: 0;
+}
+
+.contextual-help p:empty {
+  display: none;
+}
+
+/* [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
+   Inline, compact, and naturally stacked at narrow widths; no modal or
+   viewport overlay interrupts the Folder-first product flow. */
+.profile-sync-intro {
+  max-width: 620px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.profile-sync-intro-progress,
+.profile-sync-intro h3,
+.profile-sync-intro > p {
+  margin: 0;
+}
+
+/* [SYNCV3 / STAGE-10 / REPLAY-CLOSE]
+   Progress on the left, the replay-only Close on the right. Mirrors the Stage 09
+   offer card's header so the two inline cards dismiss the same way. */
+.profile-sync-intro-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-sync-intro-close {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.profile-sync-intro-close:hover,
+.profile-sync-intro-close:focus-visible {
+  color: var(--text);
+}
+
+.profile-sync-intro-progress {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.profile-sync-intro h3 {
+  margin-top: 4px;
+}
+
+.profile-sync-intro > p:last-of-type {
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.profile-sync-intro-header .profile-sync-intro-progress {
+  margin: 0;
+}
+
+.profile-sync-intro-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* Forward progress is always the rightmost action in both DOM and layout. */
+#profile-sync-intro-next,
+#profile-sync-intro-done {
+  margin-left: auto;
+}
+
+/* [SYNCV3 / STAGE-09 / THIS-DEVICE-LABEL-SPACING]
+   [WHY: a <label> in a settings group captions the control directly beneath it,
+   so it needs the same breathing room under it that .profile-group-heading
+   already gives (margin: 0 0 8px) above Create Profile's input.
+
+   `display: block` is the load-bearing half. A <label> is display:inline by
+   default, and vertical margins have NO layout effect on an inline
+   non-replaced box — so both the general `.profile-settings-group > .hint`
+   margin and the margin-bottom below were silently ignored, leaving "Name this
+   device" separated from its input by line-height alone. This is the same
+   block-label treatment `.form-row label` already uses.
+
+   Scoped to a direct-child label so trailing .hint paragraphs keep their
+   `margin: 8px 0 0`, and the Advanced Settings label (inside
+   .advanced-playback-section, which spaces via its own .field-control instead)
+   is untouched. */
+.profile-settings-group > label.hint {
+  display: block;
+  margin-bottom: 8px;
+}
+
+/* [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
+   Reuses the existing field/button language and naturally wraps on the same
+   narrow layouts as the surrounding Profile settings controls. */
+.profile-association-row,
+.profile-folder-link-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 620px;
+}
+
+.profile-association-row .field-control,
+.profile-folder-link-row .field-control {
+  width: 100%;
+}
+
+.profile-association-actions,
+.profile-folder-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.profile-association-row .hint,
+.profile-folder-link-row .hint {
+  margin: 0;
+}
+
+/* [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+   The Media Library reads as a labelled PROPERTY of the loaded Media Folder,
+   so its label gets the same small-caps treatment as the group headings around
+   it rather than looking like a form field caption. */
+.profile-folder-link-row > label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Creation is a nested step inside the same column, so it inherits the row's
+   620px column and stacks its own label/input/reassurance. */
+.profile-folder-new-library-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+.profile-folder-new-library-row > label {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+/* [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
+   A lightweight inline decision card in This Library. Flex wrapping gives the
+   same DOM a safe narrow/mobile layout without a second prompt implementation. */
+.ambient-profile-offer {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 620px;
+  margin: 10px 0 12px;
+  padding: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.ambient-profile-offer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ambient-profile-offer h4,
+.ambient-profile-offer p {
+  margin: 0;
+}
+
+.ambient-profile-offer p {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.ambient-profile-offer-close {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ambient-profile-offer-close:hover,
+.ambient-profile-offer-close:focus-visible {
+  color: var(--text);
+}
+
+.ambient-profile-offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ambient-profile-offer-actions button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+@media (max-width: 980px) {
+  .ambient-profile-offer-actions button {
+    flex: 1 1 180px;
+  }
+}
+
+/* [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
+   [WHY: a storage-level claimant refusal is safety-critical and must be
+   visually distinct from ordinary explanatory text.] Reuses the app's danger
+   color and inset-card geometry without turning the inline refusal into a modal. */
+.profile-folder-link-conflict {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ffb4bc;
+}
+
+.profile-folder-link-conflict strong {
+  display: block;
+  color: #fecaca;
+}
+
+.profile-folder-link-conflict p {
+  margin: 6px 0 0;
+  color: var(--text);
+}
+
+/* [SYNCV3 / STAGE-10 / DRIVE-ROLES]
+   A one-line role label that sits directly with the control it describes, so
+   "Google Drive Media Folder" and "Google Drive Sync Folder" are structurally
+   distinct rather than distinguished only in prose. */
+.role-descriptor {
+  margin: 0 0 4px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.role-descriptor-detail {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.product-status {
+  margin: 0 0 12px;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.product-status-muted {
+  color: var(--muted);
+}
+
+.product-status-active {
+  color: var(--accent);
+}
+
+.product-status-success {
+  color: #86efac;
+}
+
+.product-status-warning {
+  color: #facc15;
+}
+
+.product-status-danger {
+  color: #ffb4bc;
+}
+
+.profile-device-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 760px;
+}
+
+.profile-device-row .field-control {
+  flex: 1 1 220px;
+}
+
+.profile-device-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.profile-settings-group > .control-stack {
+  max-width: 620px;
+}
+
+.profile-delete-group {
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
 .profile-current-row {
   display: flex;
   align-items: center;
@@ -879,21 +1474,8 @@ button:not(:disabled):hover,
   margin-bottom: 10px;
 }
 
-.profile-select-label {
-  color: var(--muted);
-  font-size: 0.9rem;
-  flex: 0 0 auto;
-}
-
 .profile-current-row select {
   flex: 1 1 auto;
-  min-width: 0;
-  min-height: 44px;
-  background: #0d1530;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text);
-  padding: 10px 12px;
 }
 
 .profile-delete-btn {
@@ -910,13 +1492,6 @@ button:not(:disabled):hover,
 
 .profile-create-row input[type="text"] {
   flex: 1 1 140px;
-  min-width: 0;
-  min-height: 44px;
-  background: #0d1530;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text);
-  padding: 10px 12px;
 }
 
 .profile-create-row button {
@@ -1010,8 +1585,7 @@ button:not(:disabled):hover,
     linking are ordinary forward actions, so they take the neutral surface
     treatment, NOT the amber the recovery panel uses to mark an exceptional
     choice.] */
-.profile-sync-activate-panel,
-.profile-sync-link-panel {
+.profile-sync-activate-panel {
   margin-top: 10px;
   padding: 12px;
   border: 1px solid var(--border);
@@ -1019,17 +1593,8 @@ button:not(:disabled):hover,
   background: rgba(255, 255, 255, 0.03);
 }
 
-.profile-sync-activate-panel .hint,
-.profile-sync-link-panel .hint {
+.profile-sync-activate-panel .hint {
   margin: 0 0 10px;
-}
-
-.profile-sync-link-panel .hint:last-child {
-  margin: 10px 0 0;
-}
-
-.profile-sync-link-panel select {
-  width: 100%;
 }
 
 /* Import / Export demoted to an advanced/manual disclosure — styled like
@@ -3040,12 +3605,20 @@ hr {
 
 /* Sits between the toolbar above and the "⚙ row" below — a sibling of
    both, not nested inside either — and only occupies layout space while
-   open. One row, same height/material as the toolbar: "Ghost Opacity"
-   label far left, slider next, percentage on the right. */
+   open. Two stacked rows, same material as the toolbar: Toolbar Opacity,
+   Hover Opacity, each "label far left, slider next, percentage, Remember
+   checkbox on the right". [PM-TOOLBAR-OPACITY] Radius softened from the
+   original single-row 999px pill to 20px — same reasoning
+   PM-AUTOMATIONS-CANONICAL already used on .presentation-controls-bar
+   above: a full pill looks broken once a container holds more than one
+   row. */
 .ghost-popunder {
   width: 100%;
   padding: 10px 16px;
-  border-radius: 999px;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   background: rgba(0, 0, 0, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.14);
   backdrop-filter: blur(10px);
@@ -3073,7 +3646,7 @@ hr {
   min-width: 80px;
 }
 
-#ghost-opacity-label {
+.ghost-popunder-value {
   flex: 0 0 auto;
   min-width: 3.5ch;
   text-align: right;
@@ -4785,6 +5358,7 @@ hr {
   }
 
   .profile-current-row,
+  .profile-device-row,
   .tag-create-row {
     flex-wrap: wrap;
   }

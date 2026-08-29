@@ -58,6 +58,8 @@ import {
   V2_ASSOCIATION_STORE,
   loadV3LibrariesCache,
   saveV3LibrariesCache,
+  loadV3StructureCache,
+  saveV3StructureCache,
 } from "../storage/profile-sync-store.js";
 // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
 // [WHY: same-origin contexts share IndexedDB but not this object. The channel
@@ -155,6 +157,12 @@ const REDUNDANT_LIBRARY_LOAD_WINDOW_MS = 30_000;
 export class ProfileStore {
   #recordsByPath = new Map();
   #listeners = new Set();
+  // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+  // [WHY: kept separate from #listeners. #emit() means "durable state this class
+  //  owns has changed"; an ambient decision is a local-only row owned elsewhere,
+  //  and routing it through #emit() would re-render every Profile surface for a
+  //  change none of them reflect.]
+  #ambientDecisionListeners = new Set();
   #saveQueue = Promise.resolve();
   #changedBeforeLoad = new Set();
   #replaceBeforeLoad = false;
@@ -267,6 +275,8 @@ export class ProfileStore {
   //  an absent row as {} forever - nothing writes libraries-v3 there.]
   #libraries = {};
   #librariesReady;
+  #structure = {};
+  #structureReady;
 
   // [SYNCV3 / STAGE-03B / SAME-DEVICE-WRITER-COORDINATION]
   // [WHY: closes the boot window Stage 03A left open. This store is constructed
@@ -318,6 +328,7 @@ export class ProfileStore {
     this.#loadSavedRecords();
     this.#associationsReady = this.#loadAssociations();
     this.#librariesReady = this.#loadLibraries();
+    this.#structureReady = this.#loadStructure();
   }
 
   async #loadAssociations() {
@@ -333,6 +344,11 @@ export class ProfileStore {
       const loaded = await this.#associationStore.load();
       if (generation !== this.#associationLoadGeneration) return;
       this.#associations = loaded;
+      await this.#identity.ready;
+      // [SYNCV3 / CLOCK-HOTFIX / ASSOCIATION-CACHE-OBSERVATION]
+      // [WHY: durable read-back is an observation too; otherwise a restart can
+      //  restore an LWW fact without restoring the clock floor that received it.]
+      this.#identity.observeReplica({ profiles: {}, associations: this.#associations, libraries: {} });
     } catch (error) {
       console.warn(`[SYNC] Could not load library associations from "${this.#associationStore.id}".`, error);
     }
@@ -507,6 +523,11 @@ export class ProfileStore {
   async #loadLibraries() {
     try {
       this.#libraries = await loadV3LibrariesCache();
+      await this.#identity.ready;
+      // [SYNCV3 / CLOCK-HOTFIX / LIBRARY-CACHE-OBSERVATION]
+      // [WHY: re-observing the durable cache preserves observe-before-tick
+      //  across a restart after accepting a peer's newer Library facts.]
+      this.#identity.observeReplica({ profiles: {}, associations: {}, libraries: this.#libraries });
     } catch (error) {
       console.warn("[SYNCV3] Could not load the shared Library catalog.", error);
     }
@@ -520,6 +541,25 @@ export class ProfileStore {
   /** Every known shared Library fact record, detached — { libraryId: LibraryFacts }. */
   getLibraries() {
     return takeSnapshot(this.#libraries);
+  }
+
+  async #loadStructure() {
+    try {
+      this.#structure = await loadV3StructureCache();
+      await this.#identity.ready;
+      this.#identity.observeReplica({ profiles: {}, associations: {}, libraries: {}, structure: this.#structure });
+    } catch (error) {
+      console.warn("[NORTH-STAR / N5] Could not load portable structure evidence.", error);
+    }
+  }
+
+  async whenStructureSettled() {
+    await this.#structureReady;
+    await this.#identity.ready;
+  }
+
+  getStructure() {
+    return takeSnapshot(this.#structure);
   }
 
   /**
@@ -565,9 +605,14 @@ export class ProfileStore {
   //
   // `localLibraryId` is library-registry.js's LOCAL row id (NOT the shared
   // libraryId — that's minted/preserved here via ensureLibraryId).
+  // Callers are policy boundaries: explicit customer association and N3's
+  // one-time deterministic inheritance from a proven parent. Folder-open code
+  // must never call this merely because a folder exists.
   // `profileId: null` disassociates explicitly. Returns the shared libraryId
-  // on success, or null if the local library id isn't known.
-  async setLibraryAssociation(localLibraryId, profileId) {
+  // on success, or null if the local library id isn't known. Stage 09's narrow
+  // `includeAuthoredFact` option instead returns { libraryId, authoredFact };
+  // existing callers retain the original string contract.
+  async setLibraryAssociation(localLibraryId, profileId, { includeAuthoredFact = false } = {}) {
     await this.#associationsReady;
     await this.#identity.ready;
 
@@ -582,6 +627,13 @@ export class ProfileStore {
 
     const stamp = this.#identity.tick();
     const fact = MergeEngine.makeFact(profileId || null, stamp);
+    // [SYNCV3 / STAGE-09 / SELF-WRITE-SUPPRESSION-RACE-AUDIT]
+    // [WHY: return THIS immutable snapshot when requested, not whichever fact
+    // is current after the awaits below. Association persistence, same-device
+    // refresh, or SyncV3 adoption can merge a newer remote fact while this
+    // method is suspended. Re-reading #associations after resolution would then
+    // misclassify that remote fact as authored by this tab and suppress it.]
+    const authoredFact = includeAuthoredFact ? takeSnapshot(fact) : null;
     this.#associations = MergeEngine.mergeMaps(this.#associations, { [row.libraryId]: fact }, MergeEngine.mergeFact);
 
     try {
@@ -602,7 +654,7 @@ export class ProfileStore {
     }
 
     this.#emit();
-    return row.libraryId;
+    return includeAuthoredFact ? { libraryId: row.libraryId, authoredFact } : row.libraryId;
   }
 
   /**
@@ -671,6 +723,81 @@ export class ProfileStore {
 
     this.#emit();
     return row.libraryId;
+  }
+
+  /** Records one bounded portable sample for a Library that already has shared identity. */
+  async recordLibraryStructure(localLibraryId, sample) {
+    await this.#structureReady;
+    await this.#identity.ready;
+    let row;
+    try {
+      row = await LibraryRegistry.getLibraryById(localLibraryId);
+    } catch (error) {
+      console.warn(`[NORTH-STAR / N5] Could not read local library "${localLibraryId}" for structure evidence.`, error);
+      return null;
+    }
+    if (!row?.libraryId) return null;
+
+    const current = this.#structure[row.libraryId]?.sample?.v;
+    if (MergeEngine.stableStringify(current) === MergeEngine.stableStringify(sample)) return row.libraryId;
+
+    const stamp = this.#identity.tick();
+    const next = Facts.setLibraryStructureSample(
+      { schemaVersion: Facts.REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: {}, structure: this.#structure },
+      row.libraryId,
+      sample,
+      stamp
+    );
+    this.#structure = next.structure;
+    try {
+      await this.#saveStructureAndAnnounce();
+    } catch (error) {
+      console.warn("[NORTH-STAR / N5] Could not persist portable structure evidence.", error);
+    }
+    this.#emit();
+    return row.libraryId;
+  }
+
+  /**
+   * [SYNCV3 / STAGE-08 / PROMOTE-LIBRARY]
+   * [WHY: promoting a durable local folder creates/publishes shared Library
+   * identity without creating a Profile association or switching Active Profile.]
+   */
+  async promoteLibraryToShared(localLibraryId, { name = null } = {}) {
+    await this.#librariesReady;
+    await this.#identity.ready;
+
+    let row;
+    try {
+      row = await LibraryRegistry.ensureLibraryId(localLibraryId);
+    } catch (error) {
+      console.warn(`[SYNCV3] Could not promote local Library "${localLibraryId}".`, error);
+      return null;
+    }
+    if (!row) return null;
+
+    // recordLibraryLoaded owns the catalog stamp, durable cache write, and
+    // write-then-LIBRARIES_CHANGED announcement. It touches no association.
+    return this.recordLibraryLoaded(localLibraryId, { name: name || row.name || null });
+  }
+
+  // [SYNCV3 / STAGE-08 / LINK-AND-SYNC]
+  // Sanctioned local-link writes. The registry commits first; only then does
+  // LIBRARIES_CHANGED invalidate sibling tabs. No shared fact is stamped here.
+  async linkLocalLibraryToShared(localLibraryId, sharedLibraryId) {
+    const result = await LibraryRegistry.linkLocalLibraryToSharedId(localLibraryId, sharedLibraryId);
+    if (!result || result.ok === false) return result;
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED);
+    this.#emit();
+    return result;
+  }
+
+  async unlinkLocalLibraryFromShared(localLibraryId) {
+    const result = await LibraryRegistry.unlinkLocalLibraryFromSharedId(localLibraryId);
+    if (!result) return null;
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED);
+    this.#emit();
+    return result;
   }
 
   // See recordLibraryLoaded's WHY. A load is redundant when every field it would
@@ -772,6 +899,7 @@ export class ProfileStore {
     await this.whenFactsSettled();
     await this.whenAssociationsSettled();
     await this.whenLibrariesSettled();
+    await this.whenStructureSettled();
 
     const replica = Facts.emptyReplica();
     replica.associations = this.#associations;
@@ -796,6 +924,8 @@ export class ProfileStore {
     //  declines to publish a map with nothing in it.]
     if (Object.keys(this.#libraries).length > 0) replica.libraries = this.#libraries;
     else delete replica.libraries;
+    if (Object.keys(this.#structure).length > 0) replica.structure = this.#structure;
+    else delete replica.structure;
     let knownIds;
     try {
       knownIds = new Set(await listAllProfileIds());
@@ -934,6 +1064,7 @@ export class ProfileStore {
 
     await this.#adoptMergedAssociations(mergedReplica.associations);
     await this.#adoptMergedLibraries(mergedReplica.libraries);
+    await this.#adoptMergedStructure(mergedReplica.structure);
   }
 
   // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
@@ -959,6 +1090,19 @@ export class ProfileStore {
       await this.#saveLibrariesAndAnnounce();
     } catch (error) {
       console.warn("[SYNCV3] Could not persist the merged shared Library catalog.", error);
+    }
+    this.#emit();
+  }
+
+  async #adoptMergedStructure(incoming) {
+    await this.#structureReady;
+    const merged = MergeEngine.mergeMaps(this.#structure, incoming || {}, MergeEngine.mergeStructureFacts);
+    if (MergeEngine.stableStringify(merged) === MergeEngine.stableStringify(this.#structure)) return;
+    this.#structure = merged;
+    try {
+      await this.#saveStructureAndAnnounce();
+    } catch (error) {
+      console.warn("[NORTH-STAR / N5] Could not persist merged portable structure evidence.", error);
     }
     this.#emit();
   }
@@ -1890,6 +2034,23 @@ export class ProfileStore {
     return Boolean(this.#localStateChannel && this.#localStateChannel.available);
   }
 
+  // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+  // [WHY: a thin pass-through over the ONE local-state channel this class owns.
+  //  Adding a second BroadcastChannel elsewhere would create a parallel
+  //  notification system for the same origin. Nothing about ambient decisions is
+  //  stored, cached, or interpreted here - the announcement carries no payload
+  //  and the receiver re-reads the decision store, which stays authoritative.]
+  announceAmbientProfileDecisionChanged() {
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.AMBIENT_DECISION_CHANGED);
+  }
+
+  /** Subscribes to sibling-context ambient decision announcements. Returns an unsubscribe. */
+  subscribeAmbientProfileDecisionChanged(listener) {
+    if (typeof listener !== "function") return () => {};
+    this.#ambientDecisionListeners.add(listener);
+    return () => this.#ambientDecisionListeners.delete(listener);
+  }
+
   /** Releases the channel. Tests and any embedder tearing a context down. */
   closeLocalStateChannel() {
     if (this.#localStateChannel) this.#localStateChannel.close();
@@ -1947,8 +2108,25 @@ export class ProfileStore {
       case LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.ASSOCIATIONS_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED:
+      case LOCAL_STATE_MESSAGE_KINDS.STRUCTURE_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.DEVICE_NAME_CHANGED:
         break;
+      // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+      // [WHY: returns WITHOUT refreshFromStorage(). A sibling's ambient
+      //  decision changed a local-only row that this class neither owns nor
+      //  caches; re-reading shared Profile/association/Library storage would be
+      //  pure waste and would imply shared state moved when none did. This class
+      //  owns the one channel, so it demultiplexes the kind and hands it on -
+      //  it stores nothing about ambient decisions and interprets nothing.]
+      case LOCAL_STATE_MESSAGE_KINDS.AMBIENT_DECISION_CHANGED:
+        for (const listener of this.#ambientDecisionListeners) {
+          try {
+            listener();
+          } catch (error) {
+            console.warn("[SYNCV3 / STAGE-09] An ambient decision listener failed.", error);
+          }
+        }
+        return;
       default:
         return;
     }
@@ -1959,9 +2137,19 @@ export class ProfileStore {
     //  genuine concurrent edit on a third device. It does not publish either:
     //  what reaches Drive is decided by the scheduler and the writer lease, not
     //  by whichever context happened to hear about a local change first.]
-    this.refreshFromStorage().catch((error) =>
-      console.warn("[SYNCV3] Could not refresh local state after a peer context changed it.", error)
-    );
+    const localLibraryLinkChanged = message.kind === LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED;
+    this.refreshFromStorage({ includeStructure: message.kind === LOCAL_STATE_MESSAGE_KINDS.STRUCTURE_CHANGED })
+      .then((durableSharedStateChanged) => {
+        // [SYNCV3 / STAGE-08 / MULTITAB-LINK-REFRESH]
+        // [WHY: sibling tabs must re-read durable local Library link state after
+        // write-then-announce, rather than trusting stale UI state. A local-only
+        // link can leave every shared cache byte unchanged, so force one emit
+        // only when refreshFromStorage did not already emit for shared changes.]
+        if (localLibraryLinkChanged && !durableSharedStateChanged) this.#emit();
+      })
+      .catch((error) =>
+        console.warn("[SYNCV3] Could not refresh local state after a peer context changed it.", error)
+      );
   }
 
   /**
@@ -1979,15 +2167,15 @@ export class ProfileStore {
    *  peers simply become current at their next pass instead of within
    *  milliseconds, and the writer is still never the stale one.]
    */
-  async refreshFromStorage() {
+  async refreshFromStorage({ includeStructure = true } = {}) {
     if (this.#localStateRefresh) return this.#localStateRefresh;
-    this.#localStateRefresh = this.#refreshFromStorageImpl().finally(() => {
+    this.#localStateRefresh = this.#refreshFromStorageImpl({ includeStructure }).finally(() => {
       this.#localStateRefresh = null;
     });
     return this.#localStateRefresh;
   }
 
-  async #refreshFromStorageImpl() {
+  async #refreshFromStorageImpl({ includeStructure }) {
     await this.#ready;
     let registryChanged = false;
 
@@ -2034,6 +2222,7 @@ export class ProfileStore {
       await this.#associationsReady;
       const stored = await this.#associationStore.load();
       const merged = MergeEngine.mergeMaps(this.#associations, stored || {}, MergeEngine.mergeFact);
+      this.#identity.observeReplica({ profiles: {}, associations: merged, libraries: {} });
       if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#associations)) {
         this.#associations = merged;
         registryChanged = true;
@@ -2054,12 +2243,29 @@ export class ProfileStore {
       await this.#librariesReady;
       const stored = await loadV3LibrariesCache();
       const merged = MergeEngine.mergeMaps(this.#libraries, stored || {}, MergeEngine.mergeLibraryFacts);
+      // [SYNCV3 / CLOCK-HOTFIX / LIBRARY-CACHE-OBSERVATION]
+      // [WHY: sibling-context read-back accepts stamped facts just like peer
+      //  adoption does, so it must raise the same canonical clock floor.]
+      this.#identity.observeReplica({ profiles: {}, associations: {}, libraries: merged });
       if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#libraries)) {
         this.#libraries = merged;
         registryChanged = true;
       }
     } catch (error) {
       console.warn("[SYNCV3] Could not re-read the shared Library catalog.", error);
+    }
+
+    if (includeStructure) try {
+      await this.#structureReady;
+      const stored = await loadV3StructureCache();
+      const merged = MergeEngine.mergeMaps(this.#structure, stored || {}, MergeEngine.mergeStructureFacts);
+      this.#identity.observeReplica({ profiles: {}, associations: {}, libraries: {}, structure: merged });
+      if (MergeEngine.stableStringify(merged) !== MergeEngine.stableStringify(this.#structure)) {
+        this.#structure = merged;
+        registryChanged = true;
+      }
+    } catch (error) {
+      console.warn("[NORTH-STAR / N5] Could not re-read portable structure evidence.", error);
     }
 
     // ---- Device Name ----
@@ -2080,6 +2286,7 @@ export class ProfileStore {
     }
 
     if (registryChanged) this.#emit();
+    return registryChanged;
   }
 
   // [SYNCV3 / STAGE-03C / SAME-DEVICE-TAB-STATE]
@@ -2099,6 +2306,11 @@ export class ProfileStore {
   async #saveLibrariesAndAnnounce() {
     await saveV3LibrariesCache(this.#libraries);
     this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED);
+  }
+
+  async #saveStructureAndAnnounce() {
+    await saveV3StructureCache(this.#structure);
+    this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.STRUCTURE_CHANGED);
   }
 
   async #saveAssociationsAndAnnounce() {

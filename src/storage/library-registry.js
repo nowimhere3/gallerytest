@@ -313,13 +313,18 @@ export async function setLibraryProfile(id, profileId) {
  * [PHASE-6-SYNC-V2]
  * [STAGE-D3-LIBRARY-IDENTITY]
  * [WHY: mint-once, preserve-forever. Called from ProfileStore#setLibraryAssociation
- *  at the moment the user explicitly associates this library with a Profile —
- *  never from a folder-open path. An existing libraryId is returned unchanged
+ *  at the moment an approved Curation policy associates this library with a
+ *  Profile — an explicit customer choice, or N3's deterministic one-time
+ *  inheritance from a proven parent; never merely from opening a folder. An existing libraryId is returned unchanged
  *  (re-associating, or changing WHICH Profile, must never mint a second
  *  identity for the same physical folder — that would fork it into two
  *  logical libraries as far as any peer is concerned).]
  *
  * No-op (returns null) if the local library id isn't known.
+ *
+ * BREADCRUMBS — WILL BE / FUTURE: libraryId becomes MORE load-bearing as a
+ * machine address for sync, automation and StreamLoop as it becomes LESS
+ * customer-visible. Hiding it must never license weakening or removing it.
  */
 export async function ensureLibraryId(id) {
   const database = await openDatabase();
@@ -429,19 +434,69 @@ export async function linkLocalLibraryToSharedId(id, sharedLibraryId) {
   const database = await openDatabase();
 
   try {
-    const readTx = database.transaction(STORE_NAME, "readonly");
-    const record = await requestToPromise(readTx.objectStore(STORE_NAME).get(id));
-    await completeTransaction(readTx);
-    if (!record) return null;
-    if (record.libraryId && record.libraryId !== sharedLibraryId) {
-      console.warn(`[SYNC-V2] Library "${id}" is already linked to a different shared libraryId; refusing to relink.`);
-      return null;
-    }
+    // [SYNCV3 / STAGE-08 / CLAIMANT-GUARD]
+    // [WHY: one shared Library may have only one local physical-folder owner
+    // per device; refusal must be enforced atomically at storage, not only in UI.]
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+    let outcome = null;
+    await new Promise((resolve, reject) => {
+      const request = store.getAll();
+      request.onerror = () => reject(request.error || new Error("Could not inspect local Library claimants."));
+      request.onsuccess = () => {
+        const records = request.result || [];
+        const record = records.find((candidate) => candidate.id === id);
+        if (!record) return resolve();
+        if (record.libraryId && record.libraryId !== sharedLibraryId) {
+          console.warn(`[SYNC-V2] Library "${id}" is already linked to a different shared libraryId; refusing to relink.`);
+          return resolve();
+        }
+        const claimant = records.find(
+          (candidate) => candidate.id !== id && candidate.libraryId === sharedLibraryId
+        );
+        if (claimant) {
+          outcome = {
+            ok: false,
+            reason: "claimed",
+            by: { id: claimant.id, name: claimant.name || "Another folder", sourceKind: claimant.sourceKind || null },
+          };
+          return resolve();
+        }
+        outcome = { ...record, libraryId: sharedLibraryId };
+        store.put(outcome);
+        resolve();
+      };
+    });
+    await completeTransaction(transaction);
+    return outcome;
+  } finally {
+    database.close();
+  }
+}
 
-    const updated = { ...record, libraryId: sharedLibraryId };
-    const writeTx = database.transaction(STORE_NAME, "readwrite");
-    writeTx.objectStore(STORE_NAME).put(updated);
-    await completeTransaction(writeTx);
+/**
+ * [SYNCV3 / STAGE-08 / UNLINK]
+ * [WHY: unlink removes only this device's physical-folder mapping; it must not
+ * delete shared Library identity, Profile association, curation, or media identity.]
+ */
+export async function unlinkLocalLibraryFromSharedId(localLibraryId) {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+    let updated = null;
+    await new Promise((resolve, reject) => {
+      const request = store.get(localLibraryId);
+      request.onerror = () => reject(request.error || new Error("Could not read the local Library link."));
+      request.onsuccess = () => {
+        const record = request.result;
+        if (!record) return resolve();
+        updated = { ...record, libraryId: null };
+        store.put(updated);
+        resolve();
+      };
+    });
+    await completeTransaction(transaction);
     return updated;
   } finally {
     database.close();

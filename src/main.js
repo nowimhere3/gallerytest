@@ -5,18 +5,13 @@ import {
   addOrUpdateLibrary,
   touchLibrary,
   removeFromRecents,
-  setLibraryProfile,
   listLegacyLibraries,
   addLegacyLibrary,
   updateLegacyLibrarySignature,
-  // [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
-  // [WHY: linkLocalLibraryToSharedId is the ONLY way a second device attaches
-  //  its own physical folder to an already-shared library, and it is reachable
-  //  from exactly one explicit user action (see the Link Shared Library
-  //  controls) — never from a folder open, a name match, or a signature match.]
+  getLibraryById,
   getLibraryByLibraryId,
-  linkLocalLibraryToSharedId,
 } from "./storage/library-registry.js";
+import { decideBootRestore, decideStartupMedia } from "./storage/boot-restore.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -28,7 +23,9 @@ import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-l
 //  reachable at their historical paths, and that intersection shrinks every
 //  time a folder is reorganized before it has been recorded.]
 import { resolveScopeForRoot } from "./storage/media-scope.js";
+import { listRoots } from "./storage/media-identity.js";
 import { runSeedingPass } from "./storage/media-seeding.js";
+import { buildPortableStructureSample } from "./storage/portable-structure-evidence.js";
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
 // [WHY: Stage 02 is the first stage that READS MEDIA-ID back into what the user
 //  sees. It projects Favorite / favoritedAt / Hidden / Tags across
@@ -44,14 +41,66 @@ import {
   loadPreferences,
   savePlaybackPreferences,
   savePresentationPreferences,
+  saveMicroArcadePreferences,
+  saveOnboardingPreferences,
+  saveStartupPreferences,
   DEFAULT_GHOST_OPACITY_PERCENT,
+  DEFAULT_HOVER_OPACITY_PERCENT,
 } from "./storage/app-preferences.js";
 import { MediaRuntime } from "./runtime/media-runtime.js";
+import {
+  DEFAULT_ARCADE_ANIMATION_ORDER,
+  renderArcadeAnimationOrderHelper,
+  selectArcadeScene,
+} from "./runtime/micro-arcade-selector.js";
 import { haveSameDuplicateKey, skipDuplicateMedia } from "./runtime/duplicate-filter.js";
 import { ProfileStore } from "./profile/profile-store.js";
 import { createProfileProjectionView } from "./profile/profile-projection-view.js";
 import { ProfileSync } from "./profile/profile-sync.js";
+import { mapSyncStatusCopy } from "./profile/sync-status-copy.js";
+import { mapAssociationCopy, shouldShowActiveCurationChoice } from "./profile/association-copy.js";
+import { describeMediaLibrarySurface, mapLinkState } from "./profile/link-state.js";
+import { applyProductStatusTone } from "./profile/status-tone.js";
+import {
+  PROFILE_SYNC_INTRO_STEPS,
+  createContextualFirstUseState,
+  describeContextualFirstUseActions,
+  transitionContextualFirstUse,
+} from "./profile/contextual-first-use.js";
+import { createAssociationWriteSuppression } from "./profile/association-write-suppression.js";
+import { describeMediaLibraryOptions } from "./profile/media-library-options.js";
+import { createAmbientProfileObserver } from "./profile/ambient-profile-observer.js";
+import { applyLoadTimeProfileRestoration } from "./profile/load-time-profile-restoration.js";
+import { resolveProvenParentCuration } from "./profile/parent-curation-inheritance.js";
+import {
+  performReverseCurationSuggestionAction,
+  resolveReverseCurationSuggestion,
+} from "./profile/reverse-curation-suggestion.js";
+import {
+  performDeviceAwareMediaQuestionAction,
+  resolveDeviceAwareMediaQuestion,
+} from "./profile/device-aware-media-question.js";
+import {
+  buildAmbientProfileOfferView,
+  performAmbientProfileAction,
+} from "./profile/ambient-profile-action.js";
+import {
+  deleteAmbientProfileDecision,
+  loadAmbientProfileDecision,
+  saveAmbientProfileDecision,
+} from "./profile/indexeddb.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
+import { parseLaunchContext, LAUNCH_CONTEXT_STREAMLOOP } from "./runtime/launch-context.js";
+import { parseStreamLoopMessage, nextPendingIntent } from "./runtime/streamloop-bridge.js";
+
+// [STREAMLOOP-INTEGRATION / N6-6]
+// BREADCRUMBS — IS: parsed once, here, from the URL this tab was actually
+// opened with. Runtime-only — never written to app-preferences.js or any
+// other persistence, so every load re-derives it fresh rather than letting a
+// context from one launch survive into an unrelated later one. See
+// launch-context.js for why this must stay the only place StreamLoop
+// identity is decided.
+const launchContext = parseLaunchContext(window.location.search);
 
 const provider = new LocalFileInputProvider();
 // [FSA] A second, independent provider for the File System Access folder
@@ -83,6 +132,20 @@ const profileView = createProfileProjectionView({ profile });
 // interact, that almost certainly means the boundary is being crossed by
 // mistake — re-read profile-sync.js's header first.
 const profileSync = new ProfileSync(profile);
+// [SYNCV3 / STAGE-09 / SELF-WRITE-SUPPRESSION]
+// [WHY: Stage 07's intentional association write emits before its local
+// Library projection is refreshed. Keep that ordering race in one ephemeral
+// coordinator so the future ambient observer cannot turn our own click into a
+// remote-change prompt. Closing an intent schedules a fresh authoritative read;
+// a genuinely different remote fact that landed during the window is therefore
+// delayed, never discarded.]
+const associationWriteSuppression = createAssociationWriteSuppression({
+  onIntentClosed: () => refreshCurrentAssociationFromRegistry().catch(() => undefined),
+});
+const ambientProfileObserver = createAmbientProfileObserver({
+  loadDecision: loadAmbientProfileDecision,
+  deleteDecision: deleteAmbientProfileDecision,
+});
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
 // The runtime uses exactly subscribe/isFavorite/isHidden/toggleFavorite/
 // toggleHidden, all of which the projection view implements, so media-runtime.js
@@ -128,10 +191,42 @@ const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
 const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
 const fsaAssociateBtnLabel = document.getElementById("fsa-associate-btn-label");
+const fsaAssociateHelp = document.getElementById("fsa-associate-help");
 const intervalInput = document.getElementById("interval-input");
 const intervalDecreaseBtn = document.getElementById("interval-decrease-btn");
 const intervalIncreaseBtn = document.getElementById("interval-increase-btn");
 const shuffleInput = document.getElementById("shuffle-input");
+const arcadeAnimationOrderSelect = document.getElementById("arcade-animation-order-select");
+const arcadeAnimationOrderHelper = document.getElementById("arcade-animation-order-helper");
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-9]
+// Two independent control groups — one per launch context. Keyed by the same
+// "browser" | "streamloop" strings app-preferences.js's saveStartupPreferences()
+// and normalizeStartupContexts() use, so a context string can be passed
+// straight through without translation at any layer. Since N6-9, each
+// context's ENTIRE startup+post-load configuration lives together in that
+// context's own Advanced disclosure (Startup Media for browser, StreamLoop
+// Integration for streamloop) — so each group now also owns its own Auto
+// Fill checkbox/helper, not a separate top-level control.
+const startupMediaControls = {
+  browser: {
+    policySelect: document.getElementById("startup-media-browser-policy-select"),
+    policyHelper: document.getElementById("startup-media-browser-policy-helper"),
+    eligibleSection: document.getElementById("startup-media-browser-eligible-section"),
+    eligibleEmpty: document.getElementById("startup-media-browser-eligible-empty"),
+    eligibleList: document.getElementById("startup-media-browser-eligible-list"),
+    autoFillInput: document.getElementById("startup-media-browser-auto-fill-panel-input"),
+    autoFillHelper: document.getElementById("startup-media-browser-auto-fill-helper"),
+  },
+  streamloop: {
+    policySelect: document.getElementById("startup-media-streamloop-policy-select"),
+    policyHelper: document.getElementById("startup-media-streamloop-policy-helper"),
+    eligibleSection: document.getElementById("startup-media-streamloop-eligible-section"),
+    eligibleEmpty: document.getElementById("startup-media-streamloop-eligible-empty"),
+    eligibleList: document.getElementById("startup-media-streamloop-eligible-list"),
+    autoFillInput: document.getElementById("streamloop-auto-fill-panel-input"),
+    autoFillHelper: document.getElementById("streamloop-auto-fill-helper"),
+  },
+};
 const skipDuplicatesInput = document.getElementById("skip-duplicates-input");
 const loopInput = document.getElementById("loop-input");
 const videoLoopInput = document.getElementById("video-loop-input");
@@ -168,9 +263,60 @@ const manageTagsBtn = document.getElementById("manage-tags-btn");
 
 const profileSelect = document.getElementById("profile-select");
 const profileSectionDetails = document.querySelector(".profile-section");
+const profileMediaFolderControls = document.getElementById("profile-media-folder-controls");
+const profileActiveGroup = document.getElementById("profile-active-group");
 // [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN] [PROFILE-TAGS-DISCLOSURE]
 const tagsAdminSectionDetails = document.querySelector(".tags-admin-section");
 const profileAssociateBtn = document.getElementById("profile-associate-btn");
+const profileLibraryAssociationText = document.getElementById("profile-library-association-text");
+const profileAssociationRow = document.getElementById("profile-association-row");
+const profileAssociationSelect = document.getElementById("profile-association-select");
+const profileAssociationSaveBtn = document.getElementById("profile-association-save-btn");
+const profileAssociationCancelBtn = document.getElementById("profile-association-cancel-btn");
+const profileAssociationResult = document.getElementById("profile-association-result");
+const ambientProfileOffer = document.getElementById("ambient-profile-offer");
+const ambientProfileOfferText = document.getElementById("ambient-profile-offer-text");
+const ambientProfileOfferYes = document.getElementById("ambient-profile-offer-yes");
+const ambientProfileOfferNo = document.getElementById("ambient-profile-offer-no");
+const ambientProfileOfferLater = document.getElementById("ambient-profile-offer-later");
+const ambientProfileOfferClose = document.getElementById("ambient-profile-offer-close");
+const ambientProfileOfferResult = document.getElementById("ambient-profile-offer-result");
+const reverseCurationOffer = document.getElementById("reverse-curation-offer");
+const reverseCurationOfferText = document.getElementById("reverse-curation-offer-text");
+const reverseCurationOfferYes = document.getElementById("reverse-curation-offer-yes");
+const reverseCurationOfferNo = document.getElementById("reverse-curation-offer-no");
+const reverseCurationOfferResult = document.getElementById("reverse-curation-offer-result");
+const deviceAwareMediaQuestion = document.getElementById("device-aware-media-question");
+const deviceAwareMediaQuestionText = document.getElementById("device-aware-media-question-text");
+const deviceAwareMediaQuestionYes = document.getElementById("device-aware-media-question-yes");
+const deviceAwareMediaQuestionNo = document.getElementById("device-aware-media-question-no");
+const deviceAwareMediaQuestionResult = document.getElementById("device-aware-media-question-result");
+const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
+const profileFolderLinkAdvancedSummary = document.getElementById("profile-folder-link-advanced-summary");
+const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
+const profileFolderActionHelp = document.getElementById("profile-folder-action-help");
+const profileFolderLinkHelp = document.getElementById("profile-folder-link-help");
+const profileFolderLinkRow = document.getElementById("profile-folder-link-row");
+const profileFolderLinkSelect = document.getElementById("profile-folder-link-select");
+const profileFolderLinkSaveBtn = document.getElementById("profile-folder-link-save-btn");
+const profileFolderUnlinkBtn = document.getElementById("profile-folder-unlink-btn");
+const profileFolderUnlinkHelp = document.getElementById("profile-folder-unlink-help");
+const profileFolderLinkCancelBtn = document.getElementById("profile-folder-link-cancel-btn");
+const profileFolderLinkConflict = document.getElementById("profile-folder-link-conflict");
+const profileFolderLinkConflictHeading = document.getElementById("profile-folder-link-conflict-heading");
+const profileFolderLinkConflictDetail = document.getElementById("profile-folder-link-conflict-detail");
+const profileFolderLinkConflictAction = document.getElementById("profile-folder-link-conflict-action");
+const profileFolderLinkResult = document.getElementById("profile-folder-link-result");
+const profileFolderNewLibraryRow = document.getElementById("profile-folder-new-library-row");
+const profileFolderNewLibraryInput = document.getElementById("profile-folder-new-library-input");
+const profileFolderLibrarySyncHint = document.getElementById("profile-folder-library-sync-hint");
+const profileFolderLibrarySyncBtn = document.getElementById("profile-folder-library-sync-btn");
+const profileSyncGroup = document.getElementById("profile-sync-group");
+const profileMediaFolderContextHelp = document.getElementById("profile-media-folder-context-help");
+const profileMediaLibraryContextHelp = document.getElementById("profile-media-library-context-help");
+const profileActiveContextHelp = document.getElementById("profile-active-context-help");
+const profileSyncContextHelp = document.getElementById("profile-sync-context-help");
+const profileSyncMediaSafety = document.getElementById("profile-sync-media-safety");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
@@ -184,6 +330,16 @@ const profileImportCopyBtn = document.getElementById("profile-import-copy-btn");
 const profileImportCopyInput = document.getElementById("profile-import-copy-input");
 const profileSkipMissingInput = document.getElementById("profile-skip-missing-input");
 const profileStatusText = document.getElementById("profile-status-text");
+const profileSyncIntro = document.getElementById("profile-sync-intro");
+const profileSyncIntroProgress = document.getElementById("profile-sync-intro-progress");
+const profileSyncIntroTitle = document.getElementById("profile-sync-intro-title");
+const profileSyncIntroBody = document.getElementById("profile-sync-intro-body");
+const profileSyncIntroBack = document.getElementById("profile-sync-intro-back");
+const profileSyncIntroNext = document.getElementById("profile-sync-intro-next");
+const profileSyncIntroDone = document.getElementById("profile-sync-intro-done");
+const profileSyncIntroSkip = document.getElementById("profile-sync-intro-skip");
+const profileSyncIntroClose = document.getElementById("profile-sync-intro-close");
+const profileSyncHelpBtn = document.getElementById("profile-sync-help-btn");
 
 // [PROFILE-SYNC] DOM refs for the compact Profile Sync block — see
 // index.html's own [PROFILE-SYNC] comment on `.profile-sync-section`.
@@ -198,9 +354,8 @@ const profileSyncChangeBtn = document.getElementById("profile-sync-change-btn");
 const profileSyncDisconnectBtn = document.getElementById("profile-sync-disconnect-btn");
 const profileSyncActivatePanel = document.getElementById("profile-sync-activate-panel");
 const profileSyncActivateBtn = document.getElementById("profile-sync-activate-btn");
-// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION] Temporary development controls — see
-// the panel's own comment in index.html for why this surface is scaffolding.
-const profileSyncV3Panel = document.getElementById("profile-sync-v3-panel");
+// [SYNCV3 / STAGE-06 / SCAFFOLDING-CLEANUP] Advanced diagnostic output and
+// mode-generation controls retained separately from the product Sync surface.
 const profileSyncV3StatusText = document.getElementById("profile-sync-v3-status-text");
 // [SYNCV3 / STAGE-05 / DEVICE-NAMING] Temporary bridge control — see the panel
 // comment in index.html for why this is deliberately minimal.
@@ -213,10 +368,7 @@ const profileSyncV3ReconnectBtn = document.getElementById("profile-sync-v3-recon
 const profileSyncV3ActivateBtn = document.getElementById("profile-sync-v3-activate-btn");
 const profileSyncV3LeaveBtn = document.getElementById("profile-sync-v3-leave-btn");
 const profileSyncV3DisconnectBtn = document.getElementById("profile-sync-v3-disconnect-btn");
-const profileSyncLinkPanel = document.getElementById("profile-sync-link-panel");
-const profileSyncLinkSelect = document.getElementById("profile-sync-link-select");
-const profileSyncLinkBtn = document.getElementById("profile-sync-link-btn");
-const profileSyncLinkStatus = document.getElementById("profile-sync-link-status");
+const profileSyncProductStatus = document.getElementById("profile-sync-product-status");
 const profileSyncConflictPanel = document.getElementById("profile-sync-conflict-panel");
 const profileSyncUseSyncedBtn = document.getElementById("profile-sync-use-synced-btn");
 const profileSyncKeepLocalBtn = document.getElementById("profile-sync-keep-local-btn");
@@ -334,9 +486,20 @@ const presentationControls = document.getElementById("presentation-controls");
 const presentationSettings = document.getElementById("presentation-settings");
 const ghostToggleBtn = document.getElementById("ghost-toggle-btn");
 const ghostPopunder = document.getElementById("ghost-popunder");
+// [PM-TOOLBAR-OPACITY] `ghost-*` ids/vars are the pre-existing implementation
+// — its customer-facing label is "Toolbar Opacity" now (see the <label> in
+// index.html), but the id/storage-field names stay "ghost" deliberately:
+// this mechanism predates the rename and already governed the correct
+// resting-opacity behavior, so nothing about its storage path or internal
+// naming changed, only what the customer reads on screen.
 const ghostOpacityInput = document.getElementById("ghost-opacity-input");
 const ghostOpacityLabel = document.getElementById("ghost-opacity-label");
 const ghostRememberInput = document.getElementById("ghost-remember-input");
+// Hover Opacity — the new sibling preference that replaces the old
+// hardcoded 100% hover state (see the mouseenter listener below).
+const hoverOpacityInput = document.getElementById("hover-opacity-input");
+const hoverOpacityLabel = document.getElementById("hover-opacity-label");
+const hoverRememberInput = document.getElementById("hover-remember-input");
 const presentationTagsEmpty = document.getElementById("presentation-tags-empty");
 const presentationTagsRow = document.getElementById("presentation-tags-row");
 const presentationTagsOverflow = document.getElementById("presentation-tags-overflow");
@@ -422,7 +585,192 @@ const WORKSPACES = [
 
 let activeWorkspace = "gallery";
 
-function setActiveWorkspace(name, { focusTab = false } = {}) {
+let profileSyncIntroState = createContextualFirstUseState();
+let profileSyncIntroPreferencesReady = false;
+let pendingIntentionalProfileSyncEntry = false;
+let contextualHelpActiveEntry = null;
+let syncContextHelpDefaultVisible = false;
+let dismissedAssociationHelpKey = null;
+
+// The full Stage 10 language remains background product knowledge. Settings
+// renders only the short sentence belonging to the focused concept; this
+// object is not itself a customer-facing destination.
+const PROFILE_SYNC_BACKGROUND_GLOSSARY = Object.freeze({
+  mediaFolder: "Where Browser Gallery opens your photos and videos from. Choose a Media Folder on this device or a Google Drive Media Folder. Browser Gallery does not upload, move or copy what is inside it.",
+  mediaLibrary: "A Media Library is Browser Gallery's name for one collection of photos and videos. If that collection appears through different Media Folders across your devices, choose the same Media Library for each one. That tells Browser Gallery they represent the same collection, and which Favorites, Hidden items and Tags belong with it. Use the same Media Library only for Media Folders that show the same collection of photos and videos. Different collections use different Media Libraries. Choosing a Media Library does not create or change a folder. Nothing is copied, moved, combined or uploaded.",
+  curation: "As you browse, you can mark Favorites, hide items and add Tags. One saved set of those choices is a Curation. Create different Curations for different people, purposes, or ways of organizing your media.",
+  activeCuration: "The Curation this device is using right now. Its Favorites, Hidden items and Tags are the ones Browser Gallery uses while you browse your media. Each of your devices can use a different Curation. When you open a Media Library, Browser Gallery may switch to the Curation that Media Library remembers, or ask you first.",
+  libraryCuration: "The Curation Browser Gallery remembers for this Media Library. It is the Favorites, Hidden items and Tags that belong with that collection. If another of your devices opens the same Media Library, Browser Gallery can ask whether to use that Curation there too.",
+  sync: "Sync makes your Favorites, Hidden items and Tags available on your other devices. Connect each device you want to use to the same Google Drive Sync Folder. A Google Drive Sync Folder stores Browser Gallery information only. It is separate from a Google Drive Media Folder and does not contain your photos and videos.",
+});
+
+function glossaryExcerpt(key, sentenceCount) {
+  const excerpt = PROFILE_SYNC_BACKGROUND_GLOSSARY[key].split(". ").slice(0, sentenceCount).join(". ");
+  return excerpt.endsWith(".") ? excerpt : `${excerpt}.`;
+}
+
+document.getElementById("profile-media-folder-help").textContent = glossaryExcerpt("mediaFolder", 1);
+profileFolderLinkHelp.textContent = glossaryExcerpt("mediaLibrary", 2);
+profileActiveContextHelp.querySelector("p").textContent = glossaryExcerpt("activeCuration", 2);
+profileSyncMediaSafety.textContent = glossaryExcerpt("sync", 2);
+
+function associationHelpKey(associationUi) {
+  return [
+    currentSourceKind,
+    activeLibraryRecord?.id || "session",
+    associationUi.state,
+    associationUi.associatedProfileId || "none",
+  ].join(":");
+}
+
+// [SYNCV3 / STAGE-10 / SETTINGS-COMPRESSION]
+// BREADCRUMBS — IS: one focus-driven explainer may appear at the end of its
+//   group; warnings, conflicts and an unsaved Media Library choice keep it.
+// BREADCRUMBS — WAS: the same teaching copy occupied every healthy steady state.
+// BREADCRUMBS — WILL BE / FUTURE: onboarding may replace this in Stage 11; do not turn
+//   this presentation controller into a second product-state authority.
+const contextualHelpEntries = [
+  {
+    group: profileMediaFolderControls,
+    block: profileMediaFolderContextHelp,
+    toneElement: profileFolderLinkSummary,
+    hasPendingChange: () => false,
+    hasConflict: () => false,
+  },
+  {
+    group: profileFolderLinkRow,
+    block: profileMediaLibraryContextHelp,
+    toneElement: profileFolderLinkSummary,
+    hasPendingChange: () => !profileFolderLinkSaveBtn.classList.contains("hidden"),
+    hasConflict: () => !profileFolderLinkConflict.classList.contains("hidden"),
+  },
+  {
+    group: profileActiveGroup,
+    block: profileActiveContextHelp,
+    toneElement: null,
+    hasPendingChange: () => false,
+    hasConflict: () => false,
+  },
+  {
+    group: profileSyncGroup,
+    block: profileSyncContextHelp,
+    toneElement: profileSyncProductStatus,
+    hasPendingChange: () => false,
+    hasConflict: () => false,
+  },
+];
+
+function contextualHelpHasWarning(entry) {
+  return Boolean(entry.toneElement && (
+    entry.toneElement.classList.contains("product-status-warning") ||
+    entry.toneElement.classList.contains("product-status-danger")
+  ));
+}
+
+function contextualHelpIsSticky(entry) {
+  return entry.hasPendingChange() || contextualHelpHasWarning(entry) || entry.hasConflict();
+}
+
+function renderContextualHelp(requestedEntry = contextualHelpActiveEntry) {
+  if (profileSyncIntroState.visible) {
+    contextualHelpEntries.forEach((entry) => entry.block.classList.add("hidden"));
+    return;
+  }
+  const visibleEntry = requestedEntry || (syncContextHelpDefaultVisible ? contextualHelpEntries[3] : null);
+  contextualHelpEntries.forEach((entry) => entry.block.classList.toggle("hidden", entry !== visibleEntry));
+}
+
+function revealContextualHelp(entry) {
+  contextualHelpActiveEntry = entry;
+  renderContextualHelp(entry);
+}
+
+function retreatContextualHelp(entry) {
+  if (contextualHelpActiveEntry !== entry || contextualHelpIsSticky(entry)) {
+    renderContextualHelp();
+    return;
+  }
+  contextualHelpActiveEntry = null;
+  renderContextualHelp();
+}
+
+function refreshContextualHelpAfterRender(entry) {
+  if (contextualHelpIsSticky(entry)) contextualHelpActiveEntry = entry;
+  else if (contextualHelpActiveEntry === entry && !entry.group.contains(document.activeElement)) {
+    contextualHelpActiveEntry = null;
+  }
+  renderContextualHelp();
+}
+
+contextualHelpEntries.forEach((entry) => {
+  entry.group.addEventListener("focusin", () => revealContextualHelp(entry));
+  entry.group.addEventListener("change", () => revealContextualHelp(entry));
+  entry.group.addEventListener("focusout", (event) => {
+    if (event.relatedTarget && entry.group.contains(event.relatedTarget)) return;
+    queueMicrotask(() => {
+      if (!entry.group.contains(document.activeElement)) retreatContextualHelp(entry);
+    });
+  });
+});
+
+function renderProfileSyncIntroduction() {
+  const step = PROFILE_SYNC_INTRO_STEPS[profileSyncIntroState.stepIndex];
+  profileSyncIntro.classList.toggle("hidden", !profileSyncIntroState.visible);
+  profileSyncIntroProgress.textContent = `Step ${profileSyncIntroState.stepIndex + 1} of ${PROFILE_SYNC_INTRO_STEPS.length}`;
+  profileSyncIntroTitle.textContent = step.title;
+  profileSyncIntroBody.textContent = step.body;
+  profileSyncIntro.dataset.helpConcepts = step.concepts.join(" ");
+  // [SYNCV3 / STAGE-10 / FINAL-UX-POLISH]
+  // [WHY: which actions the step offers is now derived by the same pure model
+  // that owns the steps, so the approved Back / Skip Intro / forward pattern
+  // cannot drift here. This function still only applies that result.]
+  const actions = describeContextualFirstUseActions(profileSyncIntroState);
+  profileSyncIntroBack.classList.toggle("hidden", !actions.back);
+  profileSyncIntroSkip.classList.toggle("hidden", !actions.skip);
+  profileSyncIntroClose.classList.toggle("hidden", !actions.close);
+  profileSyncIntroNext.classList.toggle("hidden", !actions.next);
+  profileSyncIntroDone.classList.toggle("hidden", !actions.done);
+  renderContextualHelp();
+}
+
+function dispatchProfileSyncIntroduction(event) {
+  const transition = transitionContextualFirstUse(profileSyncIntroState, event);
+  profileSyncIntroState = transition.state;
+  renderProfileSyncIntroduction();
+  if (transition.effect === "persist-seen") {
+    // The in-memory state remains seen even if this device-local write fails;
+    // a later reload may offer the introduction again instead of falsely
+    // claiming the durable preference was saved.
+    saveOnboardingPreferences({ profileSyncIntroSeen: true });
+  }
+}
+
+function handleIntentionalProfileSyncEntry() {
+  if (!profileSyncIntroPreferencesReady) {
+    pendingIntentionalProfileSyncEntry = true;
+    return;
+  }
+  dispatchProfileSyncIntroduction({ type: "enter-profile-sync", intentional: true });
+}
+
+// [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
+// [WHY: the navigation caller must explicitly identify intentional Profile &
+// Sync entry. Boot uses the same workspace renderer without this flag, so DOM
+// existence, background refresh, and automatic Profile restoration can never
+// consume or display the introduction.]
+function initializeProfileSyncIntroduction(onboarding) {
+  profileSyncIntroState = createContextualFirstUseState({
+    seen: onboarding?.profileSyncIntroSeen,
+  });
+  profileSyncIntroPreferencesReady = true;
+  renderProfileSyncIntroduction();
+  if (pendingIntentionalProfileSyncEntry) {
+    pendingIntentionalProfileSyncEntry = false;
+    handleIntentionalProfileSyncEntry();
+  }
+}
+
+function setActiveWorkspace(name, { focusTab = false, intentionalProfileSync = false } = {}) {
   const target = WORKSPACES.find((entry) => entry.name === name);
   if (!target) return;
 
@@ -467,6 +815,10 @@ function setActiveWorkspace(name, { focusTab = false } = {}) {
   // Anything that needs to MUTATE state on workspace activation still
   // belongs in its own subscriber, not here.
   syncNowPlayingStrip();
+
+  if (target.name === "settings" && intentionalProfileSync) {
+    handleIntentionalProfileSyncEntry();
+  }
 }
 
 // [UI-REDESIGN / Stage 1A]
@@ -549,7 +901,7 @@ function syncNowPlayingStrip(state = runtime.getState()) {
 // [UI-REDESIGN / Stage 1C]
 // WHAT: The same hand-off for the Settings workspace, which is where the
 // Profile section now lives.
-// WHY: The rail's "Associate with Profile" / "Change Profile" shortcut has
+// WHY: The rail's "Choose/Change Profile for This Library" shortcut has
 // always been navigation-only — it opens the Profile disclosure, scrolls to
 // it, and focuses a control inside it. Now that the section sits in a
 // hidden panel, both scrollIntoView() and focus() would silently do
@@ -558,8 +910,12 @@ function syncNowPlayingStrip(state = runtime.getState()) {
 // FUTURE: This is the ONLY sanctioned route from the rail to Profile
 // management. Do not answer a future "the rail should let me switch
 // profiles" request by adding a second selector to the rail.
-function ensureSettingsWorkspaceVisible() {
-  if (activeWorkspace !== "settings") setActiveWorkspace("settings");
+function ensureSettingsWorkspaceVisible({ intentionalProfileSync = false } = {}) {
+  if (activeWorkspace !== "settings") {
+    setActiveWorkspace("settings", { intentionalProfileSync });
+  } else if (intentionalProfileSync) {
+    handleIntentionalProfileSyncEntry();
+  }
 }
 
 WORKSPACES.forEach((entry, index) => {
@@ -595,7 +951,7 @@ WORKSPACES.forEach((entry, index) => {
       returnToGalleryAndFocusPlayer();
       return;
     }
-    setActiveWorkspace(entry.name);
+    setActiveWorkspace(entry.name, { intentionalProfileSync: entry.name === "settings" });
   });
 
   entry.tab.addEventListener("keydown", (event) => {
@@ -609,8 +965,36 @@ WORKSPACES.forEach((entry, index) => {
 
     if (nextIndex === null) return;
     event.preventDefault();
-    setActiveWorkspace(WORKSPACES[nextIndex].name, { focusTab: true });
+    setActiveWorkspace(WORKSPACES[nextIndex].name, {
+      focusTab: true,
+      intentionalProfileSync: WORKSPACES[nextIndex].name === "settings",
+    });
   });
+});
+
+profileSyncIntroBack.addEventListener("click", () => {
+  dispatchProfileSyncIntroduction({ type: "back" });
+});
+profileSyncIntroNext.addEventListener("click", () => {
+  dispatchProfileSyncIntroduction({ type: "next" });
+});
+profileSyncIntroDone.addEventListener("click", () => {
+  dispatchProfileSyncIntroduction({ type: "done" });
+});
+profileSyncIntroClose.addEventListener("click", () => {
+  // [SYNCV3 / STAGE-10 / REPLAY-CLOSE]
+  // [WHY: Close shares the skip/done hide path exactly so a replay — where seen
+  // is already true — can never produce a persist effect or reset the
+  // device-local preference.]
+  dispatchProfileSyncIntroduction({ type: "close" });
+});
+profileSyncIntroSkip.addEventListener("click", () => {
+  dispatchProfileSyncIntroduction({ type: "skip" });
+});
+profileSyncHelpBtn.addEventListener("click", () => {
+  // [WHY: replay deliberately does not alter profileSyncIntroSeen. It is a
+  // manual view of the same material, never a request to auto-open it again.]
+  dispatchProfileSyncIntroduction({ type: "replay" });
 });
 
 // Redundant with the static markup (Gallery already ships selected), but
@@ -655,12 +1039,34 @@ let isLoadingFiles = false;
 // second source of truth for the association itself, which — for FSA —
 // always lives in IndexedDB via library-registry.js.
 let activeLibraryRecord = null;
+// [SYNCV3 / STAGE-08 / LINK-STATE]
+// Permission is presentation state, never identity. Losing it must leave the
+// durable local row and its shared Library link untouched.
+let currentFolderPermissionState = "granted";
+let pendingFolderLinkClaimant = null;
+// [SYNCV3 / STAGE-06 / ASSOCIATION-SUMMARY]
+// Presentation-only name for a loaded legacy folder that does not have a
+// registry record yet. Association truth remains entirely in the record/state
+// consumed by the Stage 07 association-state adapter.
+let activeLibraryDisplayName = null;
 
 // [Phase 8.4-2] Which picker produced the currently loaded media, if any.
 // This — not "FSA vs legacy" scattered across call sites — is the one
 // thing association-button visibility is computed from. See
-// currentLoadIsAssociated()/syncAssociateButtonVisibility() below.
+// syncAssociateButtonVisibility() below.
 let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
+// [SYNCV3 / STAGE-09 / STALE-LOAD-GUARD]
+// [WHY: file loading is normally serialized by isLoadingFiles, but Clear Media
+// can supersede a load while its new decision-store await is suspended. This
+// monotonic token prevents that stale continuation from switching, deleting,
+// or arming an offer after its Library context has gone away.]
+let libraryLoadGeneration = 0;
+let ambientProfileOfferRenderedKey = null;
+let ambientProfileActionPending = false;
+let pendingReverseCurationSuggestion = null;
+let reverseCurationActionPending = false;
+let pendingDeviceAwareMediaQuestion = null;
+let deviceAwareMediaActionPending = false;
 
 // [P1-DIAGNOSTIC / TEMPORARY] See the DevTools-callable probe block at the
 // bottom of this file. Holds the most recently loaded FSA root handle (and
@@ -710,7 +1116,7 @@ let legacySessionAssociated = false;
 // webkitdirectory FOLDER picker (has a root folder context to fingerprint)
 // — as opposed to the plain multi-file "Choose Files" input, which has no
 // meaningful folder identity to build a durable association from (see
-// loadFiles()). When true, currentLoadIsAssociated() and the Associate
+// loadFiles()). When true, the association-state adapter and Associate
 // click handler use activeLibraryRecord + the persisted legacy registry
 // instead of the ephemeral legacySessionAssociated flag above.
 let legacyHasDurableIdentity = false;
@@ -737,38 +1143,6 @@ let pendingLibraryAssociationIntent = false;
 // considered associated — drives both the Associate/Change button's LABEL
 // (see syncAssociateButtonVisibility) and the green "Associated:" status
 // row (see updateAssociatedStatusRow), never a separately-tracked boolean.
-function currentLoadIsAssociated() {
-  if (currentSourceKind === "fsa") {
-    // No persisted library.id (e.g. addOrUpdateLibrary() failed to save
-    // this folder — see fsaChooseFolderBtn's catch) means there is
-    // nothing a click could actually persist an association against;
-    // treat that as "can't participate" rather than dangling a button
-    // that would silently no-op when clicked.
-    if (!activeLibraryRecord || !activeLibraryRecord.id) return true;
-    // [Phase 8.5] Checked against REAL known profiles, not just
-    // truthiness — a profileId can go stale in-memory the moment its
-    // Profile is deleted, without waiting for a reload (see
-    // profileDeleteBtn's stale-clearing below). Must agree with
-    // updateAssociatedStatusRow()'s own "Not associated" fallback.
-    return Boolean(activeLibraryRecord.profileId && getProfileNameById(activeLibraryRecord.profileId));
-  }
-  if (currentSourceKind === "legacy") {
-    // [Phase 8.4-3] A folder pick with durable identity behaves exactly
-    // like FSA here — same activeLibraryRecord.profileId check — it's
-    // just persisted via a signature instead of a handle. Only the
-    // handle-less "Choose Files" case falls back to the ephemeral flag.
-    if (legacyHasDurableIdentity) {
-      return Boolean(
-        activeLibraryRecord && activeLibraryRecord.profileId && getProfileNameById(activeLibraryRecord.profileId)
-      );
-    }
-    return legacySessionAssociated;
-  }
-  return true; // "none" — nothing loaded; not a real association state,
-  // but this makes updateAssociatedStatusRow's "—" case share the same
-  // underlying check rather than needing its own separate one.
-}
-
 // Looks up the DISPLAY NAME for a profileId that may or may not be the
 // currently active profile — the green status row must reflect the
 // LOADED LIBRARY's association, not whatever profile the user happens to
@@ -777,6 +1151,36 @@ function getProfileNameById(profileId) {
   if (!profileId) return null;
   const entry = profile.listProfiles().find((candidate) => candidate.id === profileId);
   return entry ? entry.name : null;
+}
+
+// [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+// The only adapter from live app state into the pure S0-S5 mapper.
+function getCurrentAssociationUiState() {
+  const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded Media Folder";
+  const usesDurableRecord =
+    currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
+  const sharedCatalogEntry = activeLibraryRecord?.libraryId
+    ? profile.listLibraries().find((library) => library.id === activeLibraryRecord.libraryId)
+    : null;
+  const associatedProfileId = usesDurableRecord && activeLibraryRecord
+    ? sharedCatalogEntry
+      ? sharedCatalogEntry.associatedProfileId
+      : activeLibraryRecord.profileId
+    : null;
+  return mapAssociationCopy({
+    sourceKind: currentSourceKind,
+    legacyHasDurableIdentity,
+    folderName,
+    associatedProfileId,
+    associatedProfileName: getProfileNameById(associatedProfileId),
+    activeProfileId: profile.getProfileId(),
+    activeProfileName: profile.getProfileName(),
+    legacySessionAssociated,
+    canWriteAssociation:
+      currentSourceKind === "fsa"
+        ? Boolean(activeLibraryRecord && activeLibraryRecord.id)
+        : Boolean(activeLibraryRecord && activeLibraryRecord.id) || Boolean(pendingLegacySignature),
+  });
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -788,62 +1192,66 @@ function getProfileNameById(profileId) {
 // that function) rather than adding separate call sites — they must never
 // drift out of sync with each other.
 function updateAssociatedStatusRow() {
-  if (currentSourceKind === "none") {
-    associatedText.textContent = "—";
-    return;
-  }
+  const associationUi = getCurrentAssociationUiState();
+  associatedText.textContent = associationUi.associatedText;
 
-  if (!currentLoadIsAssociated()) {
-    associatedText.textContent = "Not associated";
-    return;
-  }
-
-  const usesDurableRecord = currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
-  if (usesDurableRecord) {
-    // Deliberately NO fallback to profile.getProfileName() here: if
-    // activeLibraryRecord.profileId doesn't resolve to a real profile
-    // (deleted since — see profileDeleteBtn's stale-clearing below), that
-    // MUST read "Not associated", never the currently-active profile's
-    // name — this is exactly the "do not display the globally active
-    // Profile" rule from section 1.
-    const name = activeLibraryRecord ? getProfileNameById(activeLibraryRecord.profileId) : null;
-    associatedText.textContent = name || "Not associated";
-    return;
-  }
-
-  // Ephemeral ("Choose Files") association has no stored profileId to look
-  // up at all — it only ever means "the profile that was active at the
-  // moment Associate was clicked", i.e. whatever profile is active now.
-  associatedText.textContent = profile.getProfileName() || "Not associated";
+  // [WHY: this is the third render target of this function's existing single
+  // association computation; it never reads registry or Profile state itself.]
+  profileLibraryAssociationText.textContent = associationUi.productLine;
+  applyProductStatusTone(profileLibraryAssociationText, associationUi.tone);
+  return associationUi;
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
 // WHAT: Shows/hides the Associate/Change button AND sets its label — one
-// button, "Associate with Profile" when the current load has no
-// association, "Change Profile" once it does (see the button's own HTML
+// button, "Choose Profile for This Library" when the current load has no
+// Profile, "Change Profile for This Library" once it does (see the button's own HTML
 // comment for why this is deliberately one element, not two). Also
 // refreshes the green Associated: row every time, since both are driven
 // by the exact same underlying state.
 // WHY: Consolidates every place that used to independently decide
 // "hidden or not" into one call, so the button and the status row can
 // never disagree with each other.
-// FUTURE: If a new source kind is ever added, this + currentLoadIsAssociated()
-// are the only two functions that need to learn about it.
+// FUTURE: New source kinds belong in the single Stage 07 mapper adapter above.
 function syncAssociateButtonVisibility() {
-  const shouldShow = currentSourceKind !== "none";
-  const associated = currentLoadIsAssociated();
+  const associationUi = updateAssociatedStatusRow();
+  // [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+  // S2 means the remembered folder Curation and active local Curation already
+  // agree. Keep both states internally, but do not make the customer inspect a
+  // duplicate selector. S3 and every unresolved state still surface the local
+  // choice because a real decision may depend on the distinction.
+  profileActiveGroup.classList.toggle("hidden", !shouldShowActiveCurationChoice(associationUi));
+  const shouldShow = associationUi.showAction;
   fsaAssociateBtn.classList.toggle("hidden", !shouldShow);
   fsaAssociateBtn.disabled = !shouldShow;
   profileAssociateBtn.classList.toggle("hidden", !shouldShow);
   profileAssociateBtn.disabled = !shouldShow;
   if (shouldShow) {
-    fsaAssociateBtnLabel.textContent = associated ? "Change Profile" : "Associate with Profile";
+    // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+    // [WHY: the rail card already names the concept in its own label directly
+    // above this button, so the button says only what pressing it does. That
+    // also retires the hard-coded line break the long label needed to wrap
+    // tidily in the rail — a short label wraps on its own or not at all.]
+    fsaAssociateBtnLabel.textContent = ["S2", "S3"].includes(associationUi.state)
+      ? "Change Curation"
+      : "Choose a Curation";
+    profileAssociateBtn.textContent = associationUi.actionLabel;
+  } else if (!profileAssociationRow.classList.contains("hidden")) {
+    profileAssociationRow.classList.add("hidden");
+    profileAssociateBtn.setAttribute("aria-expanded", "false");
   }
-  updateAssociatedStatusRow();
+  // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+  // [WHY: the benefit line follows the action's own availability — there is no
+  // point explaining a control that is not being offered. Copy is owned by the
+  // pure mapper beside actionLabel; this only applies it.]
+  const actionHelpIsCurrent = dismissedAssociationHelpKey !== associationHelpKey(associationUi);
+  fsaAssociateHelp.textContent = shouldShow && actionHelpIsCurrent ? (associationUi.actionHelp || "") : "";
+  fsaAssociateHelp.classList.toggle("hidden", !shouldShow || !associationUi.actionHelp || !actionHelpIsCurrent);
   // [UI-REDESIGN / Stage 6] Ordered after updateAssociatedStatusRow() on
   // purpose — the compact header mirrors that function's output, so it must
   // read the row only once the row is current.
   syncMobileContextSummary();
+  renderFolderLinkState();
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -858,7 +1266,7 @@ function syncAssociateButtonVisibility() {
 function expandAndScrollToProfileSection() {
   // [UI-REDESIGN / Stage 1C] Must come first — everything below acts on an
   // element inside the Settings workspace.
-  ensureSettingsWorkspaceVisible();
+  ensureSettingsWorkspaceVisible({ intentionalProfileSync: true });
   if (profileSectionDetails && !profileSectionDetails.open) {
     profileSectionDetails.open = true;
   }
@@ -866,7 +1274,7 @@ function expandAndScrollToProfileSection() {
   syncAssociateButtonVisibility();
   if (pendingLibraryAssociationIntent) {
     pendingLibraryAssociationIntent = false;
-    profileAssociateBtn?.focus();
+    openAssociationEditor();
   } else {
     profileSelect?.focus();
   }
@@ -2137,10 +2545,10 @@ const LAB_ROUND = [
 ];
 
 const LAB_CONE = [
-  "..3333333..",
-  "..3.....3..",
-  "..3.....3..",
-  ".3.......3.",
+  "....333....",
+  "....3.3....",
+  "....3.3....",
+  "...3...3...",
   ".3.......3.",
   "3.........3",
   "3.........3",
@@ -2153,6 +2561,16 @@ const LAB_BEAKER = ["33.....33", "3.......3", "3.......3", "3.......3", "3......
 const LAB_CYLINDER = ["333", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "3.3", "333"];
 
 const LAB_VIAL = ["3..3", "3..3", "3..3", "3..3", "33.3", ".33."];
+
+const LAB_WIDE_FLASK = ["...33...", "...33...", "...33...", "..3..3..", ".3....3.", "3......3", "3......3", ".3....3.", "..3333.."];
+
+const LAB_TALL_FLASK = ["..33..", "..33..", "..33..", "..33..", ".3..3.", "3....3", "3....3", ".3..3.", "..33.."];
+
+const LAB_SMALL_ROUND = ["..33..", "..33..", ".3..3.", "3....3", ".3..3.", "..33.."];
+
+const LAB_NARROW_CONE = ["..33..", "..33..", ".3..3.", ".3..3.", "3....3", "333333"];
+
+const LAB_SQUAT_CONE = ["..33..", ".3..3.", "3....3", "3....3", "333333"];
 
 const LAB_TILE = ["3333333", "3222223", "32.3.23", "32333.3", "3222223", "3333333"];
 
@@ -2199,7 +2617,7 @@ function labEnergy(t) {
 }
 
 // THE COMPLICATION, 13.5s-17s: pressure runs away, the centre flask foams up
-// toward its neck, the flame flares and the gauge pushes into the red — then a
+// toward its neck and the flame flares — then a
 // hand reaches in and throttles the burner back. Without a scare in the middle
 // the bench was just pleasant activity; the near-miss gives the success at the
 // end something to be a success over.
@@ -2254,10 +2672,29 @@ function drawLabScene(ctx, state, t, now) {
   drawLabLiquid(ctx, LAB_BEAKER, bx, by2, 4, ARCADE_INK[1]);
   drawLabBubbles(ctx, bx, by2 + 2, 9, 4, 4, 460, now, 1, ARCADE_INK[2]);
 
-  // ---- tubing: round flask -> centre cone, droplets travelling ----
+  // A staggered run of quieter experiments fills out the bench without
+  // competing with the main reaction: low pulse, still sample, slow fizz.
+  const wx = 36;
+  const wy = bench - LAB_WIDE_FLASK.length;
+  drawArcadeSprite(ctx, LAB_WIDE_FLASK, wx, wy, 1);
+  drawLabLiquid(ctx, LAB_WIDE_FLASK, wx, wy, 2 + (Math.floor(now / 1100) % 2), ARCADE_INK[1]);
+
+  const ntx = 47;
+  const nty = bench - LAB_NARROW_CONE.length;
+  drawArcadeSprite(ctx, LAB_NARROW_CONE, ntx, nty, 1);
+  drawLabLiquid(ctx, LAB_NARROW_CONE, ntx, nty, 1, ARCADE_INK[1]);
+
+  // ---- tubing: neck-to-neck round flask -> centre cone ----
   const ax = rx + 5;
-  const tox = 62;
-  const tubePt = (p) => [ax + (tox - ax) * p, ry - 8 - Math.sin(p * Math.PI) * 12 + p * p * 4];
+  const cx2 = 57;
+  const cy2 = bench - LAB_CONE.length;
+  const tox = cx2 + 5;
+  const tubeStartY = ry - 8;
+  const tubeEndY = cy2;
+  const tubePt = (p) => [
+    ax + (tox - ax) * p,
+    tubeStartY + (tubeEndY - tubeStartY) * p - Math.sin(p * Math.PI) * 10,
+  ];
   ctx.fillStyle = ARCADE_INK[1];
   for (let p = 0; p <= 1.001; p += 0.02) {
     const [x, y] = tubePt(p);
@@ -2272,8 +2709,6 @@ function drawLabScene(ctx, state, t, now) {
   }
 
   // ---- CENTRE: the main conical flask (the reaction vessel) ----
-  const cx2 = 57;
-  const cy2 = bench - LAB_CONE.length;
   drawArcadeSprite(ctx, LAB_CONE, cx2, cy2, 1);
   const fill = 2 + Math.round(arcadeClamp01((t - 7000) / 11000) * 6);
   drawLabLiquid(ctx, LAB_CONE, cx2, cy2, fill, ARCADE_INK[1]);
@@ -2292,10 +2727,15 @@ function drawLabScene(ctx, state, t, now) {
   // a hand throttles the burner back
   if (t > 15600 && t < 17200) {
     const p = arcadeClamp01((t - 15600) / 700) - arcadeClamp01((t - 16600) / 600);
-    const hx = rx + 14 - Math.round(p * 11);
+    const hx = rx + 20 - Math.round(p * 13);
     ctx.fillStyle = ARCADE_INK[2];
-    ctx.fillRect(hx, bench - 7, 7, 4);
-    ctx.fillRect(hx + 6, bench - 10, 3, 7);
+    // sleeve running back to the left frame edge, so the hand has an owner
+    ctx.fillRect(0, bench - 9, hx + 2, 6);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(0, bench - 9, hx + 2, 1);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(hx, bench - 8, 8, 5);
+    ctx.fillRect(hx + 6, bench - 11, 3, 8);
   }
   // vapour
   if (t > 9000) {
@@ -2306,24 +2746,28 @@ function drawLabScene(ctx, state, t, now) {
     }
   }
 
-  // ---- CENTRE-RIGHT: graduated cylinder + gauge ----
+  // ---- CENTRE-RIGHT: graduated cylinder + varied receiving glassware ----
   const gx2 = 74;
   drawArcadeSprite(ctx, LAB_CYLINDER, gx2, bench - LAB_CYLINDER.length, 1);
   drawLabLiquid(ctx, LAB_CYLINDER, gx2, bench - LAB_CYLINDER.length, 5 + Math.round(e * 4), ARCADE_INK[1]);
   ctx.fillStyle = ARCADE_INK[1];
   for (let i = 1; i < 6; i++) ctx.fillRect(gx2 + 3, bench - 2 - i * 2, 2, 1);
 
-  const gx = 100;
-  const gy = 18;
-  drawArcadeCircle(ctx, gx, gy, 10, ARCADE_INK[2]);
-  drawArcadeCircle(ctx, gx, gy, 2, ARCADE_INK[1]);
-  for (let i = 0; i <= 6; i++) {
-    const a = Math.PI * (0.85 + (i / 6) * 1.3);
-    ctx.fillStyle = i > 4 ? ARCADE_INK[3] : ARCADE_INK[1];
-    ctx.fillRect(Math.round(gx + Math.cos(a) * 8), Math.round(gy + Math.sin(a) * 8), 1, 1);
-  }
-  const na = Math.PI * (0.85 + e * 1.3);
-  drawArcadeLine(ctx, gx, gy, gx + Math.cos(na) * 8, gy + Math.sin(na) * 8, ARCADE_INK[3]);
+  const sbx = 82;
+  const sby = bench - LAB_SMALL_ROUND.length;
+  drawArcadeSprite(ctx, LAB_SMALL_ROUND, sbx, sby, 1);
+  drawLabLiquid(ctx, LAB_SMALL_ROUND, sbx, sby, 2, ARCADE_INK[1]);
+
+  const tfx = 91;
+  const tfy = bench - LAB_TALL_FLASK.length;
+  drawArcadeSprite(ctx, LAB_TALL_FLASK, tfx, tfy, 1);
+  drawLabLiquid(ctx, LAB_TALL_FLASK, tfx, tfy, 5, ARCADE_INK[1]);
+  drawLabBubbles(ctx, tfx, tfy + 3, 6, 5, 2, 920, now, 4, ARCADE_INK[2]);
+
+  const tvx = 101;
+  const tvy = bench - LAB_SQUAT_CONE.length;
+  drawArcadeSprite(ctx, LAB_SQUAT_CONE, tvx, tvy, 1);
+  drawLabLiquid(ctx, LAB_SQUAT_CONE, tvx, tvy, 4, ARCADE_INK[1]);
 
   // ---- RIGHT: test-tube rack, receiving vial, side flask ----
   const tr = 116;
@@ -2339,10 +2783,15 @@ function drawLabScene(ctx, state, t, now) {
     ctx.fillStyle = ARCADE_INK[1];
     ctx.fillRect(tx + 1, bench - 3 - lvl, 3, lvl);
     if (i % 2 === 0) drawLabBubbles(ctx, tx, bench - 3 - lvl, 5, lvl, 3, 700, now, i, ARCADE_INK[2]);
+    // Drips now start AT the dropper nozzle above each tube, not three rows
+    // above the rack in open air — that was the unexplained floating object.
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(tx + 1, bench - 26, 3, 4);
+    ctx.fillRect(tx + 2, bench - 22, 1, 2);
     const dp = (now / 1200 + i * 0.3) % 1;
     if (dp < 0.4) {
       ctx.fillStyle = ARCADE_INK[3];
-      ctx.fillRect(tx + 2, bench - 23 + Math.round(dp * 2.5 * 14), 1, 2);
+      ctx.fillRect(tx + 2, bench - 20 + Math.round((dp / 0.4) * 15), 1, 2);
     }
   }
   const vx2 = 148;
@@ -2367,12 +2816,6 @@ function drawLabScene(ctx, state, t, now) {
   }
 }
 
-// ---- SCENE: deep sea diver ------------------------------------------------
-//
-// Almost entirely negative space. The lamp cone is the only thing that
-// reveals anything, so the viewer discovers the seabed at the same moment
-// the diver does — which is the whole reason this is a diver scene and not a
-// submarine scene. Personal, close, and slow until it very suddenly isn't.
 const DIVER_DURATION_MS = 28000;
 
 const DIVER_SPRITE = [
@@ -2880,8 +3323,6 @@ function drawSpyScene(ctx, state, t, now) {
   }
 }
 
-
-
 // ---- SCENE: aquarium ------------------------------------------------------
 //
 // The calm one. No story, no payoff to wait for — the brief is simply "this is
@@ -3061,6 +3502,408 @@ function drawAquariumScene(ctx, state, t, now) {
   }
 }
 
+// ---- SCENE: first-person drive --------------------------------------------
+//
+// The purest living diorama in the pool: the cockpit never moves at all, and
+// every bit of motion comes from the world beyond the glass. The road is
+// drawn with pseudo-3D scanlines — each screen row is a depth, so one
+// curvature value bends the whole road AND slides the roadside furniture
+// without anything being animated individually.
+//
+// PERFECT LOOP: curvature is sin() over exactly two cycles of the duration
+// and the scroll distance over one duration is a whole multiple of the lane
+// -marking period, so at t=duration every dash, pole and bend is exactly
+// where it was at t=0.
+const DRIVE_DURATION_MS = 33000;
+const DRIVE_HORIZON = 22;
+const DRIVE_DASH_PERIOD = 2;
+const DRIVE_SPEED = 0.02;
+
+// -1 hard left .. +1 hard right, returning to 0 at both ends of the loop.
+function driveCurve(t) {
+  const p = t / DRIVE_DURATION_MS;
+  return Math.sin(p * Math.PI * 4) * 0.72 + Math.sin(p * Math.PI * 8) * 0.18;
+}
+
+function drawDriveScene(ctx, state, t, now) {
+  const curve = driveCurve(t);
+  const travel = t * DRIVE_SPEED;
+  const dashBottom = 62;
+
+  // ---- sky + distant hills ----
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 0; i < 12; i++) {
+    const sx = ((i * 61 - curve * 30) % 170 + 170) % 170 - 5;
+    ctx.fillRect(Math.round(sx), 4 + ((i * 17) % 9), 1, 1);
+  }
+  for (let x = 0; x < ARCADE_WIDTH; x++) {
+    const h = 4 + Math.round(Math.sin((x + curve * 26) / 31) * 3 + Math.sin((x + curve * 26) / 13) * 1.4);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(x, DRIVE_HORIZON - h, 1, h);
+  }
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, DRIVE_HORIZON, ARCADE_WIDTH, 1);
+
+  // ---- the road, one scanline per depth ----
+  const centreAt = (d) => 80 + curve * (620 / (d + 6));
+  for (let y = DRIVE_HORIZON + 1; y <= dashBottom; y++) {
+    const d = y - DRIVE_HORIZON;
+    const half = 2 + d * 2.05;
+    const cxr = centreAt(d);
+    // verge + edge lines
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(Math.round(cxr - half), y, 2, 1);
+    ctx.fillRect(Math.round(cxr + half - 1), y, 2, 1);
+    // road surface tone, kept dim so the markings stay the brightest thing
+    if (d % 3 === 0) {
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(Math.round(cxr - half + 2), y, Math.max(1, Math.round(half * 2 - 4)), 1);
+    }
+    // centre dashes: world distance for this row, scrolling toward the viewer
+    const worldZ = 260 / d + travel;
+    if (worldZ % (DRIVE_DASH_PERIOD * 2) < DRIVE_DASH_PERIOD) {
+      ctx.fillStyle = ARCADE_INK[3];
+      const w = Math.max(1, Math.round(d / 9));
+      ctx.fillRect(Math.round(cxr - w / 2), y, w, 1);
+    }
+  }
+
+  // ---- roadside furniture: poles marching past on both shoulders ----
+  for (let i = 0; i < 9; i++) {
+    const z = ((i * 6 - travel) % 54 + 54) % 54 + 2;
+    const d = 260 / z;
+    if (d < 1.5 || d > 42) continue;
+    const y = DRIVE_HORIZON + d;
+    if (y > dashBottom) continue;
+    const half = 2 + d * 2.05;
+    const cxr = centreAt(d);
+    const hgt = Math.max(2, Math.round(d * 0.62));
+    for (const side of [-1, 1]) {
+      const px = Math.round(cxr + side * (half + 3 + d * 0.16));
+      if (px < -4 || px > ARCADE_WIDTH + 4) continue;
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(px, Math.round(y) - hgt, Math.max(1, Math.round(d / 22)), hgt);
+      // reflective marker catching the headlights
+      ctx.fillStyle = d > 12 ? ARCADE_INK[3] : ARCADE_INK[2];
+      ctx.fillRect(px, Math.round(y) - Math.round(hgt * 0.5), Math.max(1, Math.round(d / 20)), 1);
+    }
+  }
+
+  // ---- cockpit: absolutely fixed, the anchor the whole scene reads from ----
+  const dashTop = 44;
+  // A-pillars + roof line
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, 0, 6, dashTop);
+  ctx.fillRect(ARCADE_WIDTH - 6, 0, 6, dashTop);
+  ctx.fillRect(0, 0, ARCADE_WIDTH, 2);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(6, 2, ARCADE_WIDTH - 12, 1);
+
+  // dashboard slab
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, dashTop, ARCADE_WIDTH, ARCADE_HEIGHT - dashTop);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, dashTop, ARCADE_WIDTH, 1);
+
+  // speedometer + tachometer, needles alive but calm
+  for (const [gx, gy, gr, base, swing, rate] of [
+    [26, 54, 8, 0.62, 0.06, 1900],
+    [46, 55, 6, 0.5, 0.09, 1300],
+  ]) {
+    drawArcadeCircle(ctx, gx, gy, gr, ARCADE_INK[2]);
+    for (let i = 0; i <= 5; i++) {
+      const a = Math.PI * (0.82 + (i / 5) * 1.36);
+      ctx.fillStyle = ARCADE_INK[1];
+      ctx.fillRect(Math.round(gx + Math.cos(a) * (gr - 1)), Math.round(gy + Math.sin(a) * (gr - 1)), 1, 1);
+    }
+    const v = base + Math.sin(now / rate) * swing;
+    const a = Math.PI * (0.82 + v * 1.36);
+    drawArcadeLine(ctx, gx, gy, gx + Math.cos(a) * (gr - 2), gy + Math.sin(a) * (gr - 2), ARCADE_INK[3]);
+  }
+  // odometer digits
+  drawArcadeNumber(ctx, 20 + (Math.floor(t / 900) % 80), 8, 50, ARCADE_INK[2]);
+  // indicator lamps
+  for (let i = 0; i < 3; i++) {
+    const on = i === 0 ? Math.floor(now / 700) % 2 === 0 : i === 1;
+    ctx.fillStyle = on ? ARCADE_INK[3] : ARCADE_INK[1];
+    ctx.fillRect(58 + i * 5, 47, 3, 3);
+  }
+
+  // ---- steering wheel: rim + spokes, rotating with the bend ----
+  const wcx = 112;
+  const wcy = 62;
+  const wr = 17;
+  const rot = -curve * 0.5;
+  drawArcadeCircle(ctx, wcx, wcy, wr, ARCADE_INK[3]);
+  drawArcadeCircle(ctx, wcx, wcy, wr - 1, ARCADE_INK[2]);
+  drawArcadeCircle(ctx, wcx, wcy, 3, ARCADE_INK[3]);
+  for (let s = 0; s < 3; s++) {
+    const a = rot + Math.PI + (s * Math.PI * 2) / 3;
+    drawArcadeLine(ctx, wcx + Math.cos(a) * 3, wcy + Math.sin(a) * 3, wcx + Math.cos(a) * (wr - 1), wcy + Math.sin(a) * (wr - 1), ARCADE_INK[2]);
+  }
+  // grip mark, so the rotation is unmistakable
+  ctx.fillStyle = ARCADE_INK[3];
+  ctx.fillRect(Math.round(wcx + Math.cos(rot - Math.PI / 2) * (wr - 2)) - 1, Math.round(wcy + Math.sin(rot - Math.PI / 2) * (wr - 2)) - 1, 3, 3);
+}
+
+// ---- SCENE: control room --------------------------------------------------
+//
+// A wall of analog instrumentation that never moves; everything interesting
+// happens inside the gauges. Grouped deliberately — meters left, scope
+// centre, status column and lever right — so it reads as a console rather
+// than a scatter of shapes.
+const CTRL_DURATION_MS = 31000;
+
+// One escalation, competently handled: a level creeps up, the warning lamp
+// lights, the trace goes unstable, an operator reaches in and corrects it,
+// everything settles and the status column goes fully lit.
+function ctrlAlarm(t) {
+  if (t < 9000) return 0;
+  if (t < 13000) return (t - 9000) / 4000;
+  if (t < 17500) return 1;
+  if (t < 20500) return 1 - (t - 17500) / 3000;
+  return 0;
+}
+
+function drawControlScene(ctx, state, t, now) {
+  const alarm = ctrlAlarm(t);
+  const settled = t > 21500;
+
+  // console surface + panel frame
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, 0, ARCADE_WIDTH, ARCADE_HEIGHT);
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(2, 2, ARCADE_WIDTH - 4, 50);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(2, 2, ARCADE_WIDTH - 4, 1);
+  ctx.fillRect(2, 51, ARCADE_WIDTH - 4, 1);
+  ctx.fillRect(2, 2, 1, 50);
+  ctx.fillRect(ARCADE_WIDTH - 3, 2, 1, 50);
+  // desk lip
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(0, 54, ARCADE_WIDTH, 1);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(0, 58, ARCADE_WIDTH, 1);
+
+  // ---- LEFT: three round gauges, the middle one is the one that climbs ----
+  for (let i = 0; i < 3; i++) {
+    const gx = 15 + i * 22;
+    const gy = 16;
+    drawArcadeCircle(ctx, gx, gy, 10, ARCADE_INK[2]);
+    for (let k = 0; k <= 6; k++) {
+      const a = Math.PI * (0.8 + (k / 6) * 1.4);
+      ctx.fillStyle = k > 4 ? ARCADE_INK[3] : ARCADE_INK[1];
+      ctx.fillRect(Math.round(gx + Math.cos(a) * 8), Math.round(gy + Math.sin(a) * 8), 1, 1);
+    }
+    let v = 0.32 + Math.sin(now / (1400 + i * 500) + i) * 0.1;
+    if (i === 1) v = 0.32 + alarm * 0.6;
+    const a = Math.PI * (0.8 + v * 1.4);
+    drawArcadeLine(ctx, gx, gy, gx + Math.cos(a) * 7, gy + Math.sin(a) * 7, i === 1 && alarm > 0.5 ? ARCADE_INK[3] : ARCADE_INK[2]);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(gx - 1, gy - 1, 3, 3);
+  }
+
+  // ---- LEFT-LOWER: bar meters fluctuating ----
+  for (let i = 0; i < 7; i++) {
+    const bx = 8 + i * 6;
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(bx, 32, 3, 14);
+    const h = Math.round((0.35 + Math.abs(Math.sin(now / (700 + i * 130) + i)) * 0.45 + alarm * 0.2) * 14);
+    ctx.fillStyle = h > 11 ? ARCADE_INK[3] : ARCADE_INK[2];
+    ctx.fillRect(bx, 46 - h, 3, h);
+  }
+
+  // ---- CENTRE: oscilloscope ----
+  const ox = 84;
+  const oy = 8;
+  const ow = 44;
+  const oh = 26;
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(ox, oy, ow, 1);
+  ctx.fillRect(ox, oy + oh, ow, 1);
+  ctx.fillRect(ox, oy, 1, oh);
+  ctx.fillRect(ox + ow - 1, oy, 1, oh);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let x = ox + 6; x < ox + ow; x += 8) ctx.fillRect(x, oy + 2, 1, oh - 4);
+  for (let y = oy + 6; y < oy + oh; y += 7) ctx.fillRect(ox + 2, y, ow - 4, 1);
+  // the trace: a clean sine that goes ragged under alarm
+  let prevY = null;
+  for (let x = 2; x < ow - 2; x++) {
+    const ph = (x + now / 26) / 7;
+    const noise = alarm * (Math.sin(ph * 5.3) * 4 + Math.sin(ph * 11.7) * 3);
+    const yy = oy + oh / 2 + Math.sin(ph) * (5 + alarm * 3) + noise;
+    const cy2 = Math.max(oy + 2, Math.min(oy + oh - 2, Math.round(yy)));
+    ctx.fillStyle = alarm > 0.5 ? ARCADE_INK[3] : ARCADE_INK[2];
+    if (prevY !== null) {
+      const lo = Math.min(prevY, cy2);
+      const hi = Math.max(prevY, cy2);
+      ctx.fillRect(ox + x, lo, 1, hi - lo + 1);
+    } else ctx.fillRect(ox + x, cy2, 1, 1);
+    prevY = cy2;
+  }
+
+  // ---- RIGHT: warning lamp, status column, rotary selector, lever ----
+  const warn = alarm > 0.35 && Math.floor(now / 190) % 2 === 0;
+  ctx.fillStyle = warn ? ARCADE_INK[3] : ARCADE_INK[1];
+  ctx.fillRect(134, 8, 12, 7);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(134, 8, 12, 1);
+  ctx.fillRect(134, 14, 12, 1);
+
+  // status column — all lit once the system is settled, the small payoff
+  for (let i = 0; i < 5; i++) {
+    const lit = settled || i < 3 - Math.round(alarm * 2);
+    ctx.fillStyle = lit ? ARCADE_INK[3] : ARCADE_INK[1];
+    ctx.fillRect(134, 19 + i * 5, 4, 3);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(140, 19 + i * 5, 6, 3);
+  }
+
+  // rotary selector, clicking round one step at a time
+  const sel = 20 + Math.floor(t / 3400) % 6;
+  drawArcadeCircle(ctx, 70, 42, 7, ARCADE_INK[2]);
+  const sa = (sel % 6) * (Math.PI / 3);
+  drawArcadeLine(ctx, 70, 42, 70 + Math.cos(sa) * 5, 42 + Math.sin(sa) * 5, ARCADE_INK[3]);
+
+  // toggle switches, one of which flips mid-scene
+  for (let i = 0; i < 6; i++) {
+    const sx = 88 + i * 8;
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(sx, 38, 5, 9);
+    const up = i === 2 ? t < 17800 : i % 2 === 0;
+    ctx.fillStyle = ARCADE_INK[3];
+    ctx.fillRect(sx + 1, up ? 39 : 43, 3, 3);
+  }
+
+  // ---- the operator: one hand, used twice and never more ----
+  const reach = t > 16400 && t < 19200;
+  if (reach) {
+    const p = arcadeClamp01((t - 16400) / 700) - arcadeClamp01((t - 18200) / 800);
+    const hy = 62 - Math.round(p * 22);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(100, hy, 7, 64 - hy);
+    ctx.fillStyle = ARCADE_INK[1];
+    ctx.fillRect(100, hy, 7, 1);
+    ctx.fillStyle = ARCADE_INK[2];
+    ctx.fillRect(97, hy, 5, 4);
+  }
+}
+
+// ---- SCENE: tape machine --------------------------------------------------
+// A front-facing hybrid of a reel-to-reel and a cassette deck. Eight whole
+// reel turns in each direction make both reverse points and the loop seam
+// mechanically continuous rather than hiding a reset.
+const TAPE_DURATION_MS = 34000;
+
+function tapePlayback(t) {
+  if (t < 15800) return { position: t / 15800, direction: 1, running: 1 };
+  if (t < 17000) return { position: 1, direction: 1, running: 0 };
+  if (t < 32800) return { position: 1 - (t - 17000) / 15800, direction: -1, running: 1 };
+  return { position: 0, direction: -1, running: 0 };
+}
+
+function drawTapeReel(ctx, cx, cy, packRadius, angle, markerOffset) {
+  drawArcadeCircle(ctx, cx, cy, 17, ARCADE_INK[2]);
+  drawArcadeCircle(ctx, cx, cy, 15, ARCADE_INK[1]);
+  drawArcadeCircle(ctx, cx, cy, packRadius, ARCADE_INK[2]);
+  drawArcadeCircle(ctx, cx, cy, 4, ARCADE_INK[3]);
+  // Five spokes plus one offset bright stud make even a small rotation clear.
+  for (let i = 0; i < 5; i++) {
+    const a = angle + (i * Math.PI * 2) / 5;
+    drawArcadeLine(ctx, cx + Math.cos(a) * 5, cy + Math.sin(a) * 5,
+      cx + Math.cos(a) * 14, cy + Math.sin(a) * 14, i === 0 ? ARCADE_INK[3] : ARCADE_INK[2]);
+  }
+  const ma = angle + markerOffset;
+  ctx.fillStyle = ARCADE_INK[3];
+  ctx.fillRect(Math.round(cx + Math.cos(ma) * 11) - 1, Math.round(cy + Math.sin(ma) * 11) - 1, 2, 2);
+}
+
+function drawTapeVu(ctx, left, top, value) {
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(left, top, 39, 1);
+  ctx.fillRect(left, top + 11, 39, 1);
+  ctx.fillRect(left, top, 1, 12);
+  ctx.fillRect(left + 38, top, 1, 12);
+  ctx.fillStyle = ARCADE_INK[1];
+  for (let i = 0; i < 6; i++) ctx.fillRect(left + 5 + i * 6, top + 2, 1, 2 + (i > 3 ? 1 : 0));
+  const pivotX = left + 19;
+  const pivotY = top + 10;
+  const a = Math.PI * (1.15 + value * 0.7);
+  drawArcadeLine(ctx, pivotX, pivotY, pivotX + Math.cos(a) * 14, pivotY + Math.sin(a) * 14, ARCADE_INK[3]);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(pivotX - 1, pivotY - 1, 3, 2);
+}
+
+function drawTapeMachineScene(ctx, state, t) {
+  const play = tapePlayback(t);
+  const turns = play.position * Math.PI * 16;
+  const leftPack = Math.round(12 - play.position * 5);
+  const rightPack = Math.round(7 + play.position * 5);
+
+  // Full-frame faceplate, screws and separator rails establish one machine.
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(1, 1, 158, 62);
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(3, 3, 154, 58);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(3, 38, 154, 1);
+  for (const [x, y] of [[5, 5], [154, 5], [5, 58], [154, 58]]) drawArcadeCircle(ctx, x, y, 1, ARCADE_INK[2]);
+
+  drawTapeReel(ctx, 48, 20, leftPack, turns, 0.35);
+  drawTapeReel(ctx, 109, 20, rightPack, turns, 1.55);
+
+  // Tape leaves each pack tangentially, passes over guides and across the
+  // head/capstan block. Every segment terminates on a visible mechanism.
+  drawArcadeLine(ctx, 48, 20 + leftPack, 63, 35, ARCADE_INK[3]);
+  drawArcadeCircle(ctx, 65, 35, 2, ARCADE_INK[2]);
+  drawArcadeLine(ctx, 67, 35, 75, 37, ARCADE_INK[3]);
+  ctx.fillStyle = ARCADE_INK[2];
+  ctx.fillRect(75, 34, 18, 5);
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(79, 34, 3, 3);
+  ctx.fillRect(86, 34, 3, 3);
+  drawArcadeCircle(ctx, 94, 35, 2, ARCADE_INK[2]);
+  drawArcadeLine(ctx, 93, 37, 107, 20 + rightPack, ARCADE_INK[3]);
+  ctx.fillStyle = ARCADE_INK[3];
+  ctx.fillRect(82, 36, 4, 1);
+
+  const waking = play.running ? Math.min(1, t < 17000 ? t / 450 : (t - 17000) / 450) : 0;
+  const leftVu = waking * arcadeClamp01(0.38 + Math.sin(t / 510) * 0.16 + Math.sin(t / 137) * 0.1 + (Math.sin(t / 2400) > 0.88 ? 0.22 : 0));
+  const rightVu = waking * arcadeClamp01(0.44 + Math.sin(t / 670 + 1.7) * 0.14 + Math.sin(t / 181) * 0.08 + (Math.sin(t / 3100 + 2) > 0.91 ? 0.2 : 0));
+  drawTapeVu(ctx, 7, 42, leftVu);
+  drawTapeVu(ctx, 49, 42, rightVu);
+
+  // Four-digit mechanical counter tracks tape position in both directions.
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(93, 42, 23, 10);
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(95, 44, 19, 6);
+  const counter = 372 + Math.floor(play.position * 13);
+  drawArcadeNumber(ctx, String(counter).padStart(4, "0"), 97, 44, ARCADE_INK[3]);
+
+  // Direction, record lamp and cassette-style transport bank.
+  ctx.fillStyle = play.direction > 0 ? ARCADE_INK[3] : ARCADE_INK[1];
+  drawArcadeLine(ctx, 121, 44, 126, 47, ctx.fillStyle);
+  drawArcadeLine(ctx, 121, 50, 126, 47, ctx.fillStyle);
+  ctx.fillStyle = play.direction < 0 ? ARCADE_INK[3] : ARCADE_INK[1];
+  drawArcadeLine(ctx, 133, 44, 128, 47, ctx.fillStyle);
+  drawArcadeLine(ctx, 133, 50, 128, 47, ctx.fillStyle);
+  ctx.fillStyle = ARCADE_INK[1];
+  ctx.fillRect(139, 43, 4, 4);
+  ctx.fillStyle = play.running ? ARCADE_INK[3] : ARCADE_INK[1];
+  ctx.fillRect(146, 43, 7, 4);
+  for (let i = 0; i < 5; i++) {
+    ctx.fillStyle = i === 1 && play.running ? ARCADE_INK[3] : ARCADE_INK[2];
+    ctx.fillRect(119 + i * 7, 54, 5, 5);
+  }
+  ctx.fillStyle = ARCADE_BG;
+  ctx.fillRect(120, 56, 2, 1); // rewind
+  ctx.fillRect(127, 55, 1, 3); // play
+  ctx.fillRect(134, 55, 3, 3); // stop
+  ctx.fillRect(142, 56, 2, 1); // fast-forward
+  drawArcadeCircle(ctx, 150, 56, 1, play.running ? ARCADE_INK[1] : ARCADE_INK[3]); // record/click lamp
+}
+
 // ---- the pool -------------------------------------------------------------
 //
 // A scene is a plain object. `create`/`update` are optional — scenes whose
@@ -3107,6 +3950,14 @@ const ARCADE_SCENES = [
     draw: drawLabScene,
   },
   {
+    name: "tape-machine",
+    durationMs: TAPE_DURATION_MS,
+    // Both tape packs are visibly unequal, meters active and PLAY lit.
+    stillAtMs: 11200,
+    fade: 1,
+    draw: drawTapeMachineScene,
+  },
+  {
     name: "deep-sea-diver",
     durationMs: DIVER_DURATION_MS,
     stillAtMs: 22200,
@@ -3130,6 +3981,20 @@ const ARCADE_SCENES = [
     fade: 0.9,
     draw: drawAquariumScene,
   },
+  {
+    name: "drive",
+    durationMs: DRIVE_DURATION_MS,
+    stillAtMs: 8000,
+    fade: 1,
+    draw: drawDriveScene,
+  },
+  {
+    name: "control-room",
+    durationMs: CTRL_DURATION_MS,
+    stillAtMs: 15000,
+    fade: 1,
+    draw: drawControlScene,
+  },
 ];
 
 // ---- animation controller -------------------------------------------------
@@ -3150,26 +4015,32 @@ let arcadeLastRender = 0;
 // loop wrap can ever re-pick.
 let arcadeCurrentScene = null;
 let arcadePreviousScene = null;
+// Safe startup default while IndexedDB preferences load asynchronously.
+let arcadeAnimationOrder = DEFAULT_ARCADE_ANIMATION_ORDER;
+let arcadeShuffleLoopVisitedScenes = [];
 
-// [V2-POLISH / MICRO-ARCADE-TEST-SEQUENTIAL]
-// TESTING SWITCH — flip to "random" to restore production behavior.
-// "random"     — ship behavior: uniform pick excluding the previous scene.
-// "sequential" — walks the pool in ARCADE_SCENES order, one step per load
-//                session, so every scene can be reviewed without reloading
-//                until chance offers it.
-// This is the ONLY thing that differs between the two modes. Both funnel
-// through the same pickArcadeScene() call site, so the lifecycle, the
-// same-scene looping and the rAF ownership are untouched by the choice.
-const MICRO_ARCADE_SELECTION_MODE = "sequential";
-const MICRO_ARCADE_TEST_INDEX_KEY = "bg-micro-arcade-test-index";
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-9]
+// Safe default while IndexedDB preferences load asynchronously — mirrors
+// DEFAULT_STARTUP in app-preferences.js. `autoFillPanel` lives per-context
+// here too, since N6-9 — see that file's own breadcrumb for why it moved
+// beside the policy it acts on instead of a separate section.
+let currentStartupPreferences = {
+  browser: { policy: "last-used", eligibleLibraryIds: [], autoFillPanel: false },
+  streamloop: { policy: "last-used", eligibleLibraryIds: [], autoFillPanel: false },
+};
+
+// [PLAYBACK / MICRO-ARCADE / ANIMATION-ORDER]
+// Keep the existing key so sequential review resumes at the same scene across
+// preference and app upgrades.
+const MICRO_ARCADE_INDEX_KEY = "bg-micro-arcade-test-index";
 
 // sessionStorage, deliberately: it is scoped to the tab, dies with it, and
 // needs no schema, migration or cleanup. Wrapped because storage access
-// throws outright in some privacy modes and sandboxed frames, and a testing
-// aid must never be able to break a real load.
+// throws outright in some privacy modes and sandboxed frames, and preference
+// storage must never be able to break a real load.
 function readArcadeTestIndex() {
   try {
-    const raw = window.sessionStorage.getItem(MICRO_ARCADE_TEST_INDEX_KEY);
+    const raw = window.sessionStorage.getItem(MICRO_ARCADE_INDEX_KEY);
     const parsed = Number.parseInt(raw, 10);
     return Number.isInteger(parsed) && parsed >= 0 ? parsed % ARCADE_SCENES.length : 0;
   } catch (err) {
@@ -3179,28 +4050,23 @@ function readArcadeTestIndex() {
 
 function writeArcadeTestIndex(index) {
   try {
-    window.sessionStorage.setItem(MICRO_ARCADE_TEST_INDEX_KEY, String(index));
+    window.sessionStorage.setItem(MICRO_ARCADE_INDEX_KEY, String(index));
   } catch (err) {
-    /* testing aid only — a storage failure must not affect the load */
+    /* a storage failure must not affect the load */
   }
 }
 
-// The production selector, kept intact and reachable.
-function pickArcadeSceneRandom() {
-  const candidates =
-    ARCADE_SCENES.length > 1 ? ARCADE_SCENES.filter((scene) => scene !== arcadePreviousScene) : ARCADE_SCENES;
-  return candidates[Math.floor(Math.random() * candidates.length)];
-}
-
-function pickArcadeSceneSequential() {
-  const index = readArcadeTestIndex();
-  writeArcadeTestIndex((index + 1) % ARCADE_SCENES.length);
-  return ARCADE_SCENES[index];
-}
-
 function pickArcadeScene() {
-  const chosen =
-    MICRO_ARCADE_SELECTION_MODE === "sequential" ? pickArcadeSceneSequential() : pickArcadeSceneRandom();
+  const selection = selectArcadeScene({
+    scenes: ARCADE_SCENES,
+    order: arcadeAnimationOrder,
+    previousScene: arcadePreviousScene,
+    visitedScenes: arcadeShuffleLoopVisitedScenes,
+    readIndex: readArcadeTestIndex,
+    writeIndex: writeArcadeTestIndex,
+  });
+  const chosen = selection.scene;
+  arcadeShuffleLoopVisitedScenes = selection.visitedScenes;
   arcadeCurrentScene = chosen;
   arcadePreviousScene = chosen;
   return chosen;
@@ -3251,6 +4117,7 @@ function renderArcadeFrame(now) {
 // Reusing the real simulation means the still is a genuine frame of that
 // scene rather than a separate asset that could drift from it.
 function renderArcadeStill(scene) {
+  if (scene.onSessionStart) scene.onSessionStart();
   arcadeState = scene.create ? scene.create() : null;
   if (scene.update) {
     for (let t = 0; t <= scene.stillAtMs; t += ARCADE_FRAME_MS) {
@@ -3269,6 +4136,10 @@ function startArcadeAnimation() {
   }
 
   const scene = pickArcadeScene();
+  // [V2-POLISH] Per-SESSION setup, distinct from create(): the controller
+  // calls create() again on every loop wrap, so anything that must remain
+  // fixed for the whole load belongs here instead.
+  if (scene.onSessionStart) scene.onSessionStart();
   arcadeState = scene.create ? scene.create() : null;
   arcadeLastLoopT = -1;
   arcadeLastRender = 0;
@@ -3556,13 +4427,288 @@ async function rebuildProjectionFromStorage(reason) {
   }
 }
 
+async function applyProvenParentCurationForLoad({ rootId, scope }) {
+  if (!rootId || !scope || scope.rootId !== rootId) return null;
+  if (!activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
+
+  try {
+    const roots = await listRoots();
+    const sameScopeRoots = roots.filter((root) => root && root.scopeId === scope.scopeId);
+    const libraries = (await Promise.all(sameScopeRoots.map((root) => getLibraryById(root.rootId)))).filter(Boolean);
+
+    const resolveCandidate = () => resolveProvenParentCuration({
+      currentRootId: rootId,
+      currentRoot: sameScopeRoots.find((root) => root.rootId === rootId) || null,
+      roots: sameScopeRoots,
+      libraries,
+      associations: profile.getAssociations(),
+      knownProfileIds: profile.listProfiles().map((entry) => entry.id),
+    });
+
+    let candidate = resolveCandidate();
+    if (!candidate) return null;
+
+    // Re-read the current and source rows immediately before the write. A
+    // shared fact or explicit folder choice that arrived while evidence was
+    // being enumerated restores P1/P3 precedence and cancels inheritance.
+    const refreshed = await Promise.all(libraries.map((record) => getLibraryById(record.id)));
+    libraries.splice(0, libraries.length, ...refreshed.filter(Boolean));
+    candidate = resolveCandidate();
+    if (!candidate || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
+
+    const updated = await associateThroughSyncV2(rootId, candidate.profileId);
+    if (!updated || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
+    activeLibraryRecord = updated;
+    establishAmbientProfileContext(activeLibraryRecord);
+
+    if (profile.getProfileId() !== candidate.profileId) {
+      const switched = await profile.switchProfile(candidate.profileId);
+      if (!switched && profile.getProfileId() !== candidate.profileId) return null;
+    }
+
+    return {
+      ...candidate,
+      profileName: getProfileNameById(candidate.profileId) || profile.getProfileName(),
+    };
+  } catch (error) {
+    // Inheritance is convenience, never a load requirement. Any unavailable
+    // evidence or persistence failure declines to conclude and leaves the
+    // ordinary unresolved flow intact.
+    console.warn("[NORTH-STAR / N3] Could not apply proven parent Curation inheritance.", error);
+    return null;
+  }
+}
+
+async function resolveReverseCurationSuggestionForLoad({
+  rootId,
+  scopeId,
+  deferredScopeMerges = [],
+}) {
+  if (!rootId || !scopeId) return null;
+  const roots = (await listRoots()).filter((root) => root && root.scopeId === scopeId);
+  const libraries = (await Promise.all(roots.map((root) => getLibraryById(root.rootId)))).filter(Boolean);
+  const candidate = resolveReverseCurationSuggestion({
+    currentRootId: rootId,
+    currentRoot: roots.find((root) => root.rootId === rootId) || null,
+    roots,
+    libraries,
+    associations: profile.getAssociations(),
+    knownProfileIds: profile.listProfiles().map((entry) => entry.id),
+    deferredScopeMerges,
+  });
+  if (!candidate) return null;
+  return Object.freeze({
+    ...candidate,
+    scopeId,
+    profileName: getProfileNameById(candidate.profileId),
+  });
+}
+
+function clearReverseCurationSuggestion() {
+  pendingReverseCurationSuggestion = null;
+  reverseCurationActionPending = false;
+  reverseCurationOfferResult.textContent = "";
+  renderReverseCurationSuggestion();
+}
+
+function armReverseCurationSuggestion(candidate, loadToken) {
+  if (!candidate
+    || libraryLoadGeneration !== loadToken
+    || !activeLibraryRecord
+    || activeLibraryRecord.id !== candidate.currentRootId) return false;
+  pendingReverseCurationSuggestion = Object.freeze({ ...candidate, loadToken });
+  reverseCurationOfferResult.textContent = "";
+  renderReverseCurationSuggestion();
+  return true;
+}
+
+function renderReverseCurationSuggestion() {
+  const suggestion = pendingReverseCurationSuggestion;
+  const visible = Boolean(suggestion
+    && suggestion.loadToken === libraryLoadGeneration
+    && activeLibraryRecord?.id === suggestion.currentRootId
+    && suggestion.profileName);
+  reverseCurationOffer.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  const subject = suggestion.descendantCount === 1 ? "A folder" : "Folders";
+  reverseCurationOfferText.textContent =
+    `${subject} inside this one use${suggestion.descendantCount === 1 ? "s" : ""} ${suggestion.profileName}. ` +
+    "Use that Curation here too?";
+  reverseCurationOfferYes.textContent = `Use ${suggestion.profileName}`;
+  reverseCurationOfferYes.disabled = reverseCurationActionPending;
+  reverseCurationOfferNo.disabled = reverseCurationActionPending;
+}
+
+async function writeReverseCurationAssociation(rootId, profileId) {
+  if (!activeLibraryRecord || activeLibraryRecord.id !== rootId) return false;
+  const updated = await associateThroughSyncV2(rootId, profileId);
+  if (!updated || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return false;
+  activeLibraryRecord = updated;
+  establishAmbientProfileContext(activeLibraryRecord);
+  syncAssociateButtonVisibility();
+  await renderRecentLibraries();
+  return true;
+}
+
+async function handleReverseCurationSuggestionAction(kind) {
+  if (reverseCurationActionPending || !pendingReverseCurationSuggestion) return;
+  const pending = pendingReverseCurationSuggestion;
+  reverseCurationActionPending = true;
+  reverseCurationOfferResult.textContent = "";
+  renderReverseCurationSuggestion();
+  try {
+    const result = await performReverseCurationSuggestionAction({
+      kind,
+      pendingSuggestion: pending,
+      getCurrentRootId: () => activeLibraryRecord?.id || null,
+      resolveCurrentSuggestion: () => resolveReverseCurationSuggestionForLoad({
+        rootId: pending.currentRootId,
+        scopeId: pending.scopeId,
+      }),
+      writeAssociation: (profileId) => writeReverseCurationAssociation(pending.currentRootId, profileId),
+    });
+
+    if (result.status === "applied") {
+      pendingReverseCurationSuggestion = null;
+      reverseCurationOfferResult.textContent = `Now remembered with ${pending.profileName}.`;
+    } else if (result.status === "declined" || result.status === "stale") {
+      // Ephemeral per-load dismissal. No re-evaluation path exists in this
+      // context, so NO cannot immediately nag again.
+      pendingReverseCurationSuggestion = null;
+    } else if (result.status === "write-failed") {
+      reverseCurationOfferResult.textContent = "Could not save that Curation. Try again.";
+    }
+  } finally {
+    reverseCurationActionPending = false;
+    renderReverseCurationSuggestion();
+  }
+}
+
+function resolveDeviceAwareMediaQuestionForLoad({ rootId, currentSample }) {
+  if (profileSync.getStatus().mode !== "v3" || !rootId || !currentSample) return null;
+  return resolveDeviceAwareMediaQuestion({
+    currentRootId: rootId,
+    currentLibrary: activeLibraryRecord,
+    currentSample,
+    structure: profile.getStructure(),
+    libraries: profile.getLibraries(),
+    associations: profile.getAssociations(),
+    knownProfileIds: profile.listProfiles().map((entry) => entry.id),
+    ownDeviceId: profile.getDeviceId(),
+  });
+}
+
+function clearDeviceAwareMediaQuestion() {
+  pendingDeviceAwareMediaQuestion = null;
+  deviceAwareMediaActionPending = false;
+  deviceAwareMediaQuestionResult.textContent = "";
+  renderDeviceAwareMediaQuestion();
+}
+
+function armDeviceAwareMediaQuestion(candidate, loadToken, currentSample) {
+  if (!candidate
+    || libraryLoadGeneration !== loadToken
+    || activeLibraryRecord?.id !== candidate.currentRootId) return false;
+  // Device names present evidence that already exists; they never participate
+  // in candidate selection.
+  const deviceName = profileSync.resolveDeviceName(candidate.sourceDeviceId);
+  if (!deviceName) return false;
+  pendingDeviceAwareMediaQuestion = Object.freeze({ ...candidate, deviceName, loadToken, currentSample });
+  deviceAwareMediaQuestionResult.textContent = "";
+  renderDeviceAwareMediaQuestion();
+  return true;
+}
+
+function renderDeviceAwareMediaQuestion() {
+  const question = pendingDeviceAwareMediaQuestion;
+  const visible = Boolean(question
+    && question.loadToken === libraryLoadGeneration
+    && activeLibraryRecord?.id === question.currentRootId
+    && question.deviceName);
+  deviceAwareMediaQuestion.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  deviceAwareMediaQuestionText.textContent = `Is this the same media you use on ${question.deviceName}?`;
+  deviceAwareMediaQuestionYes.disabled = deviceAwareMediaActionPending;
+  deviceAwareMediaQuestionNo.disabled = deviceAwareMediaActionPending;
+}
+
+async function linkDeviceAwareMediaCandidate(localRootId, sharedLibraryId) {
+  if (activeLibraryRecord?.id !== localRootId) return null;
+  const result = await profile.linkLocalLibraryToShared(localRootId, sharedLibraryId);
+  if (!result || result.ok === false) return result;
+  const refreshed = await getLibraryById(localRootId);
+  if (!refreshed || refreshed.libraryId !== sharedLibraryId || activeLibraryRecord?.id !== localRootId) return null;
+  activeLibraryRecord = refreshed;
+  associationWriteSuppression.setLoadedLibrary(activeLibraryRecord);
+  establishAmbientProfileContext(activeLibraryRecord);
+  syncAssociateButtonVisibility();
+  await renderRecentLibraries();
+  return result;
+}
+
+async function handleDeviceAwareMediaQuestionAction(kind) {
+  if (deviceAwareMediaActionPending || !pendingDeviceAwareMediaQuestion) return;
+  const pending = pendingDeviceAwareMediaQuestion;
+  deviceAwareMediaActionPending = true;
+  deviceAwareMediaQuestionResult.textContent = "";
+  renderDeviceAwareMediaQuestion();
+  try {
+    const result = await performDeviceAwareMediaQuestionAction({
+      kind,
+      pendingQuestion: pending,
+      getCurrentRootId: () => activeLibraryRecord?.id || null,
+      resolveCurrentQuestion: () => resolveDeviceAwareMediaQuestionForLoad({
+        rootId: pending.currentRootId,
+        currentSample: pending.currentSample,
+      }),
+      linkLocalLibrary: (localRootId, sharedLibraryId) =>
+        linkDeviceAwareMediaCandidate(localRootId, sharedLibraryId),
+    });
+    if (result.status === "linked") {
+      pendingDeviceAwareMediaQuestion = null;
+      if (result.profileId && profile.getProfileId() !== result.profileId) {
+        await profile.switchProfile(result.profileId);
+      }
+      deviceAwareMediaQuestionResult.textContent = "Got it — this media will use the same Curation.";
+    } else if (result.status === "declined" || result.status === "stale") {
+      // Retiring the load-scoped context prevents an immediate repeat. NO
+      // writes no identity, association, Curation, or evidence state.
+      pendingDeviceAwareMediaQuestion = null;
+    } else if (result.status === "claimed") {
+      deviceAwareMediaQuestionResult.textContent = "That media is already connected to another folder on this device.";
+    } else {
+      deviceAwareMediaQuestionResult.textContent = "Could not remember that choice. Try again.";
+    }
+  } finally {
+    deviceAwareMediaActionPending = false;
+    renderDeviceAwareMediaQuestion();
+  }
+}
+
+async function recordPortableStructureForLoad(localLibraryId, items) {
+  // N5 belongs only to SyncV3. Keeping the mode gate here prevents a V1/V2
+  // transport from ever receiving a replica key it does not serialize.
+  if (profileSync.getStatus().mode !== "v3" || !localLibraryId || !Array.isArray(items)) return null;
+  const sample = buildPortableStructureSample(items);
+  return profile.recordLibraryStructure(localLibraryId, sample);
+}
+
 /**
  * Resolves the media scope structurally, then builds this load's alias index.
  *
  * Returns { scope, index } or null. Never throws: every failure degrades to
  * today's exact-path behaviour rather than failing the media load.
  */
-async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, complete, rootName = null }) {
+async function prepareMediaIdentityForLoad({
+  rootId,
+  handle,
+  sourceKind,
+  items,
+  complete,
+  rootName = null,
+  loadTimePolicyDeadlineAt = Number.POSITIVE_INFINITY,
+}) {
   let knownRootHandles = [];
   if (handle) {
     try {
@@ -3584,6 +4730,39 @@ async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, 
   if (scope.action !== "existing") {
     announceMediaIdentityChange(MEDIA_IDENTITY_MESSAGE_KINDS.SCOPE_CHANGED, scope.scopeId);
   }
+
+  // [NORTH-STAR / N3 / PROVEN-PARENT-INHERITANCE]
+  // MEDIA-ID has finished observing here; policy reads its durable result from
+  // above the evidence layer. The write makes inheritance an ordinary folder
+  // association, so this path becomes unreachable on every future load unless
+  // the customer explicitly changes it.
+  const inheritedCuration = sourceKind === "fsa" && Date.now() <= loadTimePolicyDeadlineAt
+    ? await applyProvenParentCurationForLoad({ rootId, scope })
+    : null;
+
+  // [NORTH-STAR / N4 / REVERSE-SUGGESTION]
+  // Upward evidence may prepare a question only. There is intentionally no
+  // association writer on this path; YES is the sole write boundary below.
+  const reverseSuggestion = sourceKind === "fsa"
+    && !inheritedCuration
+    && Date.now() <= loadTimePolicyDeadlineAt
+    ? await resolveReverseCurationSuggestionForLoad({
+        rootId,
+        scopeId: scope.scopeId,
+        deferredScopeMerges: scope.diagnostics?.deferredScopeMerges || [],
+      })
+    : null;
+
+  // [NORTH-STAR / N2 / DEVICE-AWARE-HUMAN-QUESTION]
+  // A unique N5 match licenses only a proposal. Same-device structural policy
+  // above gets first refusal, and candidate production has no write seam.
+  const portableCurrentSample = sourceKind === "fsa" ? buildPortableStructureSample(items) : null;
+  const deviceAwareQuestion = sourceKind === "fsa"
+    && !inheritedCuration
+    && !reverseSuggestion
+    && Date.now() <= loadTimePolicyDeadlineAt
+    ? resolveDeviceAwareMediaQuestionForLoad({ rootId, currentSample: portableCurrentSample })
+    : null;
 
   // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
   // [WHY: `factKeys` is a CALLBACK, not a captured array, and `profileId` is
@@ -3629,7 +4808,7 @@ async function prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, 
       `${describeProjection(index)}`
   );
 
-  return { scope, index };
+  return { scope, index, inheritedCuration, reverseSuggestion, deviceAwareQuestion, portableCurrentSample };
 }
 
 // [MEDIA-ID / STAGE-02 / BP-FAIL-01]
@@ -3751,7 +4930,18 @@ function beginMediaIdentityForLoad({ rootId, handle, sourceKind, items, rootName
 
   if (!rootId || !Array.isArray(items) || !items.length) return Promise.resolve(null);
 
-  const ready = prepareMediaIdentityForLoad({ rootId, handle, sourceKind, items, complete, rootName }).catch((error) => {
+  const ready = prepareMediaIdentityForLoad({
+    rootId,
+    handle,
+    sourceKind,
+    items,
+    complete,
+    rootName,
+    // A slow rebase may finish after path-exact rendering has already been
+    // released. N3 declines on that load rather than switching Curations in a
+    // live session; the durable proof is available immediately next load.
+    loadTimePolicyDeadlineAt: Date.now() + PROJECTION_FIRST_RENDER_BUDGET_MS,
+  }).catch((error) => {
     console.warn("[MEDIA-ID] Could not prepare media identity. Path-exact behaviour is unaffected.", error);
     return null;
   });
@@ -3772,7 +4962,7 @@ function beginMediaIdentityForLoad({ rootId, handle, sourceKind, items, rootName
  * returns. Never rejects.
  */
 async function applyProjectionWithinBudget(ready) {
-  if (!ready) return;
+  if (!ready) return null;
 
   let settled = false;
   let statusTimer = null;
@@ -3797,10 +4987,11 @@ async function applyProjectionWithinBudget(ready) {
     ready.then((prepared) => {
       if (prepared && prepared.index) profileView.setAliasIndex(prepared.index);
     });
-    return;
+    return null;
   }
 
   if (outcome.value && outcome.value.index) profileView.setAliasIndex(outcome.value.index);
+  return outcome.value || null;
 }
 
 // ---- [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING] --------------------------
@@ -3859,6 +5050,9 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   if (!total || isLoadingFiles) return;
 
   isLoadingFiles = true;
+  const loadToken = ++libraryLoadGeneration;
+  clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] A fresh attempt
   // clears any failure the PREVIOUS attempt left showing.
   lastMobileLoadFailed = false;
@@ -3887,11 +5081,16 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
   activeLibraryRecord = null;
+  associationWriteSuppression.setLoadedLibrary(null);
+  ambientProfileObserver.clearContext();
+  renderAmbientProfileOffer();
+  activeLibraryDisplayName = rootName || (isFolderPick ? "Loaded Media Folder" : "Selected files");
   currentSourceKind = "legacy";
+  currentFolderPermissionState = "granted";
   // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
   // fingerprint) participates in durable identity — "Choose Files" keeps
   // the old ephemeral, ununrecognizable-on-reload behavior unchanged (see
-  // currentLoadIsAssociated()). Recomputed on every load rather than
+  // association-state adapter). Recomputed on every load rather than
   // trusted from a previous one.
   legacyHasDurableIdentity = Boolean(isFolderPick && rootName);
   legacySessionAssociated = false;
@@ -3908,6 +5107,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // only set when a legacy re-pick actually causes a Profile switch, so
   // the note below appears exactly for that case.
   let recognizedProfileName = null;
+  let deferredLoadTimeOffer = null;
 
   try {
     const items = await provider.loadFromFileList(fileList, {
@@ -3942,28 +5142,32 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
           // preserving id/profileId.
           const refreshed = await updateLegacyLibrarySignature(matchResult.record.id, signature);
           activeLibraryRecord = refreshed || matchResult.record;
+          associationWriteSuppression.setLoadedLibrary(activeLibraryRecord.id);
+          establishAmbientProfileContext(activeLibraryRecord);
           pendingLegacySignature = null;
 
-          if (activeLibraryRecord.profileId) {
-            const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
-            if (knownProfileIds.has(activeLibraryRecord.profileId)) {
-              if (activeLibraryRecord.profileId !== profile.getProfileId()) {
-                await profile.switchProfile(activeLibraryRecord.profileId);
-              }
+          const restoration = await restoreProfileForLoadedLibrary(activeLibraryRecord, loadToken);
+          if (restoration && !restoration.stale) {
+            const alreadyActive = restoration.result?.reason === "shared-target-already-active"
+              || restoration.result?.reason === "local-row-already-active";
+            if (restoration.switched || alreadyActive) {
               recognizedProfileName = profile.getProfileName();
-              logLegacyIdentity("associated profile id", { profileId: activeLibraryRecord.profileId });
-            } else {
-              // [Phase 8.4-3] Same stale-association handling as the FSA
-              // path: the profile this library pointed at no longer
-              // exists (deleted since). Clear it rather than switching to
-              // nothing or leaving a dangling reference.
-              console.warn("[LEGACY-IDENTITY] Recognized library's associated profile no longer exists — clearing the stale association.");
-              try {
-                const cleared = await setLibraryProfile(activeLibraryRecord.id, null);
-                activeLibraryRecord = cleared || { ...activeLibraryRecord, profileId: null };
-              } catch (error) {
-                activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
-              }
+              logLegacyIdentity("associated profile id", { profileId: profile.getProfileId() });
+            }
+            if (restoration.result?.action === "skip-and-ask") {
+              deferredLoadTimeOffer = {
+                id: activeLibraryRecord.id,
+                libraryId: restoration.libraryId,
+                currentFactValue: restoration.currentFactValue,
+              };
+            }
+            if (restoration.result?.reason === "shared-target-unusable" && restoration.currentFactValue) {
+              // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+              // Preserve S4 when authoritative shared truth names a Profile
+              // this device does not yet have; never fall back to a stale row.
+              console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
+            } else if (restoration.result?.reason === "local-row-unusable" && activeLibraryRecord.profileId) {
+              console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
             }
           }
         } else if (matchResult.status === "ambiguous") {
@@ -3973,10 +5177,12 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
           // record if the user proceeds.
           logLegacyIdentity("ambiguous — refusing to guess", { candidateIds: matchResult.candidateIds });
           activeLibraryRecord = null;
+          associationWriteSuppression.setLoadedLibrary(null);
           pendingLegacySignature = signature;
         } else {
           logLegacyIdentity("no match — new/unrecognized library");
           activeLibraryRecord = null;
+          associationWriteSuppression.setLoadedLibrary(null);
           pendingLegacySignature = signature;
         }
       } catch (error) {
@@ -3984,11 +5190,13 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
         // worst case, this folder just isn't recognized this time.
         console.warn("[LEGACY-IDENTITY] Could not resolve legacy folder identity.", error);
         activeLibraryRecord = null;
+        associationWriteSuppression.setLoadedLibrary(null);
         pendingLegacySignature = null;
       }
     }
 
     finishLoadingItems(items);
+    await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the legacy provider out from under it.
     __p1LegacySnapshot = [...items];
@@ -4008,7 +5216,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     // finishLoadingItems() just triggered, so it's the right element for
     // a message that should stick around, not the generic status line.
     if (recognizedProfileName) {
-      fsaStatusText.textContent = `✓ Recognized this library — Profile: ${recognizedProfileName}.`;
+      fsaStatusText.textContent = `✓ Recognized this folder's saved setup — Curation: ${recognizedProfileName}.`;
     }
 
     // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
@@ -4024,8 +5232,9 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     if (activeLibraryRecord && activeLibraryRecord.id) {
       try {
         await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: activeLibraryRecord.name || rootName });
+        await recordPortableStructureForLoad(activeLibraryRecord.id, items);
       } catch (error) {
-        console.warn("[SYNCV3] Could not record this legacy Library load in the shared catalog.", error);
+        console.warn("[SYNCV3] Could not record this legacy Library load/evidence in shared state.", error);
       }
 
       // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
@@ -4081,6 +5290,9 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
   isLoadingFiles = true;
+  const loadToken = ++libraryLoadGeneration;
+  clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Same reset as
   // loadFiles() above — covers a fresh pick AND every remembered-library
   // resume call into this same function.
@@ -4112,7 +5324,11 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // at all requires either the FSA folder-picker round trip or a Recent
   // Libraries click, both far slower than one IndexedDB open.
   activeLibraryRecord = libraryRecord || null;
+  associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
+  establishAmbientProfileContext(activeLibraryRecord);
+  activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
   currentSourceKind = "fsa";
+  currentFolderPermissionState = "granted";
   // [LIBRARY-PROFILE-UX / Phase 8.5] Same reset as loadFiles() — a new
   // load starting means any pending Associate/Change-Profile navigation
   // intent from a PREVIOUS load no longer applies.
@@ -4125,33 +5341,31 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // Library resumed and switched profiles. A newly registered folder is
   // not described as recognized merely because it has a record now.
   let recognizedProfileName = null;
+  let deferredLoadTimeOffer = null;
 
-  if (activeLibraryRecord && activeLibraryRecord.id && activeLibraryRecord.profileId) {
-    const knownProfileIds = new Set(profile.listProfiles().map((entry) => entry.id));
-
-    if (knownProfileIds.has(activeLibraryRecord.profileId)) {
-      const switchedProfiles = activeLibraryRecord.profileId !== profile.getProfileId();
-      if (switchedProfiles) {
-        await profile.switchProfile(activeLibraryRecord.profileId);
-      }
-      if (activeLibraryRecord.wasExisting || switchedProfiles) {
+  if (activeLibraryRecord && activeLibraryRecord.id) {
+    const restoration = await restoreProfileForLoadedLibrary(activeLibraryRecord, loadToken);
+    if (restoration && !restoration.stale) {
+      const alreadyActive = restoration.result?.reason === "shared-target-already-active"
+        || restoration.result?.reason === "local-row-already-active";
+      if (restoration.switched || (activeLibraryRecord.wasExisting && alreadyActive)) {
         recognizedProfileName = profile.getProfileName();
       }
-    } else {
-      // [LIBRARY-PROFILE-ASSOCIATION] Test F — the Profile this library
-      // was associated with no longer exists. Never guess a replacement
-      // (no name-matching, no falling back to whatever's active): clear
-      // the stale pointer and fall through to the "unassociated" path
-      // below, which offers re-association once the library has loaded.
-      console.warn(
-        `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" was associated with a profile that no longer exists. Clearing the stale association.`
-      );
-      try {
-        const updated = await setLibraryProfile(activeLibraryRecord.id, null);
-        if (updated) activeLibraryRecord = updated;
-      } catch (error) {
-        console.warn("[LIBRARY-REGISTRY] Could not clear the stale profile association.", error);
-        activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
+      if (restoration.result?.action === "skip-and-ask") {
+        deferredLoadTimeOffer = {
+          id: activeLibraryRecord.id,
+          libraryId: restoration.libraryId,
+          currentFactValue: restoration.currentFactValue,
+        };
+      }
+      if ((restoration.result?.reason === "shared-target-unusable" && restoration.currentFactValue)
+        || (restoration.result?.reason === "local-row-unusable" && activeLibraryRecord.profileId)) {
+        // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+        // Never guess when the authoritative shared target (or Rule 0 local
+        // fallback) is unavailable. Preserve S4/local identity for recovery.
+        console.warn(
+          `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" is associated with a Profile that is unavailable.`
+        );
       }
     }
   }
@@ -4202,7 +5416,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // [Phase 8.4-2] Optional, brief recognition note — not a separate
     // notification system, just a prefix on the same status line that
     // already reports the load result.
-    const recognizedNote = recognizedProfileName ? `✓ Recognized this library — Profile: ${recognizedProfileName}. ` : "";
+    const recognizedNote = recognizedProfileName ? `✓ Recognized this folder's saved setup — Curation: ${recognizedProfileName}. ` : "";
 
     if (result.incomplete) {
       // Reliability requirement: an interrupted scan must never be
@@ -4242,9 +5456,21 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
             complete: true,
           })
         : null;
-    await applyProjectionWithinBudget(mediaIdentityReady);
+    const preparedMediaIdentity = await applyProjectionWithinBudget(mediaIdentityReady);
+    if (preparedMediaIdentity?.inheritedCuration?.profileName) {
+      fsaStatusText.textContent =
+        `✓ Using ${preparedMediaIdentity.inheritedCuration.profileName}, remembered from a parent folder. ` +
+        fsaStatusText.textContent;
+    }
+    armReverseCurationSuggestion(preparedMediaIdentity?.reverseSuggestion || null, loadToken);
+    armDeviceAwareMediaQuestion(
+      preparedMediaIdentity?.deviceAwareQuestion || null,
+      loadToken,
+      preparedMediaIdentity?.portableCurrentSample || null
+    );
 
     finishLoadingItems(result.items);
+    await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the FSA provider out from under it.
     __p1FsaSnapshot = [...result.items];
@@ -4290,8 +5516,9 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       if (!result.incomplete) {
         try {
           await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: dirHandle.name });
+          await recordPortableStructureForLoad(activeLibraryRecord.id, result.items);
         } catch (error) {
-          console.warn("[SYNCV3] Could not record this Library load in the shared catalog.", error);
+          console.warn("[SYNCV3] Could not record this Library load/evidence in shared state.", error);
         }
       }
 
@@ -4307,7 +5534,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // from a partial walk.
 
     // [Phase 8.4-2] Single visibility rule, same one loadFiles() uses for
-    // the legacy path — see currentLoadIsAssociated() for the id-less
+    // the legacy path — see the Stage 07 association mapper for the id-less
     // edge case (a library that failed to persist never shows the
     // button, since a click would have nothing to associate).
     syncAssociateButtonVisibility();
@@ -4396,7 +5623,7 @@ async function resumeLibrary(record) {
     // data cleared, etc.) — fail gracefully rather than throwing, and stop
     // offering a broken resume for it.
     console.error("[FSA] A saved folder is no longer accessible.", error);
-    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Libraries.`;
+    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Media Folders.`;
     // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove, not removeLibrary() — a
     // permission failure doesn't mean the physical folder is gone for
     // good (it may just be a revoked permission on an otherwise-fine
@@ -4430,7 +5657,7 @@ function formatLibraryMeta(record) {
   if (record.lastOpenedAt) parts.push(`opened ${formatRelativeTime(record.lastOpenedAt)}`);
   if (record.profileId) {
     const associated = profile.listProfiles().find((entry) => entry.id === record.profileId);
-    parts.push(`Profile: ${associated ? associated.name : "unknown"}`);
+    parts.push(`Curation: ${associated ? associated.name : "unknown"}`);
   }
   return parts.join(" · ");
 }
@@ -4487,8 +5714,8 @@ async function renderRecentLibraries() {
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "fsa-recent-library-remove-btn";
-    removeBtn.title = `Remove "${record.name}" from Recent Libraries`;
-    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Libraries`);
+    removeBtn.title = `Remove "${record.name}" from Recent Media Folders`;
+    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Media Folders`);
     removeBtn.textContent = "✕";
     removeBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -4509,6 +5736,14 @@ async function renderRecentLibraries() {
     row.appendChild(removeBtn);
     fsaRecentLibrariesEl.appendChild(row);
   }
+
+  // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] Keeps BOTH
+  // contexts' "Startup Media" eligible-folder checklists in sync with this
+  // same population every time it changes — see renderStartupMediaSettings()'s
+  // own comment for why this is called from here rather than duplicating the
+  // listLibraries() read.
+  await renderStartupMediaSettings("browser");
+  await renderStartupMediaSettings("streamloop");
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
@@ -4539,13 +5774,32 @@ async function renderRecentLibraries() {
 //  itself a synced tombstone, so the association fact correctly keeps naming
 //  it — and an explicit Restore brings both back together.]
 async function associateThroughSyncV2(localLibraryId, targetProfileId) {
-  const sharedLibraryId = await profile.setLibraryAssociation(localLibraryId, targetProfileId);
-  if (!sharedLibraryId) return null;
-  return getLibraryByLibraryId(sharedLibraryId);
+  // [SYNCV3 / STAGE-09 / SELF-WRITE-SUPPRESSION]
+  // [WHY: setLibraryAssociation announces its durable fact before this module
+  // updates activeLibraryRecord. The explicit token spans that exact await and
+  // is always cleared in finally. On success, the exact locally minted (t,d)
+  // identity returned by the write boundary lets later refreshes suppress only
+  // our fact, not whichever newer fact may be current when this await resumes.]
+  const intent = associationWriteSuppression.beginIntent(localLibraryId);
+  try {
+    const writeResult = await profile.setLibraryAssociation(localLibraryId, targetProfileId, {
+      includeAuthoredFact: true,
+    });
+    if (!writeResult) return null;
+    const { libraryId: sharedLibraryId, authoredFact } = writeResult;
+    associationWriteSuppression.captureAuthoredFact(intent, sharedLibraryId, authoredFact);
+    return getLibraryByLibraryId(sharedLibraryId);
+  } finally {
+    associationWriteSuppression.endIntent(intent);
+  }
 }
 
-async function associateCurrentLibraryWithProfile(targetProfileId) {
-  if (!targetProfileId) return false;
+// [SYNCV3 / STAGE-07 / ASSOCIATION-WRITE]
+// `targetProfileId: null` is an intentional shared disassociation. An omitted,
+// undefined, or unknown id is invalid. The options object keeps those cases
+// distinct without a truthy/falsy shortcut.
+async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
+  if (targetProfileId !== null && !getProfileNameById(targetProfileId)) return false;
 
   if (currentSourceKind === "legacy") {
     if (legacyHasDurableIdentity) {
@@ -4560,16 +5814,18 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
 
         const updated = await associateThroughSyncV2(record.id, targetProfileId);
         activeLibraryRecord = updated || { ...record, profileId: targetProfileId };
+        establishAmbientProfileContext(activeLibraryRecord);
         pendingLegacySignature = null;
         logLegacyIdentity("associated profile id", { profileId: targetProfileId, libraryId: activeLibraryRecord.id });
         syncAssociateButtonVisibility();
-        fsaStatusText.textContent =
-          `Associated this folder with "${profile.getProfileName()}". ` +
-          "It should be recognized next time you pick the same folder here.";
+        const targetProfileName = getProfileNameById(targetProfileId);
+        fsaStatusText.textContent = targetProfileName
+          ? `Now remembered with ${targetProfileName}. It should be recognized next time you pick the same Media Folder here.`
+          : "This folder now has No Curation.";
         return true;
       } catch (error) {
         console.warn("[LEGACY-IDENTITY] Could not save this legacy library association.", error);
-        fsaStatusText.textContent = "Could not save the association. Try again.";
+        fsaStatusText.textContent = "Could not save the Curation for this folder. Try again.";
         return false;
       } finally {
         fsaAssociateBtn.disabled = false;
@@ -4581,9 +5837,13 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
     // legacySessionAssociated's own comment. Nothing is persisted;
     // re-loading (even the exact same files again) starts unassociated
     // again, by design.
+    // [SYNCV3 / STAGE-07 / ASSOCIATION-WRITE]
+    // Stage 07 never offers its arbitrary-target picker for this id-less
+    // session model. Preserve its historical active-Profile-only behavior.
+    if (targetProfileId !== profile.getProfileId()) return false;
     legacySessionAssociated = true;
     syncAssociateButtonVisibility();
-    fsaStatusText.textContent = `Associated the current folder with "${profile.getProfileName()}" for this session.`;
+    fsaStatusText.textContent = `This Media Folder is remembered with "${profile.getProfileName()}" Curation for this session.`;
     return true;
   }
 
@@ -4593,14 +5853,18 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
   profileAssociateBtn.disabled = true;
   try {
     const updated = await associateThroughSyncV2(activeLibraryRecord.id, targetProfileId);
-    if (updated) activeLibraryRecord = updated;
+    activeLibraryRecord = updated || { ...activeLibraryRecord, profileId: targetProfileId };
+    establishAmbientProfileContext(activeLibraryRecord);
     syncAssociateButtonVisibility();
-    fsaStatusText.textContent = `Associated "${activeLibraryRecord.name}" with "${profile.getProfileName()}".`;
+    const targetProfileName = getProfileNameById(targetProfileId);
+    fsaStatusText.textContent = targetProfileName
+      ? `Now remembered with ${targetProfileName}.`
+      : "This folder now has No Curation.";
     await renderRecentLibraries();
     return true;
   } catch (error) {
     console.warn("[LIBRARY-REGISTRY] Could not associate this library with the current profile.", error);
-    fsaStatusText.textContent = "Could not save the association. Try again.";
+    fsaStatusText.textContent = "Could not save the Curation for this folder. Try again.";
     return false;
   } finally {
     fsaAssociateBtn.disabled = false;
@@ -4609,7 +5873,7 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
 }
 
 // [LIBRARY-PROFILE-UX / Phase 8.5]
-// WHAT: "Associate with Profile" / "Change Profile" — navigation only. No
+// WHAT: "Choose/Change Profile for This Library" — navigation only. No
 // longer persists anything itself.
 // WHY: Section 4/5 — clicking this must never write a profile association
 // directly; it hands off to the Profile section, where the user can choose
@@ -4619,13 +5883,459 @@ async function associateCurrentLibraryWithProfile(targetProfileId) {
 // reconsider before adding logic here.
 fsaAssociateBtn.addEventListener("click", () => {
   if (currentSourceKind === "none") return;
+  dismissedAssociationHelpKey = null;
+  syncAssociateButtonVisibility();
+  // [SYNCV3 / STAGE-07 / MOBILE-ASSOCIATION-HANDOFF]
+  // [WHY: a mobile association shortcut must complete the navigation it
+  // initiates; opening Profile beneath the Media Folder takeover leaves the
+  // user in the wrong visible workspace. Route through the drawer's canonical
+  // close owner, then let the existing Settings activation/open/focus path run.]
+  // Desktop is deliberately unchanged: its rail is not a drawer and this
+  // compact-only branch is skipped entirely.
+  if (isCompactViewport()) closeControlsDrawer();
   pendingLibraryAssociationIntent = true;
   expandAndScrollToProfileSection();
 });
 
-profileAssociateBtn.addEventListener("click", async () => {
-  if (currentSourceKind === "none") return;
-  await associateCurrentLibraryWithProfile(profile.getProfileId());
+// [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
+// [WHY: Stage 07 manages only the current local Library because catalog-only
+// shared Libraries are not writable through the existing localLibraryId-keyed
+// association path.]
+function populateAssociationPicker({ preservePending = false } = {}) {
+  const associationUi = getCurrentAssociationUiState();
+  const pendingValue = preservePending ? profileAssociationSelect.value : null;
+  const profiles = profile.listProfiles();
+  profileAssociationSelect.innerHTML = "";
+
+  const noProfile = document.createElement("option");
+  noProfile.value = "";
+  noProfile.textContent = "— No Curation —";
+  profileAssociationSelect.appendChild(noProfile);
+
+  for (const entry of profiles) {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.textContent = entry.name;
+    profileAssociationSelect.appendChild(option);
+  }
+
+  const availableIds = new Set(profiles.map((entry) => entry.id));
+  if (preservePending && pendingValue && availableIds.has(pendingValue)) {
+    profileAssociationSelect.value = pendingValue;
+  } else if (associationUi.state === "S1" && availableIds.has(profile.getProfileId())) {
+    profileAssociationSelect.value = profile.getProfileId();
+  } else if (["S2", "S3"].includes(associationUi.state) && availableIds.has(associationUi.associatedProfileId)) {
+    profileAssociationSelect.value = associationUi.associatedProfileId;
+  } else {
+    profileAssociationSelect.value = "";
+  }
+}
+
+function openAssociationEditor() {
+  const associationUi = getCurrentAssociationUiState();
+  if (!associationUi.allowPicker) return false;
+  populateAssociationPicker();
+  profileAssociationResult.textContent = "";
+  profileAssociationRow.classList.remove("hidden");
+  profileAssociateBtn.setAttribute("aria-expanded", "true");
+  profileAssociationSelect.focus();
+  return true;
+}
+
+function closeAssociationEditor({ returnFocus = true } = {}) {
+  profileAssociationRow.classList.add("hidden");
+  profileAssociateBtn.setAttribute("aria-expanded", "false");
+  if (returnFocus) profileAssociateBtn.focus();
+}
+
+profileAssociateBtn.addEventListener("click", () => {
+  dismissedAssociationHelpKey = null;
+  syncAssociateButtonVisibility();
+  if (profileAssociationRow.classList.contains("hidden")) openAssociationEditor();
+  else closeAssociationEditor();
+});
+
+profileAssociationSaveBtn.addEventListener("click", async () => {
+  const selectedProfileId = profileAssociationSelect.value || null;
+  const selectedProfileName = selectedProfileId ? getProfileNameById(selectedProfileId) : null;
+  const associationBeforeSave = getCurrentAssociationUiState();
+  profileAssociationSaveBtn.disabled = true;
+  profileAssociationCancelBtn.disabled = true;
+  try {
+    const saved = associationBeforeSave.associatedProfileId === selectedProfileId
+      ? true
+      : await associateCurrentLibraryWithProfile({ targetProfileId: selectedProfileId });
+    if (!saved) {
+      profileAssociationResult.textContent = "Could not save. Try again.";
+      return;
+    }
+    profileAssociationResult.textContent = selectedProfileName
+      ? `Now remembered with ${selectedProfileName}.`
+      : "This folder now has No Curation.";
+    // [SYNCV3 / STAGE-10 / COMPLETED-EXPLAINER]
+    // [WHY: the old action's benefit has finished its job. Scope dismissal to
+    // this exact Library/association state so a new state or later interaction
+    // can explain its own current action without a timer or forced blur.]
+    dismissedAssociationHelpKey = associationHelpKey(getCurrentAssociationUiState());
+    syncAssociateButtonVisibility();
+    closeAssociationEditor();
+  } catch (error) {
+    console.warn("[SYNCV3 / STAGE-07 / ASSOCIATION-WRITE] Could not save association.", error);
+    profileAssociationResult.textContent = "Could not save. Try again.";
+  } finally {
+    profileAssociationSaveBtn.disabled = false;
+    profileAssociationCancelBtn.disabled = false;
+  }
+});
+
+profileAssociationCancelBtn.addEventListener("click", () => closeAssociationEditor());
+
+profileAssociationRow.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  closeAssociationEditor();
+});
+
+const NEW_SHARED_LIBRARY_VALUE = "__new_shared_library__";
+
+// [SYNCV3 / STAGE-08 / LINK-UI]
+// [WHY: This is the single adapter from current local-folder state and the
+// shared catalog into the pure L0-L7 model. Library names remain presentation;
+// every selection and write is keyed by the catalog id.]
+function getCurrentFolderLinkUiState({ selectedLibraryId = null, selectedClaimant = null } = {}) {
+  return mapLinkState({
+    sourceKind: currentSourceKind,
+    legacyHasDurableIdentity,
+    folderName: activeLibraryRecord?.name || activeLibraryDisplayName || "Loaded Media Folder",
+    localLibraryId: activeLibraryRecord?.id || null,
+    sharedLibraryId: activeLibraryRecord?.libraryId || null,
+    sharedLibraries: profile.listLibraries(),
+    permissionState: currentFolderPermissionState,
+    selectedLibraryId,
+    selectedClaimant,
+  });
+}
+
+function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pendingFolderLinkClaimant } = {}) {
+  if (!profileFolderLinkSummary) return null;
+  const linkUi = getCurrentFolderLinkUiState({ selectedLibraryId, selectedClaimant });
+  // [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+  // BREADCRUMBS — IS: ordinary visibility deliberately reads no peers, v3Peers,
+  //   v3Configured or shared catalog; link state alone drives disclosure.
+  const ordinarySurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "ordinary" });
+  const advancedSurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "advanced" });
+  profileFolderLinkSummary.textContent = ordinarySurface.statusText;
+  profileFolderLinkSummary.classList.toggle("hidden", !ordinarySurface.showStatus);
+  applyProductStatusTone(profileFolderLinkSummary, linkUi.tone);
+  profileFolderLinkAdvancedSummary.textContent = advancedSurface.statusText;
+  applyProductStatusTone(profileFolderLinkAdvancedSummary, linkUi.tone);
+
+  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+  // [WHY: the selector replaced the old Link/Share disclosure, so this button
+  // now has exactly one job left — L7 reconnect. `showAction` is true in that
+  // state alone; every other durable state renders the selector instead.]
+  profileFolderLinkBtn.textContent = linkUi.actionLabel || "Reconnect Media Folder";
+  profileFolderLinkBtn.classList.toggle("hidden", !ordinarySurface.showRecoveryAction);
+  profileFolderLinkBtn.disabled = !ordinarySurface.showRecoveryAction;
+
+  const showSelector = Boolean(advancedSurface.showSelector);
+  const wasHidden = profileFolderLinkRow.classList.contains("hidden");
+  profileFolderLinkRow.classList.toggle("hidden", !showSelector);
+  if (!showSelector) {
+    clearFolderLinkConflict();
+    profileFolderActionHelp.textContent = "";
+    refreshContextualHelpAfterRender(contextualHelpEntries[1]);
+    return linkUi;
+  }
+  if (activeLibraryRecord?.id && (wasHidden || profileFolderLinkSelect.options.length === 0)) {
+    populateFolderLinkPicker();
+  }
+  profileFolderLinkSelect.disabled = !activeLibraryRecord?.id || !linkUi.allowPicker;
+
+  profileFolderActionHelp.textContent = linkUi.actionHelp;
+
+  const linkedId = activeLibraryRecord?.libraryId || "";
+  const selected = profileFolderLinkSelect.value;
+  const isCreateNew = selected === NEW_SHARED_LIBRARY_VALUE;
+  // Steady state is a plain property row. Save/Cancel appear only once the
+  // reader has actually changed the selection, so choosing never feels like an
+  // operation that has to be confirmed.
+  const pendingChange = selected !== linkedId;
+
+  // [SYNCV3 / STAGE-08 / LINK-COLLISION-WARNING]
+  // [WHY: a storage-level claimant refusal is safety-critical and must be
+  // visually distinct from ordinary explanatory text. Keep the select focused
+  // and explain the disabled Save inline through its existing described-by id.]
+  const showClaimantWarning = Boolean(selectedClaimant);
+  // [SYNCV3 / STAGE-08 / DIRECT-RELINK-WARNING]
+  // [WHY: choosing a different Media Library directly is intentionally
+  // forbidden until the current one is explicitly removed; this identity-safety
+  // refusal must be as visually obvious as a claimant collision. It shares
+  // presentation, not semantics, with the claimant guard immediately above.
+  // Stage 08 semantics are frozen: only the wording moved off "unlink".]
+  const showDirectRelinkWarning = Boolean(
+    !showClaimantWarning &&
+    linkedId &&
+    selected &&
+    selected !== linkedId
+  );
+  const showSafetyWarning = showClaimantWarning || showDirectRelinkWarning;
+  const selectedLibrary = selected && !isCreateNew
+    ? profile.listLibraries().find((library) => library.id === selected)
+    : null;
+  const libraryName = selectedLibrary?.name || "That Media Library";
+  const folderName = selectedClaimant?.name || "another Media Folder";
+  const currentFolderName = activeLibraryRecord?.name || activeLibraryDisplayName || "This Media Folder";
+  const targetLibraryName = selectedLibrary?.name || "a new Media Library";
+  profileFolderLinkConflict.classList.toggle("hidden", !showSafetyWarning);
+  profileFolderLinkConflictHeading.textContent = showClaimantWarning
+    ? "⚠ Already used on this device"
+    : showDirectRelinkWarning
+      ? "⚠ Remove this Media Folder first"
+      : "";
+  profileFolderLinkConflictDetail.textContent = showClaimantWarning
+    ? `“${libraryName}” already represents the Media Folder “${folderName}”.`
+    : showDirectRelinkWarning
+      ? `“${currentFolderName}” already uses another Media Library.`
+      : "";
+  profileFolderLinkConflictAction.textContent = showClaimantWarning
+    ? `Remove ${folderName} from that Media Library first.`
+    : showDirectRelinkWarning
+      ? `Remove this Media Folder from its Media Library before choosing “${targetLibraryName}”.`
+      : "";
+
+  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+  // [WHY: naming belongs to creation, not to selection. The field is prefilled
+  // from the Media Folder name because promoteLibraryToShared already stored
+  // exactly that; the adjacent copy is what stops the prefill reading as a
+  // folder rename.]
+  profileFolderNewLibraryRow.classList.toggle("hidden", !isCreateNew);
+  if (isCreateNew && !profileFolderNewLibraryInput.value.trim()) {
+    profileFolderNewLibraryInput.value = activeLibraryRecord?.name || "";
+  }
+
+  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+  // [WHY: VERIFIED against ProfileStore, not assumed — a Media Library created
+  // on another device reaches this catalog only through adoptMergedReplica(),
+  // and the only callers of that are the sync-v2/sync-v3 passes and V2
+  // activation. Before a Sync Folder is connected this list is local-only, so
+  // an empty selector states the real prerequisite instead of looking broken.]
+  const catalogIsEmpty = profile.listLibraries().length === 0;
+  const syncStatus = profileSync.getStatus();
+  const syncConfigured = Boolean(syncStatus.configured || syncStatus.v3Configured);
+  const showSyncHint = catalogIsEmpty && !syncConfigured;
+  profileFolderLibrarySyncHint.classList.toggle("hidden", !showSyncHint);
+  profileFolderLibrarySyncBtn.classList.toggle("hidden", !showSyncHint);
+
+  profileFolderLinkSaveBtn.textContent = isCreateNew ? "Create Media Library" : "Use This Media Library";
+  profileFolderLinkSaveBtn.classList.toggle("hidden", !pendingChange);
+  profileFolderLinkCancelBtn.classList.toggle("hidden", !pendingChange);
+  profileFolderLinkSaveBtn.disabled = isCreateNew ? Boolean(linkedId) : !linkUi.saveEnabled;
+
+  const canUnlink = Boolean(linkedId) && !pendingChange;
+  profileFolderUnlinkBtn.classList.toggle("hidden", !canUnlink);
+  profileFolderUnlinkHelp.classList.toggle("hidden", !canUnlink);
+  refreshContextualHelpAfterRender(contextualHelpEntries[1]);
+  return linkUi;
+}
+
+function populateFolderLinkPicker({ preservePending = false } = {}) {
+  const pendingValue = preservePending ? profileFolderLinkSelect.value : "";
+  const catalog = profile.listLibraries();
+  const linkedId = activeLibraryRecord?.libraryId || "";
+  profileFolderLinkSelect.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose a Media Library…";
+  profileFolderLinkSelect.appendChild(placeholder);
+
+  // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-OPTION-LABELS]
+  // [WHY: labels are derived in one pure pass over the whole catalog, because
+  // whether a name needs disambiguating is a property of the SET, not of the
+  // record. The option's value stays the durable id either way.]
+  for (const option of describeMediaLibraryOptions({
+    libraries: catalog,
+    currentDeviceId: profile.getDeviceId(),
+  })) {
+    const element = document.createElement("option");
+    element.value = option.id;
+    element.textContent = option.label;
+    profileFolderLinkSelect.appendChild(element);
+  }
+
+  if (linkedId && !catalog.some((library) => library.id === linkedId)) {
+    // This one genuinely has no name yet — the Library fact has not reached
+    // this device, so its id is the only thing there is to show.
+    const pending = document.createElement("option");
+    pending.value = linkedId;
+    pending.textContent = `Media Library · ${linkedId.slice(0, 8)}…`;
+    profileFolderLinkSelect.appendChild(pending);
+  }
+
+  // Creation stays at the bottom, after every existing Media Library, so
+  // "choose the one you already use" is the path a reader meets first.
+  const createOption = document.createElement("option");
+  createOption.value = NEW_SHARED_LIBRARY_VALUE;
+  createOption.textContent = "Create New Media Library…";
+  profileFolderLinkSelect.appendChild(createOption);
+
+  const values = new Set([...profileFolderLinkSelect.options].map((option) => option.value));
+  if (preservePending && values.has(pendingValue)) profileFolderLinkSelect.value = pendingValue;
+  else if (linkedId) profileFolderLinkSelect.value = linkedId;
+  else profileFolderLinkSelect.value = "";
+}
+
+async function refreshFolderLinkSelection() {
+  const selected = profileFolderLinkSelect.value;
+  pendingFolderLinkClaimant = null;
+  if (selected && selected !== NEW_SHARED_LIBRARY_VALUE && activeLibraryRecord?.id) {
+    const claimant = await getLibraryByLibraryId(selected);
+    if (profileFolderLinkSelect.value !== selected) return;
+    if (claimant && claimant.id !== activeLibraryRecord.id) pendingFolderLinkClaimant = claimant;
+  }
+  renderFolderLinkState({ selectedLibraryId: selected, selectedClaimant: pendingFolderLinkClaimant });
+}
+
+async function refreshCurrentFolderPermission() {
+  const recordId = activeLibraryRecord?.id;
+  if (currentSourceKind !== "fsa" || !activeLibraryRecord?.handle?.queryPermission) {
+    currentFolderPermissionState = "granted";
+    renderFolderLinkState();
+    return;
+  }
+  try {
+    currentFolderPermissionState = await activeLibraryRecord.handle.queryPermission({ mode: "read" });
+  } catch (_error) {
+    currentFolderPermissionState = "prompt";
+  }
+  if (activeLibraryRecord?.id === recordId) renderFolderLinkState();
+}
+
+function clearFolderLinkConflict() {
+  pendingFolderLinkClaimant = null;
+  profileFolderLinkConflict.classList.add("hidden");
+  profileFolderLinkConflictHeading.textContent = "";
+  profileFolderLinkConflictDetail.textContent = "";
+  profileFolderLinkConflictAction.textContent = "";
+}
+
+// [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+// [WHY: with the selector always visible there is nothing to close — Cancel
+// simply puts the control back to the Media Library this Media Folder is
+// actually using. Nothing is written, so this is never a destructive step.]
+function resetFolderLinkSelection({ returnFocus = true } = {}) {
+  clearFolderLinkConflict();
+  profileFolderNewLibraryInput.value = "";
+  populateFolderLinkPicker();
+  renderFolderLinkState();
+  if (returnFocus) profileFolderLinkSelect.focus();
+}
+
+profileFolderLinkBtn.addEventListener("click", () => {
+  refreshCurrentFolderPermission().then(() => {
+    const linkUi = getCurrentFolderLinkUiState();
+    if (linkUi.reconnectNeeded) resumeLibrary(activeLibraryRecord);
+  });
+});
+profileFolderLinkSelect.addEventListener("change", () => {
+  profileFolderNewLibraryInput.value = "";
+  refreshFolderLinkSelection();
+});
+profileFolderLinkCancelBtn.addEventListener("click", () => resetFolderLinkSelection());
+profileFolderLinkRow.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  resetFolderLinkSelection();
+});
+
+// [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+// [WHY: reuses the existing Settings navigation — the Sync group is a sibling
+// inside this same always-open section, so this is a scroll and a focus, not a
+// second Sync entry point.]
+profileFolderLibrarySyncBtn.addEventListener("click", () => {
+  profileSyncGroup.scrollIntoView({ block: "nearest" });
+  profileSyncV3ChooseBtn.focus();
+});
+
+profileFolderLinkSaveBtn.addEventListener("click", async () => {
+  const selected = profileFolderLinkSelect.value;
+  if (!selected || !activeLibraryRecord?.id) return;
+  profileFolderLinkSaveBtn.disabled = true;
+  try {
+    let result;
+    if (selected === NEW_SHARED_LIBRARY_VALUE) {
+      const typedName = profileFolderNewLibraryInput.value.trim();
+      result = await profile.promoteLibraryToShared(activeLibraryRecord.id, {
+        name: typedName || activeLibraryRecord.name,
+      });
+    } else if (selected === activeLibraryRecord.libraryId) {
+      result = activeLibraryRecord;
+    } else {
+      result = await profile.linkLocalLibraryToShared(activeLibraryRecord.id, selected);
+    }
+    if (result?.ok === false && result.reason === "claimed") {
+      pendingFolderLinkClaimant = result.by;
+      renderFolderLinkState({ selectedLibraryId: selected, selectedClaimant: result.by });
+      return;
+    }
+    if (!result) {
+      profileFolderLinkResult.textContent = "Could not save that Media Library. Try again.";
+      return;
+    }
+    activeLibraryRecord = await getLibraryById(activeLibraryRecord.id) || result;
+    establishAmbientProfileContext(activeLibraryRecord);
+    // [SYNCV3 / STAGE-10 / MEDIA-LIBRARY-SELECTION]
+    // [WHY: the one moment a reader most needs to hear that nothing happened to
+    // their files. Uses the status line this group already owns rather than a
+    // new notification surface.]
+    const savedName = getSharedLibraryNameById(activeLibraryRecord.libraryId);
+    profileFolderLinkResult.textContent = savedName
+      ? `Now using the ${savedName} Media Library. Your files were not changed or moved.`
+      : "Media Library saved. Your files were not changed or moved.";
+    profileFolderNewLibraryInput.value = "";
+    populateFolderLinkPicker();
+    await renderRecentLibraries();
+    syncAssociateButtonVisibility();
+    clearFolderLinkConflict();
+    renderFolderLinkState();
+  } catch (error) {
+    console.warn("[SYNCV3 / STAGE-08 / LINK-AND-SYNC] Could not save folder link.", error);
+    profileFolderLinkResult.textContent = "Could not save that Media Library. Try again.";
+  } finally {
+    if (!pendingFolderLinkClaimant) profileFolderLinkSaveBtn.disabled = false;
+  }
+});
+
+function getSharedLibraryNameById(libraryId) {
+  if (!libraryId) return "";
+  const entry = profile.listLibraries().find((library) => library.id === libraryId);
+  return entry?.name || "";
+}
+
+profileFolderUnlinkBtn.addEventListener("click", async () => {
+  if (!activeLibraryRecord?.id || !activeLibraryRecord.libraryId) return;
+  profileFolderUnlinkBtn.disabled = true;
+  try {
+    // Stage 08 semantics unchanged: this clears only this device's local
+    // Media Folder -> Media Library row. Nothing shared is deleted.
+    const unlinked = await profile.unlinkLocalLibraryFromShared(activeLibraryRecord.id);
+    if (!unlinked) throw new Error("Local Library row was unavailable.");
+    activeLibraryRecord = unlinked;
+    establishAmbientProfileContext(activeLibraryRecord);
+    profileFolderLinkResult.textContent = "This Media Folder no longer uses a Media Library. Your files were not changed or moved.";
+    profileFolderNewLibraryInput.value = "";
+    populateFolderLinkPicker();
+    await renderRecentLibraries();
+    syncAssociateButtonVisibility();
+    clearFolderLinkConflict();
+    renderFolderLinkState();
+  } catch (error) {
+    console.warn("[SYNCV3 / STAGE-08 / UNLINK] Could not unlink folder.", error);
+    profileFolderLinkResult.textContent = "Could not remove this Media Folder from its Media Library. Try again.";
+  } finally {
+    profileFolderUnlinkBtn.disabled = false;
+  }
 });
 
 function setLoadingState(isLoading, total) {
@@ -5372,7 +7082,7 @@ shellBreakpointQuery.addEventListener("change", (event) => {
 // FUTURE: Add context by mirroring another existing readout the same way.
 // Never let this derive association, profile or library state itself.
 function syncMobileContextSummary() {
-  mobileContextText.textContent = `Profile: ${associatedText.textContent}`;
+  mobileContextText.textContent = `Curation: ${associatedText.textContent}`;
 }
 
 function syncVideoLoopControl() {
@@ -5753,10 +7463,32 @@ function exitFillMode() {
   resetLoopRuleToDefault();
 }
 
+// Renamed on screen to "Toolbar Opacity" — this function/id/storage field
+// keep their original "ghost" names (see the DOM-capture comment above).
 function applyGhostOpacity(percent) {
   currentGhostOpacityPercent = percent;
   presentationControls.style.setProperty("--ghost-opacity", String(percent / 100));
   ghostOpacityLabel.textContent = `${percent}%`;
+}
+
+// [PM-TOOLBAR-OPACITY] Presentation Mode toolbar opacity has two independent
+// states: normal opacity (Toolbar Opacity, applyGhostOpacity() above) and
+// temporary hover opacity (this function). Hover never changes the stored
+// normal value — see the mouseenter/mouseleave listeners below, where
+// mouseleave always restores currentGhostOpacityPercent, never something
+// this function touches.
+//
+// Also updates --ghost-opacity directly (not just currentHoverOpacityPercent
+// + the label) as a live preview: this slider can only be dragged while the
+// pointer is over #presentation-controls (the popunder that contains it is
+// nested inside it), so the toolbar bar IS in its hovered state for as long
+// as this slider is reachable — applying it immediately, rather than
+// waiting for a mouseenter that already fired, is what makes the slider
+// preview its own effect live, same as the resting slider already does.
+function applyHoverOpacity(percent) {
+  currentHoverOpacityPercent = percent;
+  hoverOpacityLabel.textContent = `${percent}%`;
+  presentationControls.style.setProperty("--ghost-opacity", String(percent / 100));
 }
 
 // UI/UX Polish — the Ghost Opacity slider moved out of always-visible space
@@ -6892,6 +8624,129 @@ shuffleInput.addEventListener("change", () => {
   savePlaybackPreferences({ shuffle: shuffleInput.checked });
 });
 
+function updateArcadeAnimationOrderHelper() {
+  renderArcadeAnimationOrderHelper(arcadeAnimationOrderHelper, arcadeAnimationOrderSelect.value);
+}
+
+arcadeAnimationOrderSelect.addEventListener("change", () => {
+  arcadeAnimationOrder = arcadeAnimationOrderSelect.value;
+  arcadeShuffleLoopVisitedScenes = [];
+  updateArcadeAnimationOrderHelper();
+  saveMicroArcadePreferences({ animationOrder: arcadeAnimationOrder });
+});
+
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-9]
+function startupMediaPolicyHelperText(policy) {
+  if (policy === "off") return "Browser Gallery won't open any folder automatically — choose one yourself whenever you like.";
+  if (policy === "random-remembered") return "Randomly picks among every remembered folder Browser Gallery can still open.";
+  if (policy === "random-selected") return "Randomly picks among the folders you check below.";
+  return "Opens whichever folder you used last, if Browser Gallery still has access.";
+}
+
+// [STREAMLOOP-INTEGRATION / N6-9]
+// BREADCRUMBS — IS: a context's Auto Fill checkbox is only meaningful when
+// that same context's startup policy can actually load something — "off"
+// has no startup media load for Auto Fill to act upon. Disabling the
+// control (never unchecking it) is what lets a customer's saved true/false
+// value survive untouched while policy is "off" and reappear the moment
+// they pick an automatic mode again — see normalizeStartupSection() in
+// app-preferences.js for the persistence half of this same guarantee.
+function updateStartupMediaAutoFillAvailability(context) {
+  const controls = startupMediaControls[context];
+  const isOff = controls.policySelect.value === "off";
+  controls.autoFillInput.disabled = isOff;
+  controls.autoFillHelper.classList.toggle("hidden", !isOff);
+}
+
+function updateStartupMediaPolicyHelper(context) {
+  const controls = startupMediaControls[context];
+  controls.policyHelper.textContent = startupMediaPolicyHelperText(controls.policySelect.value);
+  controls.eligibleSection.classList.toggle("hidden", controls.policySelect.value !== "random-selected");
+  updateStartupMediaAutoFillAvailability(context);
+}
+
+// [WHY: rebuilt from scratch each call rather than diffed — same reasoning
+//  renderRecentLibraries() immediately below already documents for its own
+//  list ("list is small — a handful of libraries at most"). Called from
+//  renderRecentLibraries() itself, once per context, so the three lists —
+//  Recent Libraries and each context's eligible-folder checklist — can never
+//  drift out of sync with each other. `context` is "browser" or "streamloop";
+//  each draws from the same listLibraries() population but keeps its own
+//  independent eligible set, per the N6-5 handoff's "strong product
+//  preference" that each context owns its own selected-folder pool.]
+async function renderStartupMediaSettings(context) {
+  const controls = startupMediaControls[context];
+  let rows;
+  try {
+    rows = await listLibraries();
+  } catch (error) {
+    console.warn("[STARTUP-MEDIA] Could not read saved libraries.", error);
+    rows = [];
+  }
+
+  controls.eligibleList.innerHTML = "";
+  controls.eligibleEmpty.classList.toggle("hidden", rows.length > 0);
+
+  // [WHY: stale ids (folders no longer in `rows`, e.g. removed from Recents)
+  //  are deliberately never pruned from the saved set here — only the ones
+  //  still present get a checkbox at all. See
+  //  normalizeStartupEligibleLibraryIds() in app-preferences.js.]
+  const eligibleSet = new Set(currentStartupPreferences[context].eligibleLibraryIds);
+  for (const record of rows) {
+    const label = document.createElement("label");
+    label.className = "startup-media-library-checkbox";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = eligibleSet.has(record.id);
+    checkbox.addEventListener("change", () => {
+      const nextIds = new Set(currentStartupPreferences[context].eligibleLibraryIds);
+      if (checkbox.checked) nextIds.add(record.id);
+      else nextIds.delete(record.id);
+      currentStartupPreferences = {
+        ...currentStartupPreferences,
+        [context]: { ...currentStartupPreferences[context], eligibleLibraryIds: [...nextIds] },
+      };
+      saveStartupPreferences(context, { eligibleLibraryIds: currentStartupPreferences[context].eligibleLibraryIds });
+    });
+
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = record.name;
+
+    label.appendChild(checkbox);
+    label.appendChild(nameSpan);
+    controls.eligibleList.appendChild(label);
+  }
+}
+
+for (const context of ["browser", "streamloop"]) {
+  const controls = startupMediaControls[context];
+
+  controls.policySelect.addEventListener("change", () => {
+    currentStartupPreferences = {
+      ...currentStartupPreferences,
+      [context]: { ...currentStartupPreferences[context], policy: controls.policySelect.value },
+    };
+    updateStartupMediaPolicyHelper(context);
+    saveStartupPreferences(context, { policy: currentStartupPreferences[context].policy });
+  });
+
+  // [STREAMLOOP-INTEGRATION / N6-9] Pure preference, same shape as
+  // autoplayOnFillInput above — read only at the point attemptStartupMedia()
+  // decides whether to auto-enter Fill Panel after THIS context's own
+  // startup load, never acted on here. Ticking it never itself enters Fill
+  // Panel, starts playback, or changes anything on screen. Independent per
+  // context: toggling browser's checkbox never touches streamloop's saved
+  // value or vice versa — see saveStartupPreferences()'s own two-level merge.
+  controls.autoFillInput.addEventListener("change", () => {
+    currentStartupPreferences = {
+      ...currentStartupPreferences,
+      [context]: { ...currentStartupPreferences[context], autoFillPanel: controls.autoFillInput.checked },
+    };
+    saveStartupPreferences(context, { autoFillPanel: currentStartupPreferences[context].autoFillPanel });
+  });
+}
+
 skipDuplicatesInput.addEventListener("change", () => {
   const currentItem = runtime.getState().currentItem;
   skipDuplicates = skipDuplicatesInput.checked;
@@ -7289,6 +9144,7 @@ nowPlayingReturnBtn.addEventListener("click", (event) => {
 // pause half, and #now-playing-stop-btn above.
 
 clearBtn.addEventListener("click", () => {
+  libraryLoadGeneration += 1;
   bumpGalleryGeneration();
   runtime.clear();
   provider.dispose();
@@ -7303,7 +9159,14 @@ clearBtn.addEventListener("click", () => {
   // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
+  associationWriteSuppression.setLoadedLibrary(null);
+  clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
+  ambientProfileObserver.clearContext();
+  renderAmbientProfileOffer();
+  activeLibraryDisplayName = null;
   currentSourceKind = "none";
+  currentFolderPermissionState = "granted";
   legacySessionAssociated = false;
   legacyHasDurableIdentity = false;
   pendingLegacySignature = null;
@@ -7598,6 +9461,27 @@ ghostRememberInput.addEventListener("change", () => {
   const partial = { rememberGhostOpacity: remember };
   if (remember) {
     partial.ghostOpacityPercent = Number(ghostOpacityInput.value);
+  }
+  savePresentationPreferences(partial);
+});
+
+// [PM-TOOLBAR-OPACITY] Same input/change/Remember pattern as Ghost/Toolbar
+// Opacity above, for Hover Opacity — its own independent preference, never
+// merged with Toolbar Opacity's.
+hoverOpacityInput.addEventListener("input", () => {
+  applyHoverOpacity(Number(hoverOpacityInput.value));
+});
+
+hoverOpacityInput.addEventListener("change", () => {
+  if (!hoverRememberInput.checked) return;
+  savePresentationPreferences({ hoverOpacityPercent: Number(hoverOpacityInput.value) });
+});
+
+hoverRememberInput.addEventListener("change", () => {
+  const remember = hoverRememberInput.checked;
+  const partial = { rememberHoverOpacity: remember };
+  if (remember) {
+    partial.hoverOpacityPercent = Number(hoverOpacityInput.value);
   }
   savePresentationPreferences(partial);
 });
@@ -7966,7 +9850,7 @@ function handleTransportKeydown(event) {
 
 document.addEventListener("keydown", handleTransportKeydown);
 
-// ---- Ghost UI hover behavior ----------------------------------------------
+// ---- PM toolbar hover behavior (Toolbar Opacity / Hover Opacity) ----------
 //
 // Driven by literal pointer presence (mouseenter/mouseleave) rather than
 // CSS :hover/:focus-within. Clicking a button gives it DOM focus as a
@@ -7975,11 +9859,20 @@ document.addEventListener("keydown", handleTransportKeydown);
 // pointer directly sidesteps focus entirely: the bar reveals only while the
 // cursor is actually over it, and reverts the instant it isn't, regardless
 // of what has focus.
+//
+// [PM-TOOLBAR-OPACITY] Presentation Mode toolbar opacity has exactly two
+// configurable states: Toolbar Opacity (currentGhostOpacityPercent, applied
+// below on mouseleave) and Hover Opacity (currentHoverOpacityPercent,
+// applied on mouseenter — this used to be a hardcoded "1"/100%). Hover
+// never changes the stored Toolbar Opacity value: mouseleave always
+// restores currentGhostOpacityPercent exactly as it was, regardless of
+// whatever Hover Opacity did while hovered.
 
 let currentGhostOpacityPercent = Number(ghostOpacityInput.value);
+let currentHoverOpacityPercent = Number(hoverOpacityInput.value);
 
 presentationControls.addEventListener("mouseenter", () => {
-  presentationControls.style.setProperty("--ghost-opacity", "1");
+  presentationControls.style.setProperty("--ghost-opacity", String(currentHoverOpacityPercent / 100));
 });
 
 presentationControls.addEventListener("mouseleave", () => {
@@ -8279,18 +10172,402 @@ profile.subscribe(() => {
 function renderProfileSelector() {
   const profiles = profile.listProfiles();
   const activeId = profile.getProfileId();
+  const activeName = profile.getProfileName();
 
   profileSelect.innerHTML = "";
 
+  // [SYNCV3 / STAGE-10 / FINAL-UX-POLISH]
+  // [WHY: "Curation" is display text only. The option VALUE stays the raw
+  // profileId and the stored name is never rewritten, so switching, deletion,
+  // export, association and Sync all keep reading the same identity they
+  // always did — only what the collapsed select shows has changed.]
   profiles.forEach((entry) => {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.textContent = entry.name;
+    option.textContent = `${entry.name} Curation`;
     profileSelect.appendChild(option);
   });
 
   if (activeId) profileSelect.value = activeId;
+
+  // [SYNCV3 / STAGE-07 / DELETE-PROFILE-LABEL]
+  // [WHY: destructive actions should identify their exact target before
+  // activation, not only inside the confirmation step.] These are the same
+  // active Profile getters the delete handler reads at click time, so the
+  // visible target and the actual target cannot become separate concepts.
+  profileDeleteBtn.textContent = activeId && activeName ? `Delete ${activeName} Curation` : "Delete Curation";
+  profileExportBtn.textContent = activeName ? `Export ${activeName} Curation (.json)` : "Export Curation (.json)";
 }
+
+function establishAmbientProfileContext(libraryRecord) {
+  const localLibraryId = libraryRecord?.id || null;
+  const libraryId = libraryRecord?.libraryId || null;
+  if (!localLibraryId || !libraryId) {
+    ambientProfileObserver.clearContext();
+    renderAmbientProfileOffer();
+    return;
+  }
+  const currentFactValue = profile.getAssociations()[libraryId]?.v || null;
+  const targetKnown = Boolean(currentFactValue
+    && profile.listProfiles().some((entry) => entry.id === currentFactValue));
+  ambientProfileObserver.setContext({ localLibraryId, libraryId, currentFactValue, targetKnown });
+  renderAmbientProfileOffer();
+}
+
+function getCurrentAmbientProfileContext() {
+  const durable = currentSourceKind === "fsa"
+    || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
+  if (!durable || !activeLibraryRecord?.id || !activeLibraryRecord.libraryId) return null;
+  return {
+    localLibraryId: activeLibraryRecord.id,
+    libraryId: activeLibraryRecord.libraryId,
+  };
+}
+
+function renderAmbientProfileOffer() {
+  const pendingOffer = ambientProfileObserver.getSnapshot().pendingOffer;
+  const context = getCurrentAmbientProfileContext();
+  const targetName = pendingOffer ? getProfileNameById(pendingOffer.observedValue) : null;
+  const view = buildAmbientProfileOfferView({
+    pendingOffer,
+    currentContext: context,
+    libraryName: activeLibraryRecord?.name || activeLibraryDisplayName || "This folder",
+    targetName,
+    activeProfileName: profile.getProfileName() || "my current Curation",
+  });
+
+  if (!view.visible) {
+    ambientProfileOffer.classList.add("hidden");
+    ambientProfileOfferRenderedKey = null;
+    return;
+  }
+
+  const key = `${pendingOffer.localLibraryId}\u0000${pendingOffer.libraryId}\u0000${pendingOffer.observedValue}`;
+  if (ambientProfileOfferRenderedKey !== key) ambientProfileOfferResult.textContent = "";
+  ambientProfileOfferRenderedKey = key;
+
+  ambientProfileOfferText.textContent = view.text;
+  ambientProfileOfferYes.textContent = view.yesLabel;
+  ambientProfileOfferNo.textContent = view.noLabel;
+  ambientProfileOfferLater.textContent = view.laterLabel;
+  for (const button of [ambientProfileOfferYes, ambientProfileOfferNo, ambientProfileOfferLater, ambientProfileOfferClose]) {
+    button.disabled = ambientProfileActionPending;
+  }
+  // [SYNCV3 / STAGE-09 / AMBIENT-NO-FOCUS-STEAL]
+  // [WHY: sync may surface this while the user is editing elsewhere. Showing a
+  // static card without focus() preserves their task while leaving every real
+  // button reachable in ordinary tab order.]
+  ambientProfileOffer.classList.remove("hidden");
+}
+
+function isLibraryLoadCurrent(loadToken, libraryRecord) {
+  return libraryLoadGeneration === loadToken
+    && Boolean(activeLibraryRecord)
+    && activeLibraryRecord.id === libraryRecord?.id
+    && (activeLibraryRecord.libraryId || null) === (libraryRecord?.libraryId || null);
+}
+
+async function restoreProfileForLoadedLibrary(libraryRecord, loadToken) {
+  try {
+    const outcome = await applyLoadTimeProfileRestoration({
+      libraryRecord,
+      getAssociations: () => profile.getAssociations(),
+      getKnownProfileIds: () => profile.listProfiles().map((entry) => entry.id),
+      getActiveProfileId: () => profile.getProfileId(),
+      loadDecision: loadAmbientProfileDecision,
+      deleteDecision: deleteAmbientProfileDecision,
+      switchProfile: (target) => profile.switchProfile(target),
+      isCurrent: () => isLibraryLoadCurrent(loadToken, libraryRecord),
+    });
+    if (outcome.decisionDeleteError) {
+      console.warn("[SYNCV3 / STAGE-09] Could not clear a stale local association decision.", outcome.decisionDeleteError);
+    }
+    return outcome;
+  } catch (error) {
+    // Decision storage failure must not make an otherwise valid folder fail to
+    // load. Conservatively preserve Active Profile rather than guessing past a
+    // decision that could not be read.
+    console.warn("[SYNCV3 / STAGE-09] Could not resolve load-time Profile policy.", error);
+    return null;
+  }
+}
+
+async function armDeferredLoadTimeOffer(deferredOffer, loadToken) {
+  if (!deferredOffer || !isLibraryLoadCurrent(loadToken, deferredOffer)) return false;
+  let decision;
+  try {
+    decision = await loadAmbientProfileDecision(deferredOffer.libraryId);
+  } catch (error) {
+    console.warn("[SYNCV3 / STAGE-09] Could not re-read LATER before arming its load-time offer.", error);
+    return false;
+  }
+  if (!isLibraryLoadCurrent(loadToken, deferredOffer)) return false;
+  const associations = profile.getAssociations();
+  const hasSharedFact = Object.prototype.hasOwnProperty.call(associations, deferredOffer.libraryId);
+  const currentFactValue = hasSharedFact ? associations[deferredOffer.libraryId]?.v ?? null : null;
+  const targetKnown = Boolean(currentFactValue
+    && profile.listProfiles().some((entry) => entry.id === currentFactValue));
+  if (decision?.kind !== "later"
+    || decision.observedValue !== currentFactValue
+    || currentFactValue !== deferredOffer.currentFactValue
+    || !targetKnown
+    || currentFactValue === profile.getProfileId()) return false;
+
+  // [SYNCV3 / STAGE-09 / LOAD-TIME-LATER-REASK]
+  // [WHY: LATER explicitly asks once on a later successful load. Arm Slice 3's
+  // existing pending slot after re-reading both decision and fact; do not fake
+  // an ambient transition and do not create a parallel prompt mechanism.]
+  const armed = ambientProfileObserver.armLoadTimeOffer({
+    localLibraryId: deferredOffer.id,
+    libraryId: deferredOffer.libraryId,
+    currentFactValue,
+  });
+  renderAmbientProfileOffer();
+  return armed;
+}
+
+async function refreshCurrentAssociationFromRegistry() {
+  const localLibraryId = activeLibraryRecord && activeLibraryRecord.id;
+  const durable = currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
+  if (!durable || !localLibraryId) {
+    ambientProfileObserver.clearContext();
+    renderAmbientProfileOffer();
+    return;
+  }
+  // [SYNCV3 / STAGE-09 / NO-DECISION-REARM-BUG]
+  // [WHY: the local row projection is deliberately NOT fed into the ambient
+  // observer. It is reconciliation/display state, never association policy
+  // authority — and it necessarily lags here, because
+  // ProfileStore#adoptMergedAssociations emits before reconciling rows. The
+  // shared fact read below is the only ambient association authority.]
+  const refreshed = await getLibraryById(localLibraryId);
+  if (!refreshed || !activeLibraryRecord || activeLibraryRecord.id !== localLibraryId) return;
+  const sharedLibraryId = refreshed.libraryId || null;
+  const currentFact = sharedLibraryId ? profile.getAssociations()[sharedLibraryId] || null : null;
+  // [SYNCV3 / STAGE-09 / SELF-WRITE-SUPPRESSION]
+  // [WHY: `(t,d)` is used only to classify exact authorship here. The ambient
+  // model receives only the fact VALUE, because a restamp has no user-facing
+  // association meaning. Keeping both purposes at this seam prevents either
+  // stamp metadata or the local row projection from becoming target authority.]
+  const selfWriteSuppressed = associationWriteSuppression.shouldSuppress({
+    localLibraryId,
+    libraryId: sharedLibraryId,
+    fact: currentFact,
+  });
+  activeLibraryRecord = refreshed;
+
+  // [SYNCV3 / STAGE-09 / INITIAL-LOAD-BASELINE]
+  // [WHY: a newly loaded, linked, promoted, or unlinked Library context starts
+  // a baseline; it is not an ambient transition. Slice 3B will own load-time
+  // NO/LATER behavior. Reset here as a safety net for a shared-link change that
+  // reached this async seam before its explicit Stage 08 handler completed.]
+  if (!sharedLibraryId) {
+    ambientProfileObserver.clearContext();
+  } else if (!ambientProfileObserver.matchesContext(localLibraryId, sharedLibraryId)) {
+    establishAmbientProfileContext(refreshed);
+  } else {
+    const currentFactValue = currentFact?.v || null;
+    const targetKnown = Boolean(currentFactValue
+      && profile.listProfiles().some((entry) => entry.id === currentFactValue));
+    // [SYNCV3 / STAGE-09 / ZERO-AUTO-SWITCH-AMBIENT]
+    // [WHY: this path records only an internal, stale-prone offer. It contains
+    // no switchProfile call and no association write; Slice 4 must re-read the
+    // authoritative fact before acting on any future user response.]
+    await ambientProfileObserver.observe({
+      localLibraryId,
+      libraryId: sharedLibraryId,
+      currentFactValue,
+      activeProfileId: profile.getProfileId(),
+      targetKnown,
+      selfWriteSuppressed,
+    });
+    // [SYNCV3 / STAGE-09 / ASYNC-CONTEXT-GUARD]
+    // The observer checks generation and both identities after every decision
+    // store await. Recheck the main context too before continuing UI refreshes.
+    if (!activeLibraryRecord
+      || activeLibraryRecord.id !== localLibraryId
+      || (activeLibraryRecord.libraryId || null) !== sharedLibraryId) return;
+  }
+  renderAmbientProfileOffer();
+  syncAssociateButtonVisibility();
+  if (!profileAssociationRow.classList.contains("hidden")) {
+    populateAssociationPicker({ preservePending: true });
+  }
+  if (!profileFolderLinkRow.classList.contains("hidden")) {
+    populateFolderLinkPicker({ preservePending: true });
+    await refreshFolderLinkSelection();
+  }
+  refreshCurrentFolderPermission().catch(() => undefined);
+  return {
+    selfWriteSuppressed,
+    currentFact,
+    ambientObservation: ambientProfileObserver.getSnapshot(),
+  };
+}
+
+async function handleAmbientProfileOfferAction(kind) {
+  if (ambientProfileActionPending) return;
+  const pendingOffer = ambientProfileObserver.getSnapshot().pendingOffer;
+  if (!pendingOffer) return;
+
+  ambientProfileActionPending = true;
+  ambientProfileOfferResult.textContent = "";
+  renderAmbientProfileOffer();
+  try {
+    const result = await performAmbientProfileAction({
+      kind,
+      pendingOffer,
+      getCurrentContext: getCurrentAmbientProfileContext,
+      getAssociations: () => profile.getAssociations(),
+      getKnownProfileIds: () => profile.listProfiles().map((entry) => entry.id),
+      getActiveProfileId: () => profile.getProfileId(),
+      switchProfile: (target) => profile.switchProfile(target),
+      saveDecision: saveAmbientProfileDecision,
+    });
+
+    if (result.status === "applied") {
+      ambientProfileObserver.dismissPendingOffer(pendingOffer);
+      ambientProfileOfferResult.textContent = "";
+      // [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+      // [WHY: announced only AFTER the decision row is durably saved, matching
+      // every other write-then-announce in this app. A sibling told to re-read
+      // before the row lands would read the old store, conclude it was current,
+      // and never hear again. The message carries no payload.]
+      profile.announceAmbientProfileDecisionChanged();
+    } else if (result.status === "stale") {
+      // A newer pending offer is protected by expected identity/value matching.
+      ambientProfileObserver.dismissPendingOffer(pendingOffer);
+      await refreshCurrentAssociationFromRegistry();
+    } else if (result.status === "switch-failed") {
+      ambientProfileOfferResult.textContent = "Could not switch Curations. Try again.";
+    } else if (result.status === "stale-after-switch") {
+      ambientProfileObserver.dismissPendingOffer(pendingOffer);
+      await refreshCurrentAssociationFromRegistry();
+      // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+      // [WHY: copy only. Two different things change in this race — this
+      // device's Curation, and the Media Library's remembered Curation — and
+      // the previous wording used "changed" for both, leaving the reader to
+      // guess which was which. The stale-after-switch semantics are untouched.]
+      ambientProfileOfferResult.textContent = "Switched Curations, but this folder's remembered Curation changed again before your choice could be saved.";
+    } else if (result.status === "persistence-failed") {
+      if (result.switched) {
+        ambientProfileObserver.dismissPendingOffer(pendingOffer);
+        ambientProfileOfferResult.textContent = "Curation changed, but this choice could not be remembered on this device.";
+      } else {
+        // NO/LATER have no effect without durable persistence. Keep the exact
+        // current offer visible so retrying is honest and safe.
+        ambientProfileOfferResult.textContent = "Could not remember this choice on this device. Try again.";
+      }
+    }
+  } finally {
+    ambientProfileActionPending = false;
+    renderAmbientProfileOffer();
+  }
+}
+
+ambientProfileOfferYes.addEventListener("click", () => {
+  handleAmbientProfileOfferAction("yes").catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient YES failed.", error);
+    ambientProfileActionPending = false;
+    ambientProfileOfferResult.textContent = "Could not apply this choice. Try again.";
+    renderAmbientProfileOffer();
+  });
+});
+
+ambientProfileOfferNo.addEventListener("click", () => {
+  handleAmbientProfileOfferAction("no").catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient NO failed.", error);
+    ambientProfileActionPending = false;
+    ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+    renderAmbientProfileOffer();
+  });
+});
+
+function chooseAmbientProfileLater() {
+  return handleAmbientProfileOfferAction("later");
+}
+
+// [SYNCV3 / STAGE-09 / ESCAPE-CLOSE-IS-LATER]
+// [WHY: X and Escape are not transient dismissals. Both route through the
+// exact durable LATER action so reload behavior cannot depend on how the card
+// was closed.]
+ambientProfileOfferLater.addEventListener("click", () => {
+  chooseAmbientProfileLater().catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient LATER failed.", error);
+    ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+  });
+});
+ambientProfileOfferClose.addEventListener("click", () => {
+  chooseAmbientProfileLater().catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient close/LATER failed.", error);
+    ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+  });
+});
+
+reverseCurationOfferYes.addEventListener("click", () => {
+  handleReverseCurationSuggestionAction("yes").catch((error) => {
+    console.warn("[NORTH-STAR / N4] Reverse-suggestion YES failed.", error);
+    reverseCurationActionPending = false;
+    reverseCurationOfferResult.textContent = "Could not save that Curation. Try again.";
+    renderReverseCurationSuggestion();
+  });
+});
+
+reverseCurationOfferNo.addEventListener("click", () => {
+  handleReverseCurationSuggestionAction("no").catch((error) => {
+    console.warn("[NORTH-STAR / N4] Reverse-suggestion NO failed.", error);
+    reverseCurationActionPending = false;
+    pendingReverseCurationSuggestion = null;
+    renderReverseCurationSuggestion();
+  });
+});
+
+deviceAwareMediaQuestionYes.addEventListener("click", () => {
+  handleDeviceAwareMediaQuestionAction("yes").catch((error) => {
+    console.warn("[NORTH-STAR / N2] Device-aware YES failed.", error);
+    deviceAwareMediaActionPending = false;
+    deviceAwareMediaQuestionResult.textContent = "Could not remember that choice. Try again.";
+    renderDeviceAwareMediaQuestion();
+  });
+});
+
+deviceAwareMediaQuestionNo.addEventListener("click", () => {
+  handleDeviceAwareMediaQuestionAction("no").catch((error) => {
+    console.warn("[NORTH-STAR / N2] Device-aware NO failed.", error);
+    deviceAwareMediaActionPending = false;
+    pendingDeviceAwareMediaQuestion = null;
+    renderDeviceAwareMediaQuestion();
+  });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+  if (ambientProfileOffer.classList.contains("hidden") || ambientProfileActionPending) return;
+  // Existing Fill, drawer, popover, association editor, and native dialog
+  // Escape handlers have priority and preventDefault before this late listener.
+  if (fillModeActive || document.querySelector("dialog[open]")) return;
+  event.preventDefault();
+  chooseAmbientProfileLater().catch((error) => {
+    console.warn("[SYNCV3 / STAGE-09] Ambient Escape/LATER failed.", error);
+    ambientProfileOfferResult.textContent = "Could not remember this choice. Try again.";
+  });
+});
+
+// [SYNCV3 / STAGE-09 / SLICE-5-MULTITAB-DECISIONS]
+// [WHY: sibling tabs may each show the same offer, which is acceptable — but
+// once ANY context on this device decides, the others must stop asking. The
+// announcement is invalidation only; this re-reads the durable decision store
+// and retires a now-decided offer without acting on it. No Profile is switched
+// and no shared association is written on this path.]
+profile.subscribeAmbientProfileDecisionChanged(() => {
+  ambientProfileObserver.reconcilePendingOfferWithDecision()
+    .then((state) => {
+      if (state.dismissed) renderAmbientProfileOffer();
+    })
+    .catch((error) => {
+      console.warn("[SYNCV3 / STAGE-09] Could not reconcile a sibling ambient decision.", error);
+    });
+});
 
 profileSelect.addEventListener("change", async () => {
   const targetId = profileSelect.value;
@@ -8298,7 +10575,7 @@ profileSelect.addEventListener("change", async () => {
 
   const ok = await profile.switchProfile(targetId);
   if (!ok) {
-    profileActiveStatusText.textContent = "Could not switch profile.";
+    profileActiveStatusText.textContent = "Could not switch Curation.";
     renderProfileSelector(); // revert the <select> to the still-active profile
     return;
   }
@@ -8323,7 +10600,7 @@ async function createProfileFromInput() {
     profileCreateInput.value = "";
     profileActiveStatusText.textContent = `Created and switched to "${created.name}".`;
   } catch (error) {
-    profileActiveStatusText.textContent = `Could not create profile: ${error.message}`;
+    profileActiveStatusText.textContent = `Could not create Curation: ${error.message}`;
   } finally {
     profileCreateBtn.disabled = false;
   }
@@ -8343,7 +10620,7 @@ profileDeleteBtn.addEventListener("click", async () => {
 
   const activeName = profile.getProfileName();
   const confirmed = window.confirm(
-    `Delete profile "${activeName}"? This removes its tags, favorites, and hidden state. Your media files are not affected. This cannot be undone.`
+    `Delete ${activeName} Curation? This removes its Tags, Favorites, and Hidden items. Your photos and videos are not affected. This cannot be undone.`
   );
   if (!confirmed) return;
 
@@ -8352,27 +10629,13 @@ profileDeleteBtn.addEventListener("click", async () => {
     await profile.deleteProfile(activeId);
     profileActiveStatusText.textContent = `Deleted "${activeName}". Now on "${profile.getProfileName()}".`;
 
-    // [LIBRARY-PROFILE-UX / Phase 8.5]
-    // WHAT: If the CURRENTLY LOADED library was associated with the
-    // profile just deleted, clear that association right now.
-    // WHY: Section 1 — "update the row immediately when... a stale/deleted
-    // Profile association is cleared" — without this, activeLibraryRecord
-    // keeps pointing at a profileId that no longer exists until the next
-    // reopen (updateAssociatedStatusRow already refuses to fall back to
-    // the active profile's name in that case, but "Associate with
-    // Profile" should reappear immediately too, not just the row text).
-    // FUTURE: Mirrors the existing stale-profile clearing already done at
-    // LOAD time in loadFromFsaHandle/loadFiles — this is the same cleanup,
-    // just triggered by a live delete instead of a re-pick.
+    // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+    // Keep a durable current Library's missing profileId visible as S4. It is
+    // still the shared association truth until the user explicitly chooses a
+    // replacement or No Profile; silently clearing only the local projection
+    // would hide that recovery state and could be reasserted by shared truth.
     if (activeLibraryRecord && activeLibraryRecord.profileId === activeId) {
-      if (currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity)) {
-        try {
-          const cleared = await setLibraryProfile(activeLibraryRecord.id, null);
-          activeLibraryRecord = cleared || { ...activeLibraryRecord, profileId: null };
-        } catch (error) {
-          activeLibraryRecord = { ...activeLibraryRecord, profileId: null };
-        }
-      }
+      // Durable association intentionally retained for S4 recovery.
     } else if (currentSourceKind === "legacy" && !legacyHasDurableIdentity && legacySessionAssociated) {
       // Ephemeral association has no stored profileId to compare against —
       // it's simply "the profile active when Associate was clicked". If a
@@ -8384,7 +10647,7 @@ profileDeleteBtn.addEventListener("click", async () => {
     }
     syncAssociateButtonVisibility();
   } catch (error) {
-    profileActiveStatusText.textContent = `Could not delete profile: ${error.message}`;
+    profileActiveStatusText.textContent = `Could not delete Curation: ${error.message}`;
   } finally {
     profileDeleteBtn.disabled = false;
   }
@@ -8401,6 +10664,17 @@ profile.subscribe(() => {
   // a rename of THAT profile, or a switch away from it, needs to refresh
   // this row even though nothing about the loaded library itself changed.
   syncAssociateButtonVisibility();
+  if (!profileAssociationRow.classList.contains("hidden")) {
+    populateAssociationPicker({ preservePending: true });
+  }
+  if (!profileFolderLinkRow.classList.contains("hidden")) {
+    populateFolderLinkPicker({ preservePending: true });
+    refreshFolderLinkSelection().catch(() => undefined);
+  }
+  // Existing ASSOCIATIONS_CHANGED adoption updates the registry projection
+  // before emitting. Re-read only the current local row so another tab's
+  // shared association change reaches this single management surface.
+  refreshCurrentAssociationFromRegistry().catch(() => undefined);
 });
 
 // ---- Profile Export / Import ----------------------------------------------
@@ -8491,11 +10765,11 @@ profileImportCopyInput.addEventListener("change", async (event) => {
     try {
       parsed = JSON.parse(text);
     } catch {
-      throw new Error("Not a recognized profile file (invalid JSON).");
+      throw new Error("Not a recognized Curation file (invalid JSON).");
     }
 
-    const suggestedName = typeof parsed.profileName === "string" && parsed.profileName.trim() ? parsed.profileName.trim() : "Imported Profile";
-    const name = window.prompt("Name for the new profile:", suggestedName);
+    const suggestedName = typeof parsed.profileName === "string" && parsed.profileName.trim() ? parsed.profileName.trim() : "Imported Curation";
+    const name = window.prompt("Name for the new Curation:", suggestedName);
     if (!name || !name.trim()) return; // cancelled
 
     const created = await profile.createProfile(name.trim());
@@ -8504,7 +10778,7 @@ profileImportCopyInput.addEventListener("change", async (event) => {
 
     profileActiveStatusText.textContent = `Created "${created.name}" from import (${result.applied} applied).`;
   } catch (error) {
-    profileActiveStatusText.textContent = `Could not import as a new profile: ${error.message}`;
+    profileActiveStatusText.textContent = `Could not import as a new Curation: ${error.message}`;
   }
 });
 
@@ -8613,6 +10887,15 @@ profile.subscribe(() => {
 function renderProfileSync() {
   const status = profileSync.getStatus();
 
+  // [SYNCV3 / STAGE-06 / SYNC-STATUS-RENDER]
+  // [WHY: product and Advanced diagnostic copy consume this same snapshot;
+  // neither renderer performs another getStatus() read or subscription.]
+  const productStatus = mapSyncStatusCopy(status);
+  profileSyncProductStatus.textContent = productStatus.line;
+  applyProductStatusTone(profileSyncProductStatus, productStatus.tone);
+  syncContextHelpDefaultVisible = !status.configured && !status.v3Configured;
+  refreshContextualHelpAfterRender(contextualHelpEntries[3]);
+
   // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
   // [WHY: every V1/V2 control below is additionally gated on `!isV3`. Under V3
   //  the engine has deliberately released the V1/V2 handle in memory while
@@ -8647,13 +10930,12 @@ function renderProfileSync() {
     "hidden",
     isV2 || isV3 || !status.configured || status.status === "syncing"
   );
-  profileSyncLinkPanel.classList.toggle("hidden", !isV2 || !status.configured);
 
   if (!status.configured || isV3) {
     profileSyncManagePanel.classList.add("hidden");
   }
 
-  renderSyncV3Panel(status, isV3);
+  renderSyncV3State(status, isV3);
 
   let line;
   switch (status.status) {
@@ -8661,7 +10943,7 @@ function renderProfileSync() {
       line = "Status: Not configured";
       break;
     case "checking":
-      line = "Status: Checking folder access…";
+      line = "Status: Checking Sync Folder access…";
       break;
     case "permission-needed":
       line = `Status: Permission needed for "${status.folderName}".`;
@@ -8670,7 +10952,7 @@ function renderProfileSync() {
       line = "Status: Syncing…";
       break;
     case "conflict":
-      line = "Profile changed on another device. Choose a version below.";
+      line = "A Curation changed on another device. Choose a version below.";
       break;
     case "offline":
       line = `Offline — saved locally. Changes will sync when available.${status.message ? ` (${status.message})` : ""}`;
@@ -8694,7 +10976,7 @@ function renderProfileSync() {
     //  installation does not currently have. It says so plainly and points at
     //  the retry, because the only correct next step is a user decision.]
     case "migration-failed":
-      line = `Sync activation did not finish — ${status.message || "Your Profile data is safe and saved locally."}`;
+      line = `Sync activation did not finish — ${status.message || "Your Curation is safe and saved locally."}`;
       break;
     // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
     // [WHY: V3 gets its own status strings rather than reusing "connected".
@@ -8756,7 +11038,7 @@ function renderProfileSync() {
       line = `Sync V3 — permission needed for "${status.v3FolderName}". Nothing is being synced.`;
       break;
     case "v3-not-configured":
-      line = "Sync V3 is active — no V3 folder chosen yet. Nothing is being synced.";
+      line = "Sync V3 is active — no Sync Folder chosen yet. Nothing is being synced.";
       break;
     // [SYNCV3 / STAGE-03A / V3-ASSOCIATION-ISOLATION-AND-PASS-SKELETON]
     // [WHY: a V3 status must never reach the `default` branch below, which
@@ -8765,7 +11047,7 @@ function renderProfileSync() {
     //  a connected V1 sync is the precise false reassurance Stage B removed from
     //  V1, so every V3 status this engine can produce gets an explicit arm.]
     case "v3-verify-failed":
-      line = `Sync V3 not completed — ${status.message || "nothing was accepted; local Profile data is unaffected."}`;
+      line = `Sync V3 not completed — ${status.message || "nothing was accepted; your local Curation is unaffected."}`;
       break;
     case "connected":
     default: {
@@ -8790,35 +11072,32 @@ function renderProfileSync() {
   profileSyncStatusText.textContent = line;
 }
 
-// [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
-// WHAT: Renders the temporary Sync V3 development panel from the SAME status
-// snapshot renderProfileSync() already read.
+// [SYNCV3 / STAGE-06 / SCAFFOLDING-CLEANUP]
+// WHAT: Renders the normal V3 actions and retained Advanced diagnostics from
+// the SAME status snapshot renderProfileSync() already read.
 // [WHY: takes `status` as an argument rather than calling getStatus() again.
 //  Two reads of a live engine can straddle a state change, which is how one
 //  panel ends up describing a connection the other has already released — the
 //  same single-snapshot discipline the rest of this render function follows.]
-// FUTURE: this whole function is expected to be deleted by the Profile & Sync
-// Settings redesign stage. Do not grow it into that page.
-function renderSyncV3Panel(status, isV3) {
+function renderSyncV3State(status, isV3) {
   // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
   // [WHY: the input shows the CUSTOM name only, never the detected fallback, so
   //  an empty field honestly means "you have not named this device". Pre-filling
   //  it with "Chromebook" would make a Save look like a no-op while actually
   //  freezing a detected value as a custom one. The status line underneath is
-  //  where the effective name and the id suffix are shown together — that is the
-  //  answer to "which machine am I looking at", and it needs both halves.]
+  //  where the effective customer-facing name is shown. Durable identity stays
+  //  in the Advanced diagnostic line below; the human name never becomes identity.]
   if (document.activeElement !== profileSyncV3DeviceNameInput) {
     profileSyncV3DeviceNameInput.value = status.deviceName || "";
   }
-  const shortId = status.deviceId ? String(status.deviceId).replace(/^dev-/, "").replace(/[^0-9a-zA-Z]/g, "").slice(0, 8) : "";
   profileSyncV3DeviceNameStatus.textContent = status.deviceDisplayName
-    ? `This device: ${status.deviceDisplayName}${shortId ? ` · ${shortId}` : ""}${status.deviceName ? "" : " (detected)"}`
+    ? `This device: ${status.deviceDisplayName}${status.deviceName ? "" : " (detected)"}`
     : "This device: unknown";
   profileSyncV3DeviceNameResetBtn.disabled = !status.deviceName;
 
   const connected = Boolean(status.v3Configured);
 
-  profileSyncV3ChooseBtn.textContent = connected ? "Change V3 Sync Folder" : "Choose V3 Sync Folder";
+  profileSyncV3ChooseBtn.textContent = connected ? "Change Sync Folder" : "Choose Sync Folder";
   profileSyncV3ReconnectBtn.classList.toggle("hidden", !connected || status.v3Status !== "permission-needed");
   profileSyncV3DisconnectBtn.classList.toggle("hidden", !connected);
   profileSyncV3ActivateBtn.classList.toggle("hidden", isV3);
@@ -8827,8 +11106,8 @@ function renderSyncV3Panel(status, isV3) {
   let line;
   if (!connected) {
     line = isV3
-      ? "Mode: V3 (active) · No V3 folder chosen yet."
-      : "Mode: " + status.mode + " · No V3 folder chosen yet.";
+      ? "Mode: V3 (active) · No Sync Folder chosen yet."
+      : "Mode: " + status.mode + " · No Sync Folder chosen yet.";
   } else if (status.v3Status === "permission-needed") {
     line = `Mode: ${isV3 ? "V3 (active)" : status.mode} · Folder "${status.v3FolderName}" — permission needed.`;
   } else {
@@ -8845,6 +11124,7 @@ function renderSyncV3Panel(status, isV3) {
       ? " This tab is the Drive writer for this device."
       : " This tab is read-only; another tab or browser holds the writer role.";
   }
+  if (status.deviceId) line += ` Device ID: ${status.deviceId}.`;
   profileSyncV3StatusText.textContent = line;
 }
 
@@ -8963,7 +11243,7 @@ profileSyncSetupOpenBtn.addEventListener("click", () => {
 
 profileSyncDisconnectBtn.addEventListener("click", async () => {
   const confirmed = window.confirm(
-    "Disconnect Profile Sync? Your Profiles remain saved locally — they will just stop syncing to this folder."
+    "Disconnect Curation Sync? Your Curations remain saved locally — they will just stop syncing to this Sync Folder."
   );
   if (!confirmed) return;
   await profileSync.disconnect();
@@ -8992,7 +11272,7 @@ profileSyncActivateBtn.addEventListener("click", async () => {
     "Activate Sync V2 on this device?\n\n" +
       "• Changes from every device will be merged instead of one version replacing another.\n" +
       "• This device will stop writing the old sync format. Existing old files are left untouched.\n" +
-      "• Nothing in your local Profiles is deleted.\n\n" +
+      "• Nothing in your local Curations is deleted.\n\n" +
       "This is one-way for this device."
   );
   if (!confirmed) return;
@@ -9003,7 +11283,6 @@ profileSyncActivateBtn.addEventListener("click", async () => {
   } finally {
     profileSyncActivateBtn.disabled = false;
   }
-  await renderSharedLibraryOptions();
 });
 
 // [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
@@ -9015,9 +11294,24 @@ profileSyncActivateBtn.addEventListener("click", async () => {
 //  point a V3 user at the V2 folder, which is the one folder V3 must never
 //  adopt. The proper V3 setup explanation is part of the later Profile & Sync
 //  Settings stage.]
+// [SYNCV3 / STAGE-10 / CHANGE-SYNC-FOLDER-FIX]
+// [WHY: this used to report failure ONLY through profileSyncV3StatusText, which
+// lives inside the collapsed <details class="advanced-settings-section">. The
+// button that calls it lives in the always-visible Sync group, so an
+// unsupported browser or a picker error produced a click with no visible result
+// whatsoever. Failures now also reach the product status line beside the
+// button. renderProfileSync() overwrites that line on the next emit, which is
+// correct — a failed pick emits nothing, so the message survives exactly as
+// long as it is still true.]
+function reportSyncFolderProblem(message, tone) {
+  profileSyncV3StatusText.textContent = message;
+  profileSyncProductStatus.textContent = message;
+  applyProductStatusTone(profileSyncProductStatus, tone);
+}
+
 async function runV3FolderPicker() {
   if (!isFsaSupported()) {
-    profileSyncV3StatusText.textContent = "This browser does not support the File System Access API.";
+    reportSyncFolderProblem("This browser does not support choosing a Sync Folder.", "warning");
     return;
   }
 
@@ -9026,11 +11320,19 @@ async function runV3FolderPicker() {
     dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
   } catch (error) {
     if (error && error.name === "AbortError") return; // user closed the picker — not an error
-    profileSyncV3StatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    reportSyncFolderProblem(`Could not open the folder picker: ${error.message}`, "danger");
     return;
   }
 
-  await profileSync.connectV3Folder(dirHandle);
+  try {
+    await profileSync.connectV3Folder(dirHandle);
+  } catch (error) {
+    // [WHY: connectV3Folder tolerates a failed PERSIST internally, so reaching
+    // here means the connection itself failed. Swallowing it was the other way
+    // this control could appear to do nothing.]
+    console.warn("[SYNCV3] Could not connect the chosen Sync Folder.", error);
+    reportSyncFolderProblem("Could not use that Sync Folder. Try choosing it again.", "danger");
+  }
 }
 
 // [SYNCV3 / STAGE-05 / DEVICE-NAMING]
@@ -9071,8 +11373,8 @@ profileSyncV3ReconnectBtn.addEventListener("click", () => profileSync.reconnectV
 
 profileSyncV3DisconnectBtn.addEventListener("click", async () => {
   const confirmed = window.confirm(
-    "Disconnect the Sync V3 folder?\n\n" +
-      "Nothing in your Profiles is deleted, and your existing Sync V2 configuration is not touched."
+    "Disconnect this Sync Folder?\n\n" +
+      "Syncing stops on this device. Your local Browser Gallery information and the files already in the Sync Folder are kept."
   );
   if (!confirmed) return;
   await profileSync.disconnectV3();
@@ -9083,7 +11385,7 @@ profileSyncV3ActivateBtn.addEventListener("click", async () => {
     "Activate Sync V3 on this device?\n\n" +
       "• Sync V3 has no transport yet — nothing will be synced or written to the V3 folder.\n" +
       "• Sync V2 becomes dormant. Its saved configuration is left completely intact.\n" +
-      "• Nothing in your local Profiles is deleted.\n\n" +
+      "• Nothing in your local Curations is deleted.\n\n" +
       "You can return to Sync V2 with \"Leave V3 Mode\"."
   );
   if (!confirmed) return;
@@ -9106,89 +11408,10 @@ profileSyncV3LeaveBtn.addEventListener("click", async () => {
   } finally {
     profileSyncV3LeaveBtn.disabled = false;
   }
-  await renderSharedLibraryOptions();
-});
-
-// [PHASE-6-SYNC-V2]
-// [STAGE-E-LIVE-INTEGRATION]
-// [WHY: the list is built from association FACTS this device has merged — i.e.
-//  libraries some device has actually shared — never from local folder names,
-//  and never pre-selected. The user has to choose a specific shared id, which
-//  is the whole point: matching a physical folder to a logical library is a
-//  judgement only they can make safely.]
-async function renderSharedLibraryOptions() {
-  if (!profileSyncLinkSelect) return;
-  const associations = profile.listAssociations();
-  const ids = Object.keys(associations);
-
-  // [PHASE-6-SYNC-V2][STAGE-E-CONVERGENCE-SCHEDULER]
-  // [WHY: this now runs on every ProfileSync emit, and the scheduler makes
-  //  those routine. Rebuilding the <select> unconditionally would discard the
-  //  user's in-progress choice underneath them mid-interaction, so the DOM is
-  //  only touched when the option set has genuinely changed.]
-  const signature = ids.map((id) => `${id}:${associations[id]}`).join("|");
-  if (profileSyncLinkSelect.dataset.signature === signature) return;
-  profileSyncLinkSelect.dataset.signature = signature;
-
-  profileSyncLinkSelect.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = ids.length ? "Choose a shared library…" : "No shared libraries known yet";
-  profileSyncLinkSelect.appendChild(placeholder);
-
-  for (const libraryId of ids) {
-    const option = document.createElement("option");
-    option.value = libraryId;
-    const associatedProfile = profile.listProfiles().find((entry) => entry.id === associations[libraryId]);
-    // Enough context to choose safely: which Profile it belongs to, plus the
-    // id itself so two libraries on the same Profile are still distinguishable.
-    option.textContent = `${associatedProfile ? associatedProfile.name : "Unknown Profile"} · ${libraryId.slice(0, 8)}…`;
-    profileSyncLinkSelect.appendChild(option);
-  }
-
-  profileSyncLinkBtn.disabled = ids.length === 0;
-}
-
-profileSyncLinkBtn.addEventListener("click", async () => {
-  const sharedLibraryId = profileSyncLinkSelect.value;
-  if (!sharedLibraryId) {
-    profileSyncLinkStatus.textContent = "Choose a shared library first.";
-    return;
-  }
-  if (!activeLibraryRecord || !activeLibraryRecord.id) {
-    profileSyncLinkStatus.textContent = "Load the folder you want to link first.";
-    return;
-  }
-
-  profileSyncLinkBtn.disabled = true;
-  try {
-    const linked = await linkLocalLibraryToSharedId(activeLibraryRecord.id, sharedLibraryId);
-    if (!linked) {
-      profileSyncLinkStatus.textContent =
-        "Could not link this folder — it is already linked to a different shared library.";
-      return;
-    }
-    activeLibraryRecord = linked;
-    // The next pass reconciles this row's Profile pointer from the association
-    // fact; nothing is copied or moved here.
-    await profileSync.syncNow();
-    profileSyncLinkStatus.textContent = `Linked "${linked.name}" to the shared library.`;
-    await renderRecentLibraries();
-    syncAssociateButtonVisibility();
-  } catch (error) {
-    console.warn("[SYNC-V2] Could not link this folder to a shared library.", error);
-    profileSyncLinkStatus.textContent = "Could not link this folder. Try again.";
-  } finally {
-    profileSyncLinkBtn.disabled = false;
-  }
 });
 
 profileSync.subscribe(renderProfileSync);
-profileSync.subscribe(() => {
-  renderSharedLibraryOptions().catch(() => undefined);
-});
 renderProfileSync();
-renderSharedLibraryOptions().catch(() => undefined);
 
 // ---- Boot ---------------------------------------------------------------
 
@@ -9204,10 +11427,25 @@ renderSharedLibraryOptions().catch(() => undefined);
 // before the user unchecked "Remember this value", and unchecked launches
 // must always show the built-in fallback, not that old number.
 function applyLoadedPreferences(preferences) {
-  const { playback, presentation } = preferences;
+  const { playback, presentation, microArcade, startup } = preferences;
 
   intervalInput.value = String(playback.intervalSeconds);
   shuffleInput.checked = playback.shuffle;
+  arcadeAnimationOrderSelect.value = microArcade.animationOrder;
+  arcadeAnimationOrder = microArcade.animationOrder;
+  updateArcadeAnimationOrderHelper();
+  // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-9]
+  // currentStartupPreferences must be set before renderRecentLibraries() (and
+  // the renderStartupMediaSettings() calls it makes for BOTH contexts) first
+  // runs — applyLoadedPreferences() always runs earlier in boot, well before
+  // initFsaLibraries(). Each context's Auto Fill checkbox is seeded here too,
+  // now that it lives alongside that context's own policy.
+  currentStartupPreferences = startup;
+  for (const context of ["browser", "streamloop"]) {
+    startupMediaControls[context].policySelect.value = startup[context].policy;
+    startupMediaControls[context].autoFillInput.checked = startup[context].autoFillPanel;
+    updateStartupMediaPolicyHelper(context);
+  }
   skipDuplicatesInput.checked = playback.skipDuplicates;
   skipDuplicates = playback.skipDuplicates;
   loopInput.checked = playback.loopPlaylist;
@@ -9217,19 +11455,38 @@ function applyLoadedPreferences(preferences) {
   // before the key existed, so an older stored record lands here as ON.
   autoplayOnFillInput.checked = playback.autoplayOnFill;
 
+  // "Toolbar Opacity" on screen; `ghost*`/`rememberGhostOpacity` internally
+  // — see the DOM-capture comment above for why the names differ.
   ghostRememberInput.checked = presentation.rememberGhostOpacity;
   const ghostPercent = presentation.rememberGhostOpacity
     ? presentation.ghostOpacityPercent
     : DEFAULT_GHOST_OPACITY_PERCENT;
   ghostOpacityInput.value = String(ghostPercent);
 
+  // Same "unchecked Remember falls back to the built-in default, not a
+  // stale stored number" rule, applied independently to Hover Opacity.
+  hoverRememberInput.checked = presentation.rememberHoverOpacity;
+  const hoverPercent = presentation.rememberHoverOpacity
+    ? presentation.hoverOpacityPercent
+    : DEFAULT_HOVER_OPACITY_PERCENT;
+  hoverOpacityInput.value = String(hoverPercent);
+
   runtime.setShuffle(shuffleInput.checked);
+  runtime.setShuffleMode(playback.shuffleMode);
   runtime.setLoop(loopInput.checked);
   runtime.setIntervalMs(Number(intervalInput.value) * 1000);
   applyGhostOpacity(Number(ghostOpacityInput.value));
+  // Seed Hover Opacity's tracked value/label directly rather than through
+  // applyHoverOpacity() — at boot the pointer is not hovering the toolbar,
+  // so the toolbar must render at Toolbar Opacity (just applied above), not
+  // be forced into its hover look before any real hover has happened.
+  currentHoverOpacityPercent = Number(hoverOpacityInput.value);
+  hoverOpacityLabel.textContent = `${currentHoverOpacityPercent}%`;
 }
 
-applyLoadedPreferences(await loadPreferences());
+const loadedPreferences = await loadPreferences();
+applyLoadedPreferences(loadedPreferences);
+initializeProfileSyncIntroduction(loadedPreferences.onboarding);
 
 syncVideoLoopControl();
 resetLoopRuleToDefault();
@@ -9257,12 +11514,167 @@ window.addEventListener("beforeunload", () => {
   fsaProvider.dispose(); // [FSA]
 });
 
+// [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-7]
+// BREADCRUMBS — IS: consumes StreamLoop's existing LAUNCHPAD_PLAY/
+// LAUNCHPAD_PAUSE postMessage contract (see streamloop-bridge.js's header for
+// the exact confirmed shape). Mutates playback through the SAME
+// runtime.play()/runtime.stop() calls togglePlay() already uses (see
+// togglePlay() above) — a StreamLoop PLAY/PAUSE is indistinguishable,
+// downstream, from a human click.
+//
+// [WHY: source validation checks event.source === window.parent rather than
+//  event.origin, because GS3 posts with target origin '*' and has no fixed
+//  origin of its own to validate against (self-hosted GS3 may run at any
+//  dev/staging/prod origin) — see the N6-5 handoff's Part 3. This still
+//  rejects messages from any window other than the one actually framing this
+//  tab, including this tab's own window.]
+//
+// [WHY / N6-7 CORRECTION: N6-6 treated state.hasVisibleItems alone as
+//  readiness. That is real but too early — hasVisibleItems flips true inside
+//  loadFromFsaHandle()'s finishLoadingItems() call, BEFORE that same
+//  function's own remaining Curation/registry bookkeeping (armDeferredLoadTimeOffer,
+//  touchLibrary, recordLibraryLoaded, recordPortableStructureForLoad,
+//  renderRecentLibraries) has settled — see loadFromFsaHandle()'s own
+//  `finally` comment naming ITS completion the authoritative one. Readiness
+//  now additionally requires streamLoopStartupSettled, which only becomes
+//  true once attemptStartupMedia() itself has returned — see that function
+//  below. This also guarantees Auto Fill Panel enters BEFORE any pending
+//  PLAY/PAUSE is applied, exactly the ordering the N6-7 handoff proves.]
+//
+// This shared state is declared unconditionally (module scope), since
+// attemptStartupMedia() below — reachable regardless of launch context —
+// needs to set streamLoopStartupSettled and call tryBecomeStreamLoopReady().
+// It stays completely inert for an ordinary browser tab: nothing calls into
+// it, because the only two things that DO — the message listener and the
+// extra runtime.subscribe() below — stay behind the launchContext guard, and
+// attemptStartupMedia()'s own StreamLoop branch is itself gated the same way.
+let streamLoopPendingIntent = null;
+let streamLoopReady = false;
+let streamLoopStartupSettled = false;
+
+function applyStreamLoopIntent(intent) {
+  if (intent === "play") runtime.play();
+  else if (intent === "pause") runtime.stop();
+}
+
+// Shared by both trigger paths below — the boot-settle path
+// (attemptStartupMedia()) and the fallback runtime.subscribe() path — so
+// neither can double-apply a pending intent.
+function tryBecomeStreamLoopReady() {
+  if (streamLoopReady) return;
+  if (!streamLoopStartupSettled) return;
+  if (!runtime.getState().hasVisibleItems) return;
+  streamLoopReady = true;
+  if (streamLoopPendingIntent) applyStreamLoopIntent(streamLoopPendingIntent);
+  streamLoopPendingIntent = null;
+}
+
+function isTrustedStreamLoopSource(event) {
+  return event.source != null && event.source === window.parent && event.source !== window;
+}
+
+// Registered ONLY when this tab was explicitly launched with
+// `?launch=streamloop` — an ordinary browser tab never adds this listener or
+// the extra runtime.subscribe() below, so there is no dormant surface for a
+// normal customer session.
+if (launchContext === LAUNCH_CONTEXT_STREAMLOOP) {
+  window.addEventListener("message", (event) => {
+    if (!isTrustedStreamLoopSource(event)) return;
+    const intent = parseStreamLoopMessage(event.data);
+    if (!intent) return;
+    if (streamLoopReady) {
+      applyStreamLoopIntent(intent);
+    } else {
+      streamLoopPendingIntent = nextPendingIntent(intent);
+    }
+  });
+
+  // Fallback ONLY: covers the boot-time StreamLoop load finding nothing to
+  // restore, with media appearing later through some other path in the same
+  // tab (e.g. a manual folder pick). Does NOT trigger Auto Fill Panel — see
+  // attemptStartupMedia() below for why that stays scoped to the boot-time
+  // load alone.
+  runtime.subscribe((state) => {
+    if (streamLoopReady || !state.hasVisibleItems) return;
+    tryBecomeStreamLoopReady();
+  });
+}
+
+// [BOOT-RESTORE / N6]
+// [WHY: queryPermission ONLY, wrapped so a missing API, a missing handle, or
+//  a thrown error all resolve to a non-"granted" string instead of
+//  throwing — the same defensive shape fsa-ancestry.js's readPermission()
+//  already uses for background permission reads. Deliberately separate from
+//  resumeLibrary()'s own permission check below rather than shared with it:
+//  resumeLibrary() must still requestPermission() and prune Recents on
+//  failure (P1/P6), and folding those two different failure behaviours
+//  behind one shared query helper risks quietly changing which branch a
+//  thrown queryPermission error takes there. See P3/P6 in the N6 handoff.]
+async function readFolderPermissionForBootRestore(handle) {
+  if (!handle || typeof handle.queryPermission !== "function") return "unavailable";
+  try {
+    return await handle.queryPermission({ mode: "read" });
+  } catch (error) {
+    return `error:${error && error.name ? error.name : "unknown"}`;
+  }
+}
+
+// [BOOT-RESTORE / N6]
+// BREADCRUMBS — IS: at boot, if the most recently opened durable FSA folder
+// still reports queryPermission() === "granted", load it silently through
+// the SAME granted-folder load path a Recent-row click uses
+// (loadFromFsaHandle) — so Curation restoration, Stage 09, MEDIA-ID and the
+// N2/N3/N4 arming all behave exactly as on a manual open. Anything other
+// than "granted" — "prompt", "denied", a missing handle, a missing API, or
+// a thrown error — does nothing at all. Never requestPermission() here;
+// that needs a user gesture this boot path does not have. Never falls
+// through to a second candidate — see decideBootRestore()'s own comment.
+// [WHY: the explicit-click failure behaviour in resumeLibrary() —
+//  requestPermission() and removeFromRecents() on a bad handle — is
+//  deliberately NOT reused here. A transient boot-time failure must not
+//  silently delete the customer's remembered folder (P6); only a customer
+//  watching an explicit click gets that pruning.]
+async function attemptBootRestore() {
+  let rows;
+  try {
+    rows = await listLibraries();
+  } catch (error) {
+    console.warn("[BOOT-RESTORE] Could not read saved libraries.", error);
+    return;
+  }
+
+  const candidate = rows[0];
+  if (!candidate) return;
+
+  const state = await readFolderPermissionForBootRestore(candidate.handle);
+  const decision = decideBootRestore({
+    rows,
+    permissionStates: candidate.id ? { [candidate.id]: state } : {},
+  });
+  if (!decision.restore) return;
+
+  // [WHY: a customer gesture always wins (P5). loadFromFsaHandle() bumps
+  //  libraryLoadGeneration into a fresh loadToken and every N2/N3/N4/Stage
+  //  09 arming call already gates on that token — an explicit folder pick
+  //  or Recent-row click started (or finished) after this one began simply
+  //  supersedes it, with no new staleness machinery needed here.]
+  await loadFromFsaHandle(candidate.handle, candidate);
+}
+
 // [LIBRARY-REGISTRY] Boot-time: render whatever libraries were previously
 // remembered so the user sees "Recent Libraries" immediately. This is a
-// pure metadata read — it does NOT check/request permission or load
-// anything on its own (requestPermission needs a user gesture, and
-// queryPermission-only would still mean silently touching folder access
-// on every page load without the user asking).
+// pure metadata read — renderRecentLibraries() itself does NOT check/request
+// permission or load anything on its own.
+//
+// [BOOT-RESTORE / N6] BREADCRUMBS — WAS: this comment used to say the whole
+// boot sequence stayed hands-off because "queryPermission-only would still
+// mean silently touching folder access on every page load without the user
+// asking", and refused to do it. That reasoning predates the North Star.
+// queryPermission is now called from non-gesture background paths in six
+// other modules, and profileSync.init() (just below) already silently
+// reconnects a remembered Sync Folder on the same basis. attemptBootRestore()
+// below — the one deliberate exception, added by N6 — extends that same
+// proven pattern to the folder the customer actually cares about.
 (async function initFsaLibraries() {
   if (!isFsaSupported()) {
     fsaChooseFolderBtn.disabled = true;
@@ -9271,7 +11683,143 @@ window.addEventListener("beforeunload", () => {
   }
 
   await renderRecentLibraries();
+
+  // Not awaited — same reasoning profileSync.init() below documents: a
+  // permission check should never block the rest of boot, and nothing here
+  // depends on startup media restore having settled.
+  attemptStartupMedia();
 })();
+
+// [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
+// BREADCRUMBS — IS: an Advanced "Startup Media" preference (default
+// "last-used", which is exactly N6's zero-ceremony reopen, unchanged) chooses
+// what loads at boot. Since N6-6, TWO independent such preferences exist —
+// "browser" and "streamloop" — and this function resolves which one applies
+// by reading the live `launchContext` (parsed once from the URL at module
+// load — see launch-context.js), BEFORE calling decideStartupMedia(). That
+// function's own signature and decision table are untouched by this slice —
+// it stays single-policy-in/single-decision-out; the dual-context resolution
+// happens here, at the boundary that already knows launchContext, not inside
+// the pure decision function itself.
+//
+// "random-remembered" and "random-selected" query permission — never request
+// it — for every remembered durable folder in the relevant pool and hand the
+// granted subset to decideStartupMedia() (boot-restore.js), which picks one
+// row using an injected random(). The winning row loads through the SAME
+// loadFromFsaHandle() every other caller uses — see attemptBootRestore()
+// above, which this function delegates to unchanged for the default policy
+// so N6's own frozen test/behavior never has to move for this slice.
+//
+// [STREAMLOOP-INTEGRATION / N6-7] Renamed from attemptStartupMedia() to
+// runStartupMediaLoad() — this function's OWN body is unchanged; it is now
+// wrapped by the real attemptStartupMedia() below, which awaits it (the
+// authoritative "this load has settled" seam — see the N6-7 handoff's Part
+// 2) before deciding anything about Auto Fill Panel or pending StreamLoop
+// intent.
+async function runStartupMediaLoad() {
+  const activeContext = launchContext === LAUNCH_CONTEXT_STREAMLOOP ? "streamloop" : "browser";
+  const startup =
+    (currentStartupPreferences && currentStartupPreferences[activeContext]) ||
+    { policy: "last-used", eligibleLibraryIds: [], autoFillPanel: false };
+
+  // [STREAMLOOP-INTEGRATION / N6-9]
+  // BREADCRUMBS — IS: "off" ("Do not load media automatically") performs no
+  // remembered-folder load, no random selection, no permission query of any
+  // kind, and no Auto Fill — it returns before any of that machinery runs,
+  // leaving Browser Gallery exactly as available for a normal manual folder
+  // pick as it always is. Checked BEFORE the "fall back to last-used"
+  // branch below, which would otherwise treat "off" as an unrecognized
+  // policy string and silently restore anyway.
+  if (startup.policy === "off") return;
+
+  if (startup.policy !== "random-remembered" && startup.policy !== "random-selected") {
+    await attemptBootRestore();
+    return;
+  }
+
+  let rows;
+  try {
+    rows = await listLibraries();
+  } catch (error) {
+    console.warn("[STARTUP-MEDIA] Could not read saved libraries.", error);
+    return;
+  }
+  if (!rows.length) return;
+
+  // [WHY: every row in the pool needs a live permission read before
+  //  decideStartupMedia() can filter to "granted" — unlike last-used, which
+  //  only ever needs rows[0]. Still queryPermission-only, still never a
+  //  gesture-requiring permission prompt — see
+  //  readFolderPermissionForBootRestore() above.]
+  const permissionStates = {};
+  for (const row of rows) {
+    if (!row.id) continue;
+    permissionStates[row.id] = await readFolderPermissionForBootRestore(row.handle);
+  }
+
+  const decision = decideStartupMedia({
+    policy: startup.policy,
+    rows,
+    permissionStates,
+    eligibleIds: startup.eligibleLibraryIds,
+  });
+  if (!decision.restore) return;
+
+  const candidate = rows.find((row) => row.id === decision.rowId);
+  if (!candidate) return;
+
+  // [WHY: same P5 reasoning as attemptBootRestore() — loadFromFsaHandle()
+  //  owns the one generation/token guard every caller shares, so no new
+  //  staleness machinery is needed here either.]
+  await loadFromFsaHandle(candidate.handle, candidate);
+}
+
+// [STREAMLOOP-INTEGRATION / N6-7] [STREAMLOOP-INTEGRATION / N6-9]
+// BREADCRUMBS — IS: the thin settle-sequence wrapper around
+// runStartupMediaLoad() (N6-4/N6-6's original attemptStartupMedia() body,
+// renamed but otherwise untouched above). Awaiting it IS the authoritative
+// "this load has settled" seam — see the N6-7 handoff's Part 2 for why
+// state.hasVisibleItems alone is a weaker, earlier-firing proxy that this
+// deliberately does not use. Since N6-9, Auto Fill Panel is symmetric:
+// Normal Browser Gallery and StreamLoop each read THEIR OWN
+// currentStartupPreferences[activeContext].autoFillPanel and each get the
+// identical guarantee — Auto Fill may occur only after this same
+// authoritative completion, never from an early or duplicated signal.
+//
+// Sequencing (verified against the real code in the N6-7 handoff, not
+// assumed): Auto Fill Panel (if enabled for the active context and there is
+// visible media) THROUGH enterFillPanelDeliberately(), the same shared entry
+// point the `Fill ⛶` button and `F` shortcut use -> only THEN, for a
+// StreamLoop launch specifically, apply whatever PLAY/PAUSE intent is
+// currently pending. Applying the pending intent strictly after Fill Panel
+// entry is what guarantees the most recent explicit StreamLoop signal
+// always outranks BG's own "Autoplay on Fill" default, however that default
+// already resolved a moment earlier inside enterFillPanelDeliberately() —
+// see the N6-7 handoff's ordering table. Normal Browser Gallery has no
+// PLAY/PAUSE concept at all, so its own path ends at Auto Fill Panel.
+//
+// Auto Fill Panel is deliberately scoped to THIS one call only — this
+// function runs exactly once per page load, from initFsaLibraries() below —
+// so it can never re-fire for a later manual folder pick in the same tab,
+// for either context. If startup.policy for the active context is "off",
+// runStartupMediaLoad() above returns without loading anything, so
+// hasVisibleItems stays false and Auto Fill correctly never fires even if a
+// customer had previously saved Auto Fill as ON for that context.
+async function attemptStartupMedia() {
+  await runStartupMediaLoad();
+
+  const activeContext = launchContext === LAUNCH_CONTEXT_STREAMLOOP ? "streamloop" : "browser";
+  const autoFillEnabled = Boolean(currentStartupPreferences?.[activeContext]?.autoFillPanel);
+
+  if (runtime.getState().hasVisibleItems && autoFillEnabled) {
+    enterFillPanelDeliberately();
+  }
+
+  if (launchContext !== LAUNCH_CONTEXT_STREAMLOOP) return;
+
+  streamLoopStartupSettled = true;
+  tryBecomeStreamLoopReady();
+}
 
 // [PROFILE-SYNC] Boot-time: silently reconnect to a remembered sync folder
 // if permission is still usable — see ProfileSync#init(). Not awaited here

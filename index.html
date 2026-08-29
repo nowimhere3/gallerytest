@@ -54,7 +54,7 @@
            answer.
            FUTURE: If this ever needs more context, mirror another EXISTING
            readout the same way. Do not derive association state here. -->
-      <p id="mobile-context-text" class="mobile-context-text">Profile: —</p>
+      <p id="mobile-context-text" class="mobile-context-text">Curation: —</p>
       <!-- [UI-REDESIGN / Stage 6] The drawer handle is now a FOLDER ICON named
            `Folders`. It carries no visible text and no child elements: the
            folder is drawn entirely by this button's own ::before / ::after in
@@ -133,7 +133,13 @@
              heading structure is unchanged for assistive tech — this is a
              type treatment, not a demotion. The name matches the rail IA,
              which calls this section Libraries. -->
-        <h2 class="rail-section-label">Libraries</h2>
+        <h2 class="rail-section-label">Media Folders</h2>
+        <!-- [SYNCV3 / STAGE-10 / DRIVE-ROLES]
+             [WHY: Google Drive plays two different roles in this product. The
+              role descriptor is structural at BOTH choosers so neither can be
+              read as "your Google Drive folder"; the Sync Folder's own
+              descriptor lives beside its chooser in Curations & Sync.] -->
+        <p class="role-descriptor">Your photos and videos</p>
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
              WHAT: Collapses the legacy Choose Files/Choose Folder controls
@@ -183,7 +189,7 @@
         <hr />
 
         <!-- [UI-REDESIGN / Stage 2]
-             WHAT: The Associated Profile summary. Both of its live parts are
+             WHAT: The Profile for This Library summary. Both of its live parts are
              EXISTING elements moved here, not new ones: #associated-text
              came out of the .status-box below, and #fsa-associate-btn came
              out of the Libraries block above.
@@ -199,7 +205,7 @@
              Settings, and the whole point of the shortcut is to go there.
              See the button's own note below. -->
         <div class="rail-profile-summary">
-          <p class="rail-profile-summary-label">Associated Profile</p>
+          <p class="rail-profile-summary-label">Curation for This Folder</p>
           <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
                WHAT: Live Library<->Profile association state for whatever
                is CURRENTLY LOADED — not the globally active profile name.
@@ -220,8 +226,8 @@
           <p class="rail-profile-summary-value"><span id="associated-text">—</span></p>
           <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
                WHAT: One button, shown whenever a library/folder is loaded —
-               reads "Associate with Profile" when the current load has no
-               association yet, "Change Profile" once it does.
+               reads "Choose Profile for This Library" when the current load
+               has no Profile yet, "Change Profile for This Library" once it does.
                WHY: Section 5 rule — a wrong association must be fixable
                without deleting/recreating the library, and there is
                deliberately no separate second button/UI for that; same
@@ -234,8 +240,22 @@
                control inside it. See syncAssociateButtonVisibility()/
                expandAndScrollToProfileSection() in main.js. -->
           <button id="fsa-associate-btn" class="button-like secondary fsa-associate-btn hidden" type="button" disabled>
-            <span id="fsa-associate-btn-label">Associate with Profile</span>
+            <span id="fsa-associate-btn-label">Choose a Curation</span>
           </button>
+          <!-- [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+               BREADCRUMBS — IS: the card's scan path is concept -> current
+                 state -> action -> benefit, in that DOM order. The benefit
+                 sentence sits AFTER the button on purpose: a reader who already
+                 knows what they want should reach the control without reading
+                 past an explanation first.
+               BREADCRUMBS — WAS: there was no benefit line at all, and the
+                 button repeated the concept from the label two lines above it
+                 ("Choose Curation for This Folder") — long enough to
+                 need a hard-coded line break to wrap tidily in the rail.
+               BREADCRUMBS — FUTURE: this stays a summary plus the existing
+                 navigation shortcut. Do not move this sentence above the
+                 button, and do not let the button regrow the concept text. -->
+          <p id="fsa-associate-help" class="rail-profile-summary-help hint hidden"></p>
         </div>
 
         <!-- [UI-REDESIGN / Stage 2]
@@ -440,13 +460,15 @@
           tabindex="-1"
         ></button>
         <!-- [UI-REDESIGN / STAGE 6] [PROFILE-WORKSPACE-IDENTITY]
-             User-facing label changed from "⚙ Settings" to "⚙ Profile" —
-             the right-side utility destination now represents the user's
-             persistent Profile, sync, tags, associations and preferences.
-             This button's own id and the internal workspace name "settings"
-             are deliberately retained (see main.js's WORKSPACES /
-             ensureSettingsWorkspaceVisible()) for DOM-contract stability;
-             only the visible identity changed. -->
+             [SYNCV3 / STAGE-10 / SETTINGS-LABEL]
+             BREADCRUMBS — IS: the destination is "⚙ Settings". Curations & Sync
+               is one section INSIDE Settings, alongside Tags and Advanced
+               Settings; naming the tab after one of its sections hid the rest.
+             BREADCRUMBS — WAS: briefly "⚙ Profile", then "⚙ Curations" during
+               the Stage 10 vocabulary migration.
+             BREADCRUMBS — FUTURE: this button's id and the internal workspace
+               name "settings" stay as they are (see main.js's WORKSPACES /
+               ensureSettingsWorkspaceVisible()) for DOM-contract stability. -->
         <button
           id="workspace-tab-settings"
           class="workspace-tab workspace-tab-utility"
@@ -455,7 +477,7 @@
           aria-selected="false"
           aria-controls="workspace-settings"
           tabindex="-1"
-        >⚙ Profile</button>
+        >⚙ Settings</button>
       </nav>
 
       <!-- [UI-REDESIGN / Stage 1A]
@@ -895,7 +917,7 @@
                what the Tag chips and the Find/Load buttons already use, and
                it does not change the keyboard model these buttons have
                always had. -->
-          <div class="filter-toggle" role="group" aria-label="Library filter">
+          <div class="filter-toggle" role="group" aria-label="Media filter">
             <button id="all-media-btn" class="filter-btn active" type="button" aria-pressed="true">All media</button>
             <button id="favorites-only-btn" class="filter-btn" type="button" aria-pressed="false">♥ Favorites</button>
           </div>
@@ -948,7 +970,7 @@
            term) — see PROFILE-TAGS-DISCLOSURE in index.html's Settings
            section for the destination this opens. -->
       <div id="tags-filter-panel" class="tags-filter-panel hidden" role="group" aria-label="Filter by tag">
-        <p id="tags-filter-empty" class="hint">No tags yet. Create and manage tags in Profile → Tags.</p>
+        <p id="tags-filter-empty" class="hint">No tags yet. Create and manage tags in Curations → Tags.</p>
         <button id="manage-tags-btn" class="secondary hint-action-btn" type="button">Manage Tags</button>
         <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
       </div>
@@ -1279,159 +1301,222 @@
            for the Tagging administration content relocated from the
            now-removed top-level Tagging workspace. -->
       <section class="panel settings-panel">
-        <h2>Profile</h2>
+        <h2>Settings</h2>
 
         <details class="profile-section" open>
-        <summary>Profile</summary>
+        <summary>Curations &amp; Sync</summary>
 
-        <p class="hint">
-          Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
-        </p>
+        <!-- [SYNCV3 / STAGE-10 / HELP-COMPRESSION]
+             BREADCRUMBS — IS: the first small utility inside the expanded
+               section replays the existing five-step introduction.
+             BREADCRUMBS — WAS: Help opened the complete concept glossary.
+             BREADCRUMBS — WILL BE / FUTURE: explain one concept in context;
+               never make the user study the product model before acting. -->
+        <button id="profile-sync-help-btn" class="secondary profile-sync-help-btn" type="button">? Help</button>
 
-        <div class="profile-current-row">
-          <label for="profile-select" class="profile-select-label">Profile</label>
-          <select id="profile-select"></select>
-          <button id="profile-associate-btn" class="secondary hidden" type="button" disabled>Associate Current Library</button>
+        <!-- [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
+             [WHY: this stays inline and hidden until intentional Profile & Sync
+              entry, preserving Choose folder -> work while keeping education
+              beside the canonical Help definitions it summarizes.] -->
+        <section id="profile-sync-intro" class="profile-sync-intro hidden" aria-labelledby="profile-sync-intro-title">
+          <!-- [SYNCV3 / STAGE-10 / REPLAY-CLOSE]
+               [WHY: Close belongs to the header, not the action row, so it never
+                sits where Skip Intro sat on the previous screen. It is shown
+                only in replay; see describeContextualFirstUseActions().] -->
+          <div class="profile-sync-intro-header">
+            <p id="profile-sync-intro-progress" class="profile-sync-intro-progress"></p>
+            <button
+              id="profile-sync-intro-close"
+              class="profile-sync-intro-close hidden"
+              type="button"
+              aria-label="Close introduction"
+            >✕</button>
+          </div>
+          <h3 id="profile-sync-intro-title"></h3>
+          <p id="profile-sync-intro-body"></p>
+          <div class="profile-sync-intro-actions">
+            <button id="profile-sync-intro-back" class="secondary" type="button">Back</button>
+            <button id="profile-sync-intro-skip" class="secondary" type="button">Skip Intro</button>
+            <button id="profile-sync-intro-next" class="secondary" type="button">Next</button>
+            <button id="profile-sync-intro-done" type="button">Done</button>
+          </div>
+        </section>
+
+        <!-- [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+             BREADCRUMBS — IS: this ordinary media area combines folder status
+              and Curation choice; identity administration exists only below in
+              Advanced, while required recovery remains here. -->
+        <div id="profile-folder-group" class="profile-settings-group">
+          <!-- BREADCRUMBS — IS: ordinary rendering is peer-, Sync-, and
+               catalog-independent. A device joining Sync cannot make identity
+               plumbing appear here. -->
+          <div id="profile-media-folder-controls">
+            <h3 class="profile-group-heading">This Media Folder</h3>
+            <p id="profile-folder-link-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
+            <button
+              id="profile-folder-link-btn"
+              class="secondary hidden"
+              type="button"
+              disabled
+              aria-describedby="profile-media-folder-context-help"
+            >Reconnect Media Folder</button>
+            <div id="profile-media-folder-context-help" class="contextual-help hidden" role="note">
+              <p id="profile-media-folder-help" class="hint"></p>
+            </div>
+          </div>
+
+          <h3 class="profile-group-heading">Curation</h3>
+          <p id="profile-library-association-text" class="product-status product-status-muted">No Media Folder loaded.</p>
+          <!-- [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
+               [WHY: static, non-modal markup beside the relationship it
+                explains. Visibility follows the observer's single pending
+                offer; appearing ambiently never steals focus.] -->
+          <section
+            id="ambient-profile-offer"
+            class="ambient-profile-offer hidden"
+            aria-labelledby="ambient-profile-offer-heading"
+          >
+            <div class="ambient-profile-offer-header">
+              <h4 id="ambient-profile-offer-heading">This folder remembers another Curation</h4>
+              <button
+                id="ambient-profile-offer-close"
+                class="ambient-profile-offer-close"
+                type="button"
+                aria-label="Decide later"
+              >×</button>
+            </div>
+            <p id="ambient-profile-offer-text" aria-live="polite"></p>
+            <div class="ambient-profile-offer-actions">
+              <button id="ambient-profile-offer-yes" class="secondary" type="button">Use Curation</button>
+              <button id="ambient-profile-offer-no" class="secondary" type="button">Keep Current Curation</button>
+              <button id="ambient-profile-offer-later" class="secondary" type="button">Later</button>
+            </div>
+          </section>
+          <p id="ambient-profile-offer-result" class="hint" role="status" aria-live="polite"></p>
+
+          <!-- [NORTH-STAR / N4 / REVERSE-SUGGESTION]
+               Proven descendant agreement licenses this one quiet question,
+               never an automatic upward association. -->
+          <section
+            id="reverse-curation-offer"
+            class="ambient-profile-offer hidden"
+            aria-labelledby="reverse-curation-offer-heading"
+          >
+            <h4 id="reverse-curation-offer-heading">Use the same Curation here?</h4>
+            <p id="reverse-curation-offer-text" aria-live="polite"></p>
+            <div class="ambient-profile-offer-actions">
+              <button id="reverse-curation-offer-yes" class="secondary" type="button">Use Curation</button>
+              <button id="reverse-curation-offer-no" class="secondary" type="button">Not now</button>
+            </div>
+          </section>
+          <p id="reverse-curation-offer-result" class="hint" role="status" aria-live="polite"></p>
+
+          <!-- [NORTH-STAR / N2 / DEVICE-AWARE-HUMAN-QUESTION]
+               Shown only after N5 identifies one strong peer candidate. The
+               device name presents that evidence; it never creates it. -->
+          <section
+            id="device-aware-media-question"
+            class="ambient-profile-offer hidden"
+            aria-labelledby="device-aware-media-question-heading"
+          >
+            <h4 id="device-aware-media-question-heading">Same media?</h4>
+            <p id="device-aware-media-question-text" aria-live="polite"></p>
+            <div class="ambient-profile-offer-actions">
+              <button id="device-aware-media-question-yes" class="secondary" type="button">Yes</button>
+              <button id="device-aware-media-question-no" class="secondary" type="button">No</button>
+            </div>
+          </section>
+          <p id="device-aware-media-question-result" class="hint" role="status" aria-live="polite"></p>
+          <button
+            id="profile-associate-btn"
+            class="secondary hidden"
+            type="button"
+            aria-expanded="false"
+            aria-controls="profile-association-row"
+            disabled
+          >Choose a Curation for this folder</button>
+
+          <!-- [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
+               [WHY: association is shared state while active Profile is a
+                local device choice; association changes must never silently
+                switch the active Profile.] -->
+          <div id="profile-association-row" class="profile-association-row hidden">
+            <label for="profile-association-select">Curation for this folder</label>
+            <select id="profile-association-select" class="field-control"></select>
+            <div class="profile-association-actions">
+              <button id="profile-association-save-btn" class="secondary" type="button">Save Curation for this folder</button>
+              <button id="profile-association-cancel-btn" class="secondary" type="button">Cancel</button>
+            </div>
+            <p class="hint">Only the Curation remembered for this folder changes. Favorites, Hidden items and Tags stay in their own Curations.</p>
+            <p class="hint">This choice is shared with your other devices. The Curation this device is using does not change.</p>
+          </div>
+          <p id="profile-association-result" class="hint" role="status"></p>
+
+          <!-- [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+               Creation belongs with the single ordinary Curation concept, not
+               beneath a second permanent representation of active state. -->
+          <div class="profile-create-row">
+            <input id="profile-create-input" class="field-control" type="text" placeholder="New Curation name" maxlength="60" />
+            <button id="profile-create-btn" class="secondary" type="button">Create Curation</button>
+          </div>
+          <p id="profile-active-status-text" class="hint" role="status"></p>
         </div>
 
-        <div class="profile-create-row">
-          <input id="profile-create-input" type="text" placeholder="New profile name" maxlength="60" />
-          <button id="profile-create-btn" class="secondary" type="button">Save Profile</button>
+        <!-- [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+             This group is retained for a real unresolved/divergent local
+             Active-Curation decision. Runtime presentation hides it when it
+             merely repeats the folder's already-resolved Curation. -->
+        <div id="profile-active-group" class="profile-settings-group">
+          <h3 class="profile-group-heading">This Device Is Using</h3>
+          <!-- [SYNCV3 / STAGE-10 / FINAL-UX-POLISH]
+               [WHY: the standalone "Curation" label duplicated the group
+                heading and pushed the select off the left edge the rest of
+                this section's controls share. Each option now carries the
+                word, so the select reads "{Curation} Curation" on its own and
+                lines up with the create row below it. The visible label is
+                gone, so the accessible name moves to aria-label — the select
+                is still focused directly by the rail shortcut. -->
+          <div class="profile-current-row">
+            <select id="profile-select" class="field-control" aria-label="Curation this device is using" aria-describedby="profile-active-context-help"></select>
+          </div>
+          <div id="profile-active-context-help" class="contextual-help hidden" role="note">
+            <p class="hint"></p>
+          </div>
         </div>
 
-        <p id="profile-active-status-text" class="hint" role="status"></p>
+        <div id="profile-device-group" class="profile-settings-group">
+          <h3 class="profile-group-heading">This Device</h3>
+          <label for="profile-sync-v3-device-name" class="hint">Name this device</label>
+          <div class="profile-device-row">
+            <input
+              id="profile-sync-v3-device-name"
+              class="field-control"
+              type="text"
+              maxlength="120"
+              placeholder="e.g. Chromebook Pro"
+              aria-describedby="profile-sync-v3-device-name-status"
+            />
+            <button id="profile-sync-v3-device-name-save-btn" class="secondary" type="button">Save Device Name</button>
+            <button id="profile-sync-v3-device-name-reset-btn" class="secondary" type="button">Reset to Detected</button>
+          </div>
+          <p id="profile-sync-v3-device-name-status" class="hint" role="status"></p>
+        </div>
 
-        <hr class="profile-inline-hr" />
-
-        <!-- [PROFILE-SYNC]
-             WHAT: Compact status + controls for the Profile Sync Folder POC
-             — an optional cross-device mirror of the FULL Profile
-             collection into a user-chosen folder (ideally inside Google
-             Drive), layered on top of the IndexedDB persistence above.
-             WHY: "Choose the sync folder once, then mostly forget it
-             exists" — every element here is driven by ProfileSync's own
-             status (see renderProfileSync() in main.js), never hand-set,
-             so this can't drift out of sync with the real connection state.
-             FUTURE / DO-NOT-BREAK: This block must stay independent of the
-             media-source controls (FSA/legacy pickers) elsewhere in this
-             page — loading a different library must never show, hide, or
-             otherwise touch anything here. See profile-sync.js's header. -->
-        <div class="profile-sync-section" id="profile-sync-section">
-          <h3 class="profile-sync-heading">Profile Sync</h3>
-
-          <p id="profile-sync-status-text" class="hint" role="status">Status: Not configured</p>
-
+        <div id="profile-sync-group" class="profile-settings-group">
+          <h3 class="profile-group-heading">Sync</h3>
+          <p id="profile-sync-product-status" class="product-status product-status-muted" role="status">Not syncing — no sync folder chosen</p>
           <div class="control-stack">
-            <button id="profile-sync-choose-btn" class="secondary" type="button">Choose Google Drive Folder</button>
-            <button id="profile-sync-reconnect-btn" class="secondary hidden" type="button">Reconnect</button>
-            <div class="profile-sync-connected-row hidden" id="profile-sync-connected-row">
-              <button id="profile-sync-now-btn" class="secondary" type="button">Sync Now</button>
-              <button id="profile-sync-manage-toggle-btn" class="secondary" type="button" aria-expanded="false">Manage</button>
-            </div>
+            <button id="profile-sync-v3-choose-btn" class="secondary" type="button" aria-describedby="profile-sync-context-help">Choose Sync Folder</button>
+            <button id="profile-sync-v3-reconnect-btn" class="secondary hidden" type="button">Reconnect Sync Folder</button>
+            <button id="profile-sync-v3-disconnect-btn" class="secondary hidden" type="button">Disconnect Sync Folder</button>
           </div>
-
-          <div id="profile-sync-manage-panel" class="profile-sync-manage-panel hidden">
-            <button id="profile-sync-change-btn" class="secondary" type="button">Change Sync Folder</button>
-            <button id="profile-sync-disconnect-btn" class="danger" type="button">Disconnect Sync</button>
-          </div>
-
-          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
-               [WHY: activation is one-way and user-initiated, so it gets its
-                own explicit control rather than happening on connect. Shown
-                only while this installation is still on V1 — after cutover
-                there is nothing left to activate, and re-offering it would
-                imply the installation could go back.] -->
-          <div id="profile-sync-activate-panel" class="profile-sync-activate-panel hidden">
-            <p class="hint">
-              Sync V2 merges changes from every device instead of replacing whole Profiles.
-              Activating is one-way for this device. Your existing data stays exactly as it is.
-            </p>
-            <button id="profile-sync-activate-btn" class="secondary" type="button">Activate Sync V2</button>
-          </div>
-
-          <!-- [SYNCV3 / STAGE-01 / V3-ROOT-ISOLATION]
-               WHAT: A TEMPORARY development surface for the SyncV3 connection
-               and mode plumbing. Deliberately the smallest thing that can
-               exercise connect / activate / reconnect / leave / disconnect.
-               [WHY: the Profile & Sync Settings redesign is a later SyncV3
-                stage, and building it now would mean redesigning a page around
-                a transport that does not exist yet. This block is expected to be
-                DELETED by that stage — it is scaffolding, not a first draft, so
-                it deliberately reuses existing classes and adds no new styling.]
-               FUTURE / DO-NOT-BREAK: nothing here may write to the chosen V3
-               folder. After Stage 01 that folder must still be completely
-               empty. -->
-          <div id="profile-sync-v3-panel" class="profile-sync-activate-panel">
-            <h4 class="profile-sync-heading">Sync V3 (development)</h4>
-            <p id="profile-sync-v3-status-text" class="hint" role="status">Sync V3: not connected</p>
-            <!-- [SYNCV3 / STAGE-05 / DEVICE-NAMING]
-                 WHAT: A minimal, TEMPORARY control for naming this Browser
-                 Gallery installation.
-                 [WHY: deliberately unstyled and unpolished. The Profile & Sync
-                  Settings redesign is the next stage and will own where this
-                  really belongs; building the finished control now would mean
-                  designing it twice. This is a functional bridge so the naming
-                  behaviour can be exercised end to end.]
-                 FUTURE / DO-NOT-BREAK: the name here is descriptive only. It
-                 never becomes identity — the full deviceId does that. -->
-            <div class="control-stack">
-              <label for="profile-sync-v3-device-name" class="hint">Device Name</label>
-              <input
-                id="profile-sync-v3-device-name"
-                type="text"
-                maxlength="120"
-                placeholder="e.g. Chromebook Pro"
-                aria-describedby="profile-sync-v3-device-name-status"
-              />
-              <button id="profile-sync-v3-device-name-save-btn" class="secondary" type="button">Save Device Name</button>
-              <button id="profile-sync-v3-device-name-reset-btn" class="secondary" type="button">Reset to Detected</button>
-            </div>
-            <p id="profile-sync-v3-device-name-status" class="hint" role="status"></p>
-
-            <div class="control-stack">
-              <button id="profile-sync-v3-choose-btn" class="secondary" type="button">Choose V3 Sync Folder</button>
-              <button id="profile-sync-v3-reconnect-btn" class="secondary hidden" type="button">Reconnect V3 Folder</button>
-              <button id="profile-sync-v3-activate-btn" class="secondary" type="button">Activate Sync V3</button>
-              <button id="profile-sync-v3-leave-btn" class="secondary hidden" type="button">Leave V3 Mode</button>
-              <button id="profile-sync-v3-disconnect-btn" class="secondary hidden" type="button">Disconnect V3 Folder</button>
-            </div>
-          </div>
-
-          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
-               [WHY: the second device's ONLY way to say "this local folder is
-                that shared library". A dropdown of ids the user must pick from
-                deliberately — no name matching, no signature matching, no
-                pre-selection. Linking attaches identity only; it never moves
-                curation between Profiles.] -->
-          <div id="profile-sync-link-panel" class="profile-sync-link-panel hidden">
-            <p class="hint">
-              Link the currently loaded folder to a library another device already shares.
-              This only matches up identity — no Profile content is moved.
-            </p>
-            <div class="control-stack">
-              <select id="profile-sync-link-select" aria-label="Shared library to link the loaded folder to"></select>
-              <button id="profile-sync-link-btn" class="secondary" type="button">Link Loaded Folder</button>
-            </div>
-            <p id="profile-sync-link-status" class="hint" role="status"></p>
-          </div>
-
-          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
-               [WHY: relabelled from "conflict" to RECOVERY. Sync V2 never asks
-                this question — it merges per fact, so "both sides changed" has
-                a correct answer. These controls survive only for a V1
-                installation, and as a deliberate escape hatch; renderProfileSync
-                hides them entirely once mode is v2.] -->
-          <div id="profile-sync-conflict-panel" class="profile-sync-conflict-panel hidden">
-            <p class="hint">
-              <strong>Recovery only.</strong> Profile changed on another device and could not be
-              reconciled automatically. Choosing here replaces one whole version with the other.
-            </p>
-            <div class="control-stack">
-              <button id="profile-sync-use-synced-btn" class="secondary" type="button">Use Synced Version</button>
-              <button id="profile-sync-keep-local-btn" class="secondary" type="button">Keep Local Version</button>
-            </div>
+          <div id="profile-sync-context-help" class="contextual-help hidden" role="note">
+            <p id="profile-sync-media-safety" class="hint"></p>
+            <p class="role-descriptor">Google Drive Sync Folder</p>
+            <p class="role-descriptor-detail">Browser Gallery information only · No photos or videos</p>
           </div>
         </div>
+
 
         <hr class="profile-inline-hr" />
 
@@ -1439,9 +1524,9 @@
         <summary>Import / Export</summary>
 
         <div class="control-stack">
-          <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
-          <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
-          <button id="profile-import-replace-btn" class="secondary" type="button">Import Profile (Replace)</button>
+          <button id="profile-export-btn" class="secondary" type="button">Export Curation (.json)</button>
+          <button id="profile-import-merge-btn" class="secondary" type="button">Import Curation (Merge)</button>
+          <button id="profile-import-replace-btn" class="secondary" type="button">Import Curation (Replace)</button>
           <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
           <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
                WHAT: Creates a brand-new, independent Profile pre-populated
@@ -1455,7 +1540,7 @@
                FUTURE: The created Profile diverges independently from here
                on — this is a one-time copy, not an ongoing link back to
                the source file. -->
-          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Profile</button>
+          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Curation</button>
           <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
         </div>
 
@@ -1467,7 +1552,16 @@
         <p id="profile-status-text" class="hint" role="status"></p>
         </details>
 
-        <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
+        <!-- [SYNCV3 / STAGE-10 / NARRATIVE-HIERARCHY]
+             [WHY: destructive administration remains discoverable but no
+              longer competes with current setup status. Native details keeps
+              keyboard/disclosure behavior without a parallel UI system.] -->
+        <details class="profile-import-export-section profile-delete-section">
+          <summary>Delete Curation</summary>
+          <div class="control-stack">
+            <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this Curation">Delete Curation</button>
+          </div>
+        </details>
 
         </details>
 
@@ -1520,6 +1614,235 @@
 
         <div id="tags-empty" class="hint">No tags yet.</div>
         <div id="tags-grid" class="tags-grid hidden"></div>
+        </details>
+
+        <!-- [SYNCV3 / STAGE-06 / ADVANCED-SETTINGS]
+             [WHY: legacy transports, recovery, and V3 mode switches remain
+              available without competing with the normal Profile & Sync flow.] -->
+        <details class="advanced-settings-section">
+          <summary>Advanced Settings</summary>
+
+          <!-- [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+               BREADCRUMBS — IS: the full identity-management surface lives in
+                Advanced and uses the same state and handlers as before.
+               [N6-4 / ADVANCED-DISCLOSURES]
+               [WHY: closed by default, same as the other three nested
+                disclosures below — "Advanced means complexity is available on
+                demand, not displayed all at once." getElementById() still
+                finds every control inside a closed <details>, so no id or
+                handler below needed to change.] -->
+          <details class="advanced-media-library-section">
+            <summary>Media Library diagnostics</summary>
+            <p id="profile-folder-link-advanced-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
+            <div id="profile-folder-link-row" class="profile-folder-link-row hidden">
+              <label for="profile-folder-link-select">Media Library</label>
+              <select id="profile-folder-link-select" class="field-control" aria-describedby="profile-folder-link-conflict profile-media-library-context-help"></select>
+
+              <div id="profile-folder-new-library-row" class="profile-folder-new-library-row hidden">
+                <label for="profile-folder-new-library-input">Media Library name</label>
+                <input id="profile-folder-new-library-input" class="field-control" type="text" maxlength="120" aria-describedby="profile-folder-new-library-help" />
+                <p id="profile-folder-new-library-help" class="hint">This name is only used inside Browser Gallery. Your Media Folder keeps its own name and stays where it is. Nothing is copied or uploaded.</p>
+              </div>
+
+              <p id="profile-folder-library-sync-hint" class="hint hidden">Media Libraries from your other devices appear here after Sync is set up.</p>
+              <button id="profile-folder-library-sync-btn" class="secondary hint-action-btn hidden" type="button">Set Up Sync</button>
+              <div class="profile-folder-link-actions">
+                <button id="profile-folder-link-save-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-link-conflict">Use This Media Library</button>
+                <button id="profile-folder-link-cancel-btn" class="secondary hidden" type="button">Cancel</button>
+                <button id="profile-folder-unlink-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-unlink-help">Remove from This Media Library</button>
+              </div>
+              <p id="profile-folder-unlink-help" class="hint hidden">Removing only clears which Media Library this Media Folder represents on this device. Your photos, videos, Media Library, Curation, Favorites, Hidden items and Tags are not deleted.</p>
+              <div id="profile-folder-link-conflict" class="profile-folder-link-conflict hidden" role="status" aria-live="polite">
+                <strong id="profile-folder-link-conflict-heading"></strong>
+                <p id="profile-folder-link-conflict-detail"></p>
+                <p id="profile-folder-link-conflict-action"></p>
+              </div>
+              <div id="profile-media-library-context-help" class="contextual-help hidden" role="note">
+                <p id="profile-folder-action-help" class="hint"></p>
+                <p id="profile-folder-link-help" class="hint"></p>
+              </div>
+            </div>
+            <p id="profile-folder-link-result" class="hint" role="status"></p>
+          </details>
+
+          <details class="advanced-playback-section">
+            <summary>Arcade animations</summary>
+            <label for="arcade-animation-order-select" class="hint">Animation order</label>
+            <select id="arcade-animation-order-select" class="field-control">
+              <option value="sequential">Sequential</option>
+              <option value="true-random">True Shuffle</option>
+              <option value="shuffle-loop">Shuffle Loop</option>
+            </select>
+            <p id="arcade-animation-order-helper" class="hint">Every loading animation is picked randomly. Repeats can happen.</p>
+          </details>
+
+          <!-- [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-9]
+               BREADCRUMBS — IS: Normal Browser Gallery and StreamLoop each
+               own an independent startup policy (including an explicit "Do
+               not load media automatically" choice — see startupPolicy() in
+               app-preferences.js) and an independent post-load Auto Fill
+               preference. Auto Fill only ever occurs after the same
+               authoritative startup media-load completion attemptStartupMedia()
+               already awaits — see that function in main.js.
+               BREADCRUMBS — WAS: StreamLoop's startup controls used to live
+               here too, visually split from StreamLoop Integration's Auto
+               Fill checkbox. N6-9 moved them into StreamLoop Integration so
+               one customer-facing context (StreamLoop) has one home; this
+               disclosure now holds Normal Browser Gallery only.
+               [WHY: "Last used folder" remains the default and is exactly
+                N6's original zero-ceremony-reopen behaviour, unchanged. The
+                eligible-folder checkbox list is populated by
+                renderStartupMediaSettings(context) in main.js from the same
+                remembered-durable-FSA-folder population Recent Libraries
+                already shows. See boot-restore.js's decideStartupMedia() for
+                the selection policy itself, and launch-context.js for how
+                the live launch context is determined.] -->
+          <details class="advanced-startup-media-section">
+            <summary>Startup Media</summary>
+
+            <div class="startup-media-context-group">
+              <h4 class="startup-media-context-heading">Normal Browser Gallery</h4>
+              <label for="startup-media-browser-policy-select" class="hint">What loads when Browser Gallery opens</label>
+              <select id="startup-media-browser-policy-select" class="field-control">
+                <option value="off">Do not load media automatically</option>
+                <option value="last-used">Last used folder</option>
+                <option value="random-remembered">Random remembered folder</option>
+                <option value="random-selected">Random from selected folders</option>
+              </select>
+              <p id="startup-media-browser-policy-helper" class="hint">Opens whichever folder you used last, if Browser Gallery still has access.</p>
+
+              <div id="startup-media-browser-eligible-section" class="startup-media-eligible-section hidden">
+                <p id="startup-media-browser-eligible-empty" class="hint hidden">No remembered folders yet — choose a folder first, then come back here to include it.</p>
+                <div id="startup-media-browser-eligible-list" class="startup-media-eligible-list"></div>
+              </div>
+
+              <label class="compact-check wide-check" title="Automatically enter Fill Panel once Browser Gallery's startup media has finished loading">
+                <input id="startup-media-browser-auto-fill-panel-input" type="checkbox" />
+                <span>Auto Fill Panel after media loads</span>
+              </label>
+              <p id="startup-media-browser-auto-fill-helper" class="hint hidden">Available when media loads automatically.</p>
+            </div>
+          </details>
+
+          <!-- [STREAMLOOP-INTEGRATION / N6-7] [STREAMLOOP-INTEGRATION / N6-9]
+               [WHY: BG-owned configuration for behavior that applies ONLY
+                when this tab was explicitly launched with
+                ?launch=streamloop (see launch-context.js) — never a
+                StreamLoop/GS3-side settings panel. ALL StreamLoop-specific
+                customer-facing configuration lives together here, including
+                its startup policy and eligible-folder pool (moved from
+                Startup Media in N6-9) — one customer context, one home. See
+                the N6-7 handoff's Part 1 for why StreamLoop-specific
+                playback (shuffle/interval/loop) overrides are NOT added
+                here — existing BG Playback Settings remain authoritative
+                for both launch contexts.] -->
+          <details class="advanced-streamloop-integration-section">
+            <summary>StreamLoop Integration</summary>
+            <p class="hint">Applies only when Browser Gallery is launched by StreamLoop.</p>
+
+            <div class="startup-media-context-group">
+              <h4 class="startup-media-context-heading">When launched by StreamLoop</h4>
+              <label for="startup-media-streamloop-policy-select" class="hint">What loads when StreamLoop launches Browser Gallery</label>
+              <select id="startup-media-streamloop-policy-select" class="field-control">
+                <option value="off">Do not load media automatically</option>
+                <option value="last-used">Last used folder</option>
+                <option value="random-remembered">Random remembered folder</option>
+                <option value="random-selected">Random from selected folders</option>
+              </select>
+              <p id="startup-media-streamloop-policy-helper" class="hint">Opens whichever folder you used last, if Browser Gallery still has access.</p>
+
+              <div id="startup-media-streamloop-eligible-section" class="startup-media-eligible-section hidden">
+                <p id="startup-media-streamloop-eligible-empty" class="hint hidden">No remembered folders yet — choose a folder first, then come back here to include it.</p>
+                <div id="startup-media-streamloop-eligible-list" class="startup-media-eligible-list"></div>
+              </div>
+
+              <label class="compact-check wide-check" title="Automatically enter Fill Panel once StreamLoop's media has finished loading">
+                <input id="streamloop-auto-fill-panel-input" type="checkbox" />
+                <span>Auto Fill Panel after media loads</span>
+              </label>
+              <p id="streamloop-auto-fill-helper" class="hint hidden">Available when media loads automatically.</p>
+            </div>
+          </details>
+
+        <!-- [PROFILE-SYNC]
+             WHAT: Compact status + controls for the Profile Sync Folder POC
+             — an optional cross-device mirror of the FULL Profile
+             collection into a user-chosen folder (ideally inside Google
+             Drive), layered on top of the IndexedDB persistence above.
+             WHY: "Choose the sync folder once, then mostly forget it
+             exists" — every element here is driven by ProfileSync's own
+             status (see renderProfileSync() in main.js), never hand-set,
+             so this can't drift out of sync with the real connection state.
+             FUTURE / DO-NOT-BREAK: This block must stay independent of the
+             media-source controls (FSA/legacy pickers) elsewhere in this
+             page — loading a different library must never show, hide, or
+             otherwise touch anything here. See profile-sync.js's header. -->
+        <details class="profile-sync-section" id="profile-sync-section">
+          <summary>Sync Your Curations</summary>
+
+          <p class="hint">Choose a Google Drive Sync Folder. Browser Gallery uses it to make your Curations available across your devices. It is separate from a Google Drive Media Folder and does not contain your photos and videos.</p>
+
+          <p id="profile-sync-status-text" class="hint" role="status">Status: Not configured</p>
+
+          <div class="control-stack">
+            <button id="profile-sync-choose-btn" class="secondary" type="button">Choose Google Drive Sync Folder</button>
+            <button id="profile-sync-reconnect-btn" class="secondary hidden" type="button">Reconnect</button>
+            <div class="profile-sync-connected-row hidden" id="profile-sync-connected-row">
+              <button id="profile-sync-now-btn" class="secondary" type="button">Sync Now</button>
+              <button id="profile-sync-manage-toggle-btn" class="secondary" type="button" aria-expanded="false">Manage</button>
+            </div>
+          </div>
+
+          <div id="profile-sync-manage-panel" class="profile-sync-manage-panel hidden">
+            <button id="profile-sync-change-btn" class="secondary" type="button">Change Sync Folder</button>
+            <button id="profile-sync-disconnect-btn" class="danger" type="button">Disconnect Sync</button>
+          </div>
+
+          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+               [WHY: activation is one-way and user-initiated, so it gets its
+                own explicit control rather than happening on connect. Shown
+                only while this installation is still on V1 — after cutover
+                there is nothing left to activate, and re-offering it would
+                imply the installation could go back.] -->
+          <div id="profile-sync-activate-panel" class="profile-sync-activate-panel hidden">
+            <p class="hint">
+              Sync V2 merges changes from every device instead of replacing whole Curations.
+              Activating is one-way for this device. Your existing data stays exactly as it is.
+            </p>
+            <button id="profile-sync-activate-btn" class="secondary" type="button">Activate Sync V2</button>
+          </div>
+
+          <!-- [SYNCV3 / STAGE-06 / SCAFFOLDING-CLEANUP]
+               [WHY: the status below retains implementation-facing mode,
+                folder, and tab-role detail that is useful in Advanced. Normal
+                folder actions and product copy live only in Profile & Sync.] -->
+          <div class="profile-sync-activate-panel">
+            <h4 class="profile-sync-heading">Sync V3 diagnostics</h4>
+            <p id="profile-sync-v3-status-text" class="hint" role="status">Sync V3: not connected</p>
+            <div class="control-stack">
+              <button id="profile-sync-v3-activate-btn" class="secondary" type="button">Activate Sync V3</button>
+              <button id="profile-sync-v3-leave-btn" class="secondary hidden" type="button">Leave V3 Mode</button>
+            </div>
+          </div>
+
+          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+               [WHY: relabelled from "conflict" to RECOVERY. Sync V2 never asks
+                this question — it merges per fact, so "both sides changed" has
+                a correct answer. These controls survive only for a V1
+                installation, and as a deliberate escape hatch; renderProfileSync
+                hides them entirely once mode is v2.] -->
+          <div id="profile-sync-conflict-panel" class="profile-sync-conflict-panel hidden">
+            <p class="hint">
+              <strong>Recovery only.</strong> A Curation changed on another device and could not be
+              reconciled automatically. Choosing here replaces one whole version with the other.
+            </p>
+            <div class="control-stack">
+              <button id="profile-sync-use-synced-btn" class="secondary" type="button">Use Synced Version</button>
+              <button id="profile-sync-keep-local-btn" class="secondary" type="button">Keep Local Version</button>
+            </div>
+          </div>
+        </details>
+
         </details>
 
       </section>
@@ -1643,16 +1966,30 @@
     </div>
  
     <!-- Sits between the toolbar above and the ⚙ row below — a sibling of
-         both — and only occupies layout space while open. One row, same
-         height as the toolbar: "Ghost Opacity" label, slider, percentage,
-         left to right. -->
+         both — and only occupies layout space while open. Two rows, same
+         shape: label, slider, percentage, Remember checkbox, left to right.
+         [PM-TOOLBAR-OPACITY] Exactly two configurable PM toolbar opacity
+         states, never a third: Toolbar Opacity (not-hovered — this is the
+         pre-existing "Ghost Opacity" mechanism, id/storage unchanged, only
+         its on-screen label changed) and Hover Opacity (hovered — replaces
+         what used to be a hardcoded 100%). Hover never changes the stored
+         Toolbar Opacity value. -->
     <div id="ghost-popunder" class="ghost-popunder hidden">
       <div class="ghost-popunder-row">
-        <label class="ghost-popunder-label" for="ghost-opacity-input">Ghost Opacity</label>
+        <label class="ghost-popunder-label" for="ghost-opacity-input">Toolbar Opacity</label>
         <input id="ghost-opacity-input" type="range" min="0" max="100" step="1" value="15" />
-        <span id="ghost-opacity-label">15%</span>
+        <span id="ghost-opacity-label" class="ghost-popunder-value">15%</span>
         <label class="ghost-popunder-remember" for="ghost-remember-input">
           <input id="ghost-remember-input" type="checkbox" checked />
+          <span>Remember this value</span>
+        </label>
+      </div>
+      <div class="ghost-popunder-row">
+        <label class="ghost-popunder-label" for="hover-opacity-input">Hover Opacity</label>
+        <input id="hover-opacity-input" type="range" min="0" max="100" step="1" value="100" />
+        <span id="hover-opacity-label" class="ghost-popunder-value">100%</span>
+        <label class="ghost-popunder-remember" for="hover-remember-input">
+          <input id="hover-remember-input" type="checkbox" checked />
           <span>Remember this value</span>
         </label>
       </div>
@@ -1672,8 +2009,8 @@
           type="button"
           aria-haspopup="true"
           aria-expanded="false"
-          aria-label="Ghost Opacity"
-          title="Ghost Opacity"
+          aria-label="Toolbar Opacity"
+          title="Toolbar Opacity"
         >👻</button>
         <span class="presentation-settings-label">Tags</span>
         <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] Wording only — tag
@@ -1682,7 +2019,7 @@
              Presentation Mode is a focused overlay, and sending the user to
              a different workspace mid-presentation is a bigger interaction
              than this compact settings row should take on unprompted. -->
-        <p id="presentation-tags-empty" class="hint presentation-tags-empty">No tags yet — create and manage tags in Profile → Tags.</p>
+        <p id="presentation-tags-empty" class="hint presentation-tags-empty">No tags yet — create and manage tags in Curations → Tags.</p>
         <div id="presentation-tags-row" class="presentation-tags-row hidden"></div>
       </div>
       <div id="presentation-tags-overflow" class="presentation-tags-overflow hidden"></div>
@@ -1752,17 +2089,17 @@
        so the two can never drift. -->
   <dialog id="profile-sync-setup-dialog" class="app-dialog profile-sync-setup-dialog" aria-labelledby="profile-sync-setup-title">
     <div class="app-dialog-inner">
-      <h2 id="profile-sync-setup-title" class="app-dialog-title">Set Up Profile Sync</h2>
-      <p class="app-dialog-body">Choose a dedicated folder inside Google Drive so your Profiles can sync between devices.</p>
+      <h2 id="profile-sync-setup-title" class="app-dialog-title">Set Up Curation Sync</h2>
+      <p class="app-dialog-body">Choose a Google Drive Sync Folder so your Curations are available on each device you want to use. This is not a Google Drive Media Folder — it holds Browser Gallery information only, never your photos and videos.</p>
 
       <p class="profile-sync-setup-step"><strong>First device:</strong> Create a folder named:</p>
-      <div class="profile-sync-setup-foldername" id="profile-sync-setup-foldername">Browser Gallery Profiles</div>
+      <div class="profile-sync-setup-foldername" id="profile-sync-setup-foldername">Browser Gallery Sync</div>
 
       <p class="profile-sync-setup-step"><strong>Additional devices:</strong> Select that same existing folder.</p>
 
       <p class="profile-sync-setup-once"><strong>You only need to do this once on each device.</strong></p>
 
-      <p class="hint">Browser Gallery will create and manage the files inside this folder automatically. Do not select your media folder.</p>
+      <p class="hint">Browser Gallery manages Curation data in this Sync Folder. It does not contain your photos or videos.</p>
 
       <div class="app-dialog-actions">
         <button id="profile-sync-setup-copy-btn" class="secondary" type="button">Copy Folder Name</button>

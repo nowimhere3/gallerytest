@@ -220,6 +220,13 @@ export function mergeLibraryFacts(a, b) {
   };
 }
 
+export function mergeStructureFacts(a, b) {
+  return {
+    children: mergeMaps(a.children, b.children, mergeFact),
+    sample: mergeFact(a.sample, b.sample),
+  };
+}
+
 export function mergeProfileFacts(a, b) {
   return {
     name: mergeFact(a.name, b.name),
@@ -254,6 +261,9 @@ export function mergeReplicas(a, b) {
     //  libraryId this device has never heard of materializes with no
     //  special-casing at all.]
     libraries: mergeMaps(a.libraries, b.libraries, mergeLibraryFacts),
+    // Portable evidence is independent of catalog and association facts. A
+    // newer sample wins by ordinary LWW; child relations merge per prefix.
+    structure: mergeMaps(a.structure, b.structure, mergeStructureFacts),
   };
 }
 
@@ -270,6 +280,27 @@ export function forEachFact(replica, visit) {
 
   for (const fact of Object.values(replica.associations || {})) {
     if (isFact(fact)) visit(fact);
+  }
+
+  // [SYNCV3 / CLOCK-HOTFIX / LIBRARY-FACT-OBSERVATION]
+  // [WHY: LibraryFacts are three independently ordered facts. Keeping them in
+  //  this canonical traversal makes every observeReplica caller raise its
+  //  clock floor past the complete replica, just as it already does for
+  //  associations and Profile facts.]
+  for (const library of Object.values(replica.libraries || {})) {
+    if (!library || typeof library !== "object") continue;
+    if (isFact(library.name)) visit(library.name);
+    if (isFact(library.sourceDeviceId)) visit(library.sourceDeviceId);
+    if (isFact(library.lastLoadedAt)) visit(library.lastLoadedAt);
+  }
+
+
+  for (const structure of Object.values(replica.structure || {})) {
+    if (!structure || typeof structure !== "object") continue;
+    if (isFact(structure.sample)) visit(structure.sample);
+    for (const child of Object.values(structure.children || {})) {
+      if (isFact(child)) visit(child);
+    }
   }
 
   for (const profile of Object.values(replica.profiles || {})) {
