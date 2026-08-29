@@ -8,18 +8,138 @@
 </head>
 <body>
   <div class="app-shell">
-    <header class="topbar">
-      <div>
-        <h1>Local Media Gallery</h1>
-        <p class="subtitle">
-          Single-instance slideshow app for loading local media and filling the iframe/panel it runs inside.
-        </p>
-      </div>
+    <!-- [UI-REDESIGN / Stage 2]
+         WHAT: header.topbar (large <h1> title + .subtitle) removed; the
+         app's identity is now the compact [BG] placeholder at the top of
+         the left rail below.
+         WHY: The old topbar spent a full banner of vertical space on text
+         that never changed, above every screen. The rail is where
+         persistent context already lives, so identity belongs there with
+         it. Nothing in main.js ever read the <h1> or .subtitle — verified
+         before removal — so this is presentation only.
+         FUTURE: The mark is a PLACEHOLDER. Replacing it with real branding
+         means swapping the two spans' contents, not reintroducing a
+         topbar. -->
+
+    <!-- [UI-REDESIGN / Stage 6]
+         WHAT: The compact app header for narrow screens — identity mark,
+         a live library/profile context line, and the `Media` button that
+         opens the rail as a bottom sheet. Hidden entirely on desktop and
+         during Fill Panel; it is the only element in this app that lives
+         above main.layout.
+         WHY: On narrow screens the left rail becomes a drawer, which takes
+         identity and the association summary off screen with it. Those two
+         things are exactly the persistent context a phone user still needs,
+         so a compact strip carries them and the handle that opens the rest.
+         It sits ABOVE main.layout deliberately: it is app chrome, not a
+         workspace, and putting it inside the grid would mean giving it a
+         column span in every layout state.
+         The Stage 2 note above warns that anything placed here falls outside
+         the Fill Panel rules that hide the rest of the chrome — so this
+         element has its own `.simulated-fullscreen .mobile-app-header` rule
+         in styles.css. That rule is not optional.
+         FUTURE: This is CONTEXT ONLY plus one drawer handle. Do not grow a
+         second transport, a second Load control, or a mobile-only copy of
+         anything in the rail here — the rail itself is what opens. -->
+    <header id="mobile-app-header" class="mobile-app-header">
+      <span class="mobile-app-mark" aria-hidden="true">BG</span>
+      <!-- [UI-REDESIGN / Stage 6]
+           WHAT: A READOUT that mirrors #associated-text, the rail's
+           association value.
+           WHY: It is a second display of one value, never a second source of
+           it — syncMobileContextSummary() in main.js reads the rail element's
+           own text and is called from syncAssociateButtonVisibility(), the
+           single function that already owns that state. There is no separate
+           stored value and no second code path that can compute a different
+           answer.
+           FUTURE: If this ever needs more context, mirror another EXISTING
+           readout the same way. Do not derive association state here. -->
+      <p id="mobile-context-text" class="mobile-context-text">Curation: —</p>
+      <!-- [UI-REDESIGN / Stage 6] The drawer handle is now a FOLDER ICON named
+           `Folders`. It carries no visible text and no child elements: the
+           folder is drawn entirely by this button's own ::before / ::after in
+           styles.css, so there is nothing here to keep in sync with the icon.
+           This is a LABEL + PRESENTATION change only: the id, the class, the
+           `controls-panel` it opens, openControlsDrawer()/closeControlsDrawer()
+           and every `controls-*` id in the drawer are deliberately unchanged,
+           so no JS, CSS selector or DOM-contract entry moves with the word.
+           WHY: `Controls` described the rail's implementation and `Media` was
+           still a category; `Folders` names the thing the user actually goes in
+           there to pick. With the text gone the handle stops competing with the
+           context line beside it for room on a narrow strip.
+           The accessible name comes from `aria-label`, which is the only name
+           this button has — an empty <button> with a CSS-drawn glyph has no
+           text content to fall back on, so the attribute is load-bearing, not
+           a decoration. `title` gives pointer users the same word.
+           FUTURE: When the compact dock becomes several sheets, this is the
+           button that grows a sheet picker. Renaming the ids to match is a
+           separate, mechanical pass — do not half-do it here. -->
+      <button
+        id="mobile-controls-btn"
+        class="secondary mobile-controls-btn"
+        type="button"
+        aria-label="Folders"
+        title="Folders"
+        aria-expanded="false"
+        aria-controls="controls-panel"
+      ></button>
     </header>
- 
+
+    <!-- [UI-REDESIGN / Stage 6]
+         WHAT: The dimming scrim behind the Controls drawer.
+         WHY: A separate element rather than a ::before on the drawer, because
+         it must sit BELOW the drawer and ABOVE everything else, and it takes
+         the outside-click that closes it. Its `hidden` attribute is toggled by
+         the same two functions that open/close the drawer, so it cannot be
+         left on screen without the sheet.
+         FUTURE: Keep this presentational. It is a click target and a dimmer;
+         it must never hold controls. -->
+    <div id="controls-scrim" class="controls-scrim" hidden></div>
+
     <main class="layout">
-      <section class="panel controls-panel">
-        <h2>Load Media</h2>
+      <section id="controls-panel" class="panel controls-panel">
+        <!-- [UI-REDESIGN / Stage 6]
+             WHAT: The drawer's own close control, shown only while the rail is
+             a bottom sheet.
+             WHY: A bottom sheet needs a visible, thumb-reachable dismissal —
+             Escape and the scrim are the keyboard and pointer routes, but
+             neither is discoverable on a touch device. `order: -1` in CSS
+             places it above the rail's unordered identity group, per the
+             Stage 2 note that every rail child needs an explicit order.
+             FUTURE: This closes the drawer and nothing else. It must never
+             become a "done"/"apply" button — the rail's controls each act
+             immediately, exactly as they do on desktop. -->
+        <button
+          id="controls-drawer-close-btn"
+          class="secondary controls-drawer-close-btn"
+          type="button"
+        >Close</button>
+
+        <!-- [UI-REDESIGN / Stage 2]
+             WHAT: Compact identity placeholder — [BG] Browser Gallery.
+             WHY: Replaces the removed topbar per the approved rail IA.
+             Deliberately no logo asset and no id: this is static
+             decoration, nothing in main.js addresses it.
+             FUTURE: Placeholder only. Do not generate or embed a logo
+             image here without approval. -->
+        <div class="rail-identity">
+          <span class="rail-identity-mark" aria-hidden="true">BG</span>
+          <span class="rail-identity-name">Browser Gallery</span>
+        </div>
+
+        <!-- [UI-REDESIGN / Stage 5] "Load Media" -> "Libraries", and
+             restyled from a panel <h2> to the small uppercase section label
+             the approved composition uses. It stays an <h2> so the rail's
+             heading structure is unchanged for assistive tech — this is a
+             type treatment, not a demotion. The name matches the rail IA,
+             which calls this section Libraries. -->
+        <h2 class="rail-section-label">Media Folders</h2>
+        <!-- [SYNCV3 / STAGE-10 / DRIVE-ROLES]
+             [WHY: Google Drive plays two different roles in this product. The
+              role descriptor is structural at BOTH choosers so neither can be
+              read as "your Google Drive folder"; the Sync Folder's own
+              descriptor lives beside its chooser in Curations & Sync.] -->
+        <p class="role-descriptor">Your photos and videos</p>
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
              WHAT: Collapses the legacy Choose Files/Choose Folder controls
@@ -65,44 +185,1409 @@
              empty. -->
         <div id="fsa-recent-libraries" class="fsa-recent-libraries hidden"></div>
         <p id="fsa-status-text" class="hint" role="status"></p>
-        <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
-             WHAT: One button, shown whenever a library/folder is loaded —
-             reads "Associate with Profile" when the current load has no
-             association yet, "Change Profile" once it does.
-             WHY: Section 5 rule — a wrong association must be fixable
-             without deleting/recreating the library, and there is
-             deliberately no separate second button/UI for that; same
-             control, same click handler, different current state.
-             FUTURE: This is NAVIGATION ONLY — it must never gain its own
-             profile-selection UI. It always defers to the real Profile
-             <details> section (auto-expanded + scrolled into view by this
-             same click handler) for the actual choice. See
-             syncAssociateButtonVisibility()/scrollToProfileSection() in
-             main.js. -->
-        <button id="fsa-associate-btn" class="button-like secondary fsa-associate-btn hidden" type="button" disabled>
-          <span id="fsa-associate-btn-label">Associate with Profile</span>
-        </button>
- 
+
         <hr />
+
+        <!-- [UI-REDESIGN / Stage 2]
+             WHAT: The Profile for This Library summary. Both of its live parts are
+             EXISTING elements moved here, not new ones: #associated-text
+             came out of the .status-box below, and #fsa-associate-btn came
+             out of the Libraries block above.
+             WHY: The approved rail IA gives the current library's
+             association its own summary between Libraries and Clear Media,
+             instead of burying the value as a fourth row of the green
+             status box while its only control sat further up. Moving both
+             into one block puts the state and the way to change it in the
+             same place.
+             FUTURE: This block stays a SUMMARY plus the existing
+             navigation shortcut. Do not add a profile <select>, a create
+             field, or any other profile management here — that lives in
+             Settings, and the whole point of the shortcut is to go there.
+             See the button's own note below. -->
+        <div class="rail-profile-summary">
+          <p class="rail-profile-summary-label">Curation for This Folder</p>
+          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+               WHAT: Live Library<->Profile association state for whatever
+               is CURRENTLY LOADED — not the globally active profile name.
+               WHY: The old association affordance only lived in a button
+               that could scroll out of view; this makes the state itself
+               always visible.
+               [UI-REDESIGN / Stage 2] Moved out of the green .status-box
+               into this summary. The element, its id, and every writer of
+               it are unchanged — only its parent and its styling moved. It
+               is no longer green/monospace because it is no longer one of
+               the live file-state rows; it is the rail's answer to "which
+               Profile owns what I just loaded".
+               FUTURE: Driven entirely by updateAssociatedStatusRow() in
+               main.js, itself derived from currentSourceKind/
+               activeLibraryRecord — never a separate stored value. Do not
+               let this drift out of sync with those; if a new source kind
+               is ever added, update that one function, not this markup. -->
+          <p class="rail-profile-summary-value"><span id="associated-text">—</span></p>
+          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+               WHAT: One button, shown whenever a library/folder is loaded —
+               reads "Choose Profile for This Library" when the current load
+               has no Profile yet, "Change Profile for This Library" once it does.
+               WHY: Section 5 rule — a wrong association must be fixable
+               without deleting/recreating the library, and there is
+               deliberately no separate second button/UI for that; same
+               control, same click handler, different current state.
+               FUTURE: This is NAVIGATION ONLY — it must never gain its own
+               profile-selection UI. It always defers to the real Profile
+               <details> section, which since Stage 1C lives in the Settings
+               workspace: the same click handler now switches to that
+               workspace, expands the section, scrolls to it, and focuses a
+               control inside it. See syncAssociateButtonVisibility()/
+               expandAndScrollToProfileSection() in main.js. -->
+          <button id="fsa-associate-btn" class="button-like secondary fsa-associate-btn hidden" type="button" disabled>
+            <span id="fsa-associate-btn-label">Choose a Curation</span>
+          </button>
+          <!-- [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
+               BREADCRUMBS — IS: the card's scan path is concept -> current
+                 state -> action -> benefit, in that DOM order. The benefit
+                 sentence sits AFTER the button on purpose: a reader who already
+                 knows what they want should reach the control without reading
+                 past an explanation first.
+               BREADCRUMBS — WAS: there was no benefit line at all, and the
+                 button repeated the concept from the label two lines above it
+                 ("Choose Curation for This Folder") — long enough to
+                 need a hard-coded line break to wrap tidily in the rail.
+               BREADCRUMBS — FUTURE: this stays a summary plus the existing
+                 navigation shortcut. Do not move this sentence above the
+                 button, and do not let the button regrow the concept text. -->
+          <p id="fsa-associate-help" class="rail-profile-summary-help hint hidden"></p>
+        </div>
+
+        <!-- [UI-REDESIGN / Stage 2]
+             WHAT: Clear Media, moved out of section.playback-section to
+             become a direct child of the rail, with Live Status directly
+             beneath it. Same element, same id, same handler.
+             WHY: Two reasons. It had to leave .playback-section because
+             Stage 3 removes that section entirely and Clear Media stays in
+             the rail. And `order` only applies to flex children, so it has
+             to be a direct child of .controls-panel to be placed here at
+             all.
+             FUTURE: Clear Media is DESTRUCTIVE and stays visually separated
+             from the Libraries controls above it. Do not fold it back into
+             a row with them. -->
+        <button id="clear-btn" class="danger clear-media-btn">Clear Media</button>
+
+        <!-- [UI-REDESIGN / Stage 2]
+             WHAT: Live Status, moved out of section.slideshow-settings-section
+             to sit directly beneath Clear Media. Unchanged apart from its
+             parent and the loss of its fourth row (see the Associated
+             Profile summary above).
+             WHY: The brief's reason is specific — during a large load the
+             progress in #status-text must be watchable without scrolling.
+             Buried at the bottom of the rail under the interval and
+             checkbox controls, it was not. Same `order`-needs-a-direct-
+             child mechanic as Clear Media above.
+             FUTURE: Stage 3 removes the Slideshow/Playback blocks below
+             this; Live Status and Clear Media stay. Keep this box adjacent
+             to Clear Media — the pairing is deliberate, since Clear Media's
+             effect is reported here. -->
+        <div class="status-box">
+          <!-- [UI-REDESIGN / Stage 5] The composition labels this block.
+               Presentational only — the rows below already carry their own
+               <strong> labels, so this adds a heading, not a second
+               readout. -->
+          <p class="status-box-title">Live Status</p>
+          <!-- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+               WHAT: the three original rows, now grouped in one wrapper so
+               they can be hidden as a unit while the mobile takeover below
+               is showing — Selected/View describe the CURRENT Player, which
+               has nothing to say mid-load or right after a failure.
+               WHY a wrapper rather than hiding each row: this is a pure
+               nesting change — same three elements, same ids, same content,
+               no attribute added to any of them — so nothing that already
+               reads #status-text/#selected-text/#view-mode-text is affected.
+               Desktop is unaffected; no existing rule targeted `.status-box`'s
+               children directly (verified against styles.css). -->
+          <div class="status-box-fields">
+            <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
+            <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
+            <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
+          </div>
+
+          <!-- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
+               WHAT: the mobile-only focused-loading composition — a primary
+               truthful state line, a small textmode activity bar, a real
+               count (only when a total is actually known), a green textmode
+               animation, and a short atmospheric line. `display: none` at
+               every width by default; the compact stylesheet turns it on
+               only while `[data-mobile-load-state="loading"]` — see
+               styles.css for why "loading" specifically, not "failed".
+               WHY every piece here is a MIRROR, never a second source: each
+               is written by renderMobileLoadProgress()/the animation tick in
+               main.js from the exact same loaded/total values the existing
+               onProgress callbacks already compute for #status-text — there
+               is no second progress computation anywhere in this block.
+               The animation (#mobile-load-canvas) and the activity bar's
+               indeterminate sweep are pure decoration with zero influence on
+               any loader state, which is why both carry aria-hidden — a
+               screen-reader user gets the same two truthful text lines
+               (#mobile-load-primary-text, #mobile-load-count-text) a sighted
+               user reads, nothing more, nothing less, and no rapid-fire
+               aria-live spam (matching #status-text's own long-standing
+               choice not to be a live region during batch progress).
+               FUTURE: DESKTOP NOTE — a desktop equivalent of this focused
+               loading composition may be worth considering later; no desktop
+               CSS or behavior exists for it yet, and none should be added
+               without a separate, deliberate pass. -->
+          <div class="mobile-load-takeover">
+            <p id="mobile-load-primary-text" class="mobile-load-primary-text"></p>
+            <p id="mobile-load-activity-bar" class="mobile-load-activity-bar" aria-hidden="true"></p>
+            <p id="mobile-load-count-text" class="mobile-load-count-text hidden"></p>
+            <!-- [V2-POLISH / MICRO-ARCADE-CANVAS] [V2-POLISH / STARFIGHTER-PROTOTYPE]
+                 WHAT: was a text worker (a pre element, #mobile-load-ascii)
+                 built from fixed-width ASCII frames. Now a 160x64 pixel
+                 canvas running one of a pool of arcade scenes — see main.js.
+                 [V2-POLISH / MICRO-ARCADE-160X64] The buffer widened from
+                 128 to 160 at the SAME height: the extra columns are for
+                 travel (Bigfoot's walk, the UFO's arrival, a cannonball's
+                 arc), and holding the height fixed is what keeps this card
+                 from growing and pushing the truthful readouts toward the
+                 fold on a small phone.
+                 NOTE: the retired id is referenced above in #hash form, not
+                 as a literal attribute. check-dom-contract.js scans this
+                 file as text, so an attribute-shaped mention inside a
+                 comment is counted as a real element and inflates the id
+                 census — keep retired-id references in this file in #hash
+                 form for that reason.
+                 WHY the width/height ATTRIBUTES are 128x64 while the
+                 displayed size lives in CSS: those attributes are the
+                 drawing buffer, not the layout box. Keeping the buffer tiny
+                 and scaling it up with image-rendering: pixelated is what
+                 makes the pixels chunky on purpose rather than a blurry
+                 upscale.
+                 Still aria-hidden and still purely decorative: the truthful
+                 state lines above it (#mobile-load-primary-text,
+                 #mobile-load-count-text) remain the only things a screen
+                 reader gets, exactly as before.
+                 FUTURE: one scene today; if it earns its place this becomes a
+                 curated pool, and the same canvas can be reused by the
+                 planned desktop rail takeover. -->
+            <canvas id="mobile-load-canvas" class="mobile-load-canvas" width="160" height="64" aria-hidden="true"></canvas>
+            <p id="mobile-load-atmosphere-text" class="mobile-load-atmosphere-text" aria-hidden="true"></p>
+          </div>
+        </div>
+
+        <!-- [UI-REDESIGN / Stage 3]
+             WHAT: section.playback-section (h2 Slideshow + the four
+             transport buttons) and section.slideshow-settings-section (the
+             interval stepper + four checkboxes) both removed from the rail.
+             Their controls were not deleted — every one of them now lives
+             beneath the Player: the transport in .player-transport-row and
+             the settings in #playback-settings-popover.
+             WHY: Stage 2 kept these here on purpose, at flex order 4 and 5,
+             until the Player-side replacements existed and were verified.
+             They do now, so the duplicates go; leaving them would mean two
+             sets of controls writing the same preferences.
+             FUTURE: The rail is now identity, Libraries, association, Clear
+             Media and Live Status — context and destructive actions.
+             Playback controls belong with the Player. -->
+      </section>
  
-        <section class="playback-section">
-        <h2>Slideshow</h2>
- 
-        <div class="control-grid playback-grid">
-          <button id="play-btn" disabled>Start</button>
-          <button id="stop-btn" disabled>Stop</button>
-          <button id="prev-btn" disabled>Previous</button>
-          <button id="next-btn" disabled>Next</button>
+      <div class="media-content">
+      <!-- [UI-REDESIGN / Stage 1A]
+           WHAT: Primary workspace navigation — Gallery / Tagging /
+           Automations as equal creative workspaces, with Settings pinned
+           far right as a utility rather than a fourth peer tab.
+           WHY: The redesign moves the app from one long scrolling column
+           to task-scoped workspaces; this bar is the single switch between
+           them. Settings is styled apart (margin-left:auto) because rare
+           administration should not read as a creative destination.
+           FUTURE: Adding a workspace means adding BOTH a static <button
+           role="tab"> here AND a static panel below, then extending the
+           WORKSPACES table in main.js — never injecting either at runtime.
+           `Automations` deliberately uses the cookbook-* / workspace-*
+           id namespace: automation-* belongs to Presentation Mode's Loop
+           Automations and must never be shadowed here. -->
+      <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+           WHAT: The three permanent MVP V1 destinations — Gallery owns
+           media work, Automations owns automated behavior, Profile owns
+           persistent identity/configuration. Tagging is no longer a
+           top-level destination; its administration now lives inside
+           Profile (see the <details class="tags-admin-section"> in
+           #workspace-settings below) and its contextual use (Gallery tag
+           filter, Presentation Mode tag controls) is completely unchanged.
+           WHY: primary navigation should represent frequent product
+           destinations, not every feature module. Tag administration is
+           low-frequency configuration, not a creative workspace on par
+           with Gallery/Automations.
+           Internal ids/workspace names (workspace-tab-cookbook="cookbook",
+           workspace-tab-settings="settings") are deliberately UNCHANGED —
+           only the user-facing label/identity moved, per the "do not
+           rename dozens of implementation symbols" guidance; see
+           WORKSPACES in main.js. -->
+      <nav class="workspace-nav" role="tablist" aria-label="Workspace">
+        <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+             "▦" is a deliberately simple, temporary CSS-compatible glyph —
+             not final Gallery icon artwork, which is out of scope for this
+             pass (see this section's own IA breadcrumb above). aria-label
+             pins the accessible name to "Gallery" regardless of that
+             decorative glyph. -->
+        <button
+          id="workspace-tab-gallery"
+          class="workspace-tab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="workspace-gallery"
+          aria-label="Gallery"
+          title="Gallery"
+        >▦ Gallery</button>
+        <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA]
+             Icon-only — the dashed-ring lightning bolt already established
+             as the Automations identity in Presentation Mode (see
+             .overlay-btn-automations-menu in styles.css). This is a
+             deliberate, reported minimal duplication of that CSS
+             construction (.workspace-tab-automations::before/::after)
+             rather than a shared class, since the two live in differently
+             sized/scaled contexts (PM's --pm-control-size square vs. this
+             nav tab's own padding-driven box); the visual language is
+             identical. No rotation here — that behavior is specific to the
+             PM tray's open/closed state, not this tab's selected state. -->
+        <button
+          id="workspace-tab-cookbook"
+          class="workspace-tab workspace-tab-automations"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspace-cookbook"
+          aria-label="Automations"
+          title="Automations"
+          tabindex="-1"
+        ></button>
+        <!-- [UI-REDESIGN / STAGE 6] [PROFILE-WORKSPACE-IDENTITY]
+             [SYNCV3 / STAGE-10 / SETTINGS-LABEL]
+             BREADCRUMBS — IS: the destination is "⚙ Settings". Curations & Sync
+               is one section INSIDE Settings, alongside Tags and Advanced
+               Settings; naming the tab after one of its sections hid the rest.
+             BREADCRUMBS — WAS: briefly "⚙ Profile", then "⚙ Curations" during
+               the Stage 10 vocabulary migration.
+             BREADCRUMBS — FUTURE: this button's id and the internal workspace
+               name "settings" stay as they are (see main.js's WORKSPACES /
+               ensureSettingsWorkspaceVisible()) for DOM-contract stability. -->
+        <button
+          id="workspace-tab-settings"
+          class="workspace-tab workspace-tab-utility"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="workspace-settings"
+          tabindex="-1"
+        >⚙ Settings</button>
+      </nav>
+
+      <!-- [UI-REDESIGN / Stage 1A]
+           WHAT: The workspace panels. Each ships in static markup; only
+           its `hidden` attribute changes at runtime.
+           WHY: src/main.js captures every element it uses as a module-scope
+           const at parse time. A panel created on first activation would
+           make those captures resolve to null, and the failure would be
+           silent. Gallery therefore wraps the EXISTING #viewer-panel and
+           .gallery-panel sections in place — the nodes are re-parented once
+           here, never rebuilt.
+           [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] #workspace-tagging
+           (Stage 1B) is gone — its content now lives inside
+           #workspace-settings as <details class="tags-admin-section">; see
+           TAGS-PROFILE-ADMIN there.
+           FUTURE: #workspace-settings and #workspace-cookbook were filled
+           in Stage 1C. Never populate a panel with
+           innerHTML/replaceChildren/replaceWith — move the real element
+           into this markup instead. -->
+      <div
+        id="workspace-gallery"
+        class="workspace-panel workspace-panel-gallery"
+        role="tabpanel"
+        tabindex="0"
+        aria-labelledby="workspace-tab-gallery"
+      >
+      <section id="viewer-panel" class="panel viewer-panel">
+        <!-- [UI-REDESIGN / Stage 4]
+             WHAT: This panel's entire .viewer-header is gone — the redundant
+             "Gallery" <h2> above the media stage, and the three filter
+             groups that sat beside it. The heading is deleted outright; the
+             filters MOVED, intact, into the Gallery panel below the
+             transport (see .gallery-filter-row there). #tags-filter-panel
+             went with them, since it is that Tag button's disclosure.
+             WHY: The approved Gallery hierarchy is Player -> transport ->
+             filters -> navigation -> thumbnails. Filters above the Player
+             put library-wide controls in front of the media they do not act
+             on, and the heading labelled a panel whose whole job is to show
+             media. The Player is now visually dedicated to media.
+             FUTURE: Do not reintroduce a heading here. The workspace tab
+             already names this view. -->
+        <div id="viewer-empty" class="viewer-empty">
+          Choose files or a folder to begin.
         </div>
  
-        <button id="clear-btn" class="danger clear-media-btn">Clear Media</button>
+        <!-- [UI-REDESIGN / Stage 5] tabindex="-1" makes the stage a
+             programmatic focus target — reachable by script, never by Tab,
+             so the tab order is unchanged. Activating a Gallery card with
+             the keyboard moves focus here, which is what hands the Player
+             shortcuts back without making the user Shift+Tab through
+             thousands of cards. It is not a button and carries no role, so
+             the shortcut guards treat it as neutral ground. -->
+        <div id="viewer-stage" class="viewer-stage hidden" tabindex="-1" aria-label="Player"></div>
+
+        <!-- [UI-REDESIGN / Stage 3]
+             WHAT: The transport row, directly beneath the Player. Every
+             control in it is an EXISTING element moved here — #favorite-btn
+             from the viewer header above, and #prev-btn / #play-btn /
+             #next-btn from the rail's now-removed section.playback-section.
+             Only #playback-settings-btn and its popover are new.
+             [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE]
+             #counter-text used to be part of this row too (moved from the
+             viewer header the same way) — it is deleted now, not moved
+             anywhere; see .player-transport-cluster's own comment below.
+             WHY: These controls act on what is on screen, so they belong
+             under it rather than in a sidebar the eye has to leave the
+             media to reach.
+             The Stage 3 composition was Favorite - Previous - Start - Stop -
+             Next, which is NOT the order the rail happened to use (Start,
+             Stop, Previous, Next); Stage 6 appended Playback ⚙ and Fill ⛶,
+             then RETIRED #stop-btn outright — #play-btn is now a single
+             Play/Pause toggle, the way every modern player works. See the
+             notes on the two groups below for the current order.
+             FUTURE: This row is hidden during Fill Panel by
+             `.simulated-fullscreen-viewer .player-transport-row`, for the
+             same reason the viewer header is — Presentation Mode ships its
+             own complete toolbar in #presentation-controls. Anything added
+             here needs to be considered against that rule too. -->
+        <div class="player-transport-row">
+          <!-- [UI-REDESIGN / Stage 6]
+               WHAT: The transport is ICON-ONLY and reads, left to right:
+
+                 ♡  ⏮  ▶/⏸  ⏭   ·flexible space·   ⚙  ⛶
+
+               Two groups, in DOM order: .player-transport-cluster (the four
+               PRIMARY controls that drive what is on screen) and
+               .player-transport-utility (the two UTILITY controls that open
+               something).
+               [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] A
+               third group, .player-transport-meta, held a trailing position
+               counter (#counter-text) here — deleted, not hidden, on every
+               viewport. The transport is actions only now; Gallery's own
+               target control (Select [ target / total ] Next →) is the
+               normal visible position/context surface, desktop and mobile
+               alike. See MediaRuntime / syncGalleryJumpTarget() in main.js —
+               that is still the one source of truth, nothing about state
+               ownership moved with the display.
+               WHY: Text labels ("Previous", "Start", "Stop", "Next",
+               "Playback ⚙", "Fill ⛶") made the row ~640px wide at rest —
+               wider than a half-width Stream Loop panel, so it wrapped to two
+               lines exactly where the controls matter most. Icons fit one
+               non-wrapping row at every width this app is used at.
+               The primary/utility split is a VISUAL grouping produced by one
+               `margin-inline-start: auto` on the utility group, not by a fixed
+               gap: the auto margin eats whatever space is free and collapses
+               to nothing on its own when there is none, so the row goes from
+               separated to compact continuously, with no breakpoint and no
+               reflow. See the transport budget block in styles.css.
+               Every id, handler, disabled state, shortcut and focus rule is
+               unchanged apart from the deliberate #stop-btn retirement noted
+               on #play-btn. The visible text became `aria-label` + `title` on
+               the same elements, so the accessible name of each button is what
+               it always read, and hovering still shows it.
+               FUTURE: DOM order IS visual order here (no `order` values), so
+               the tab sequence matches the row. Anything added needs an entry
+               in the width budget in styles.css — the arithmetic there assumes
+               exactly these six controls. A future, separate Player-position
+               overlay may be considered later; not part of this pass. -->
+          <div class="player-transport-cluster">
+            <!-- Favorite keeps its EXISTING heart visuals: syncFavoriteButtons()
+                 in main.js writes ♡ / ♥ into this button's textContent and
+                 toggles .is-favorite. That is already stable and is deliberately
+                 not replaced with an SVG — doing so would mean moving loved-state
+                 rendering into JS that draws markup. -->
+            <button
+              id="favorite-btn"
+              class="favorite-toggle hidden"
+              type="button"
+              aria-label="Toggle favorite"
+              title="Toggle favorite"
+            >
+              ♡
+            </button>
+            <button id="prev-btn" aria-label="Previous" title="Previous" disabled>
+              <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M6 5.6h2.2v12.8H6z" />
+                <path fill="currentColor" d="M18 5.6v12.8L8.5 12z" />
+              </svg>
+            </button>
+            <!-- [UI-REDESIGN / Stage 6 — substage: play/pause]
+                 WHAT: THE Play/Pause button. There is exactly one of these in
+                 the ordinary transport. #stop-btn is gone — deleted, not
+                 hidden, not duplicated — and this button now carries both
+                 halves of the toggle, changing its own icon and its own
+                 accessible name in place without moving.
+                 WHY: Two buttons where every media player has one. Start was
+                 disabled while playing and Stop disabled while stopped, so at
+                 any moment one of the two was dead weight sitting in the row.
+                 The runtime already made this safe: MediaRuntime.stop() clears
+                 the interval timer and sets isPlaying = false, and it does NOT
+                 touch #currentIndex — and buildViewer() pauses a <video> in
+                 place, keeping its currentTime. That is a PAUSE in everything
+                 but name, which is why nothing in the runtime had to change
+                 for this and no second playback state was introduced.
+                 The icon is ONE <path> whose `d` is swapped between the play
+                 triangle and the pause bars by syncPlayPauseButton() in
+                 main.js — one element morphing, rather than two stacked shapes
+                 taking turns being hidden. The `d` for each state lives next
+                 to that function as PLAY_ICON_PATH / PAUSE_ICON_PATH.
+                 FUTURE: aria-label, title and the icon are all written by
+                 syncPlayPauseButton(), which runs from syncControls() off the
+                 runtime's own emitted state. Never set any of the three from a
+                 click handler — that is how a label starts disagreeing with
+                 what is actually playing. The attributes below are the
+                 not-playing state, matching the disabled boot state. -->
+            <button id="play-btn" class="play-pause-btn" aria-label="Play" title="Play" disabled>
+              <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path id="play-pause-icon" fill="currentColor" d="M8.2 5.4v13.2L19 12z" />
+              </svg>
+            </button>
+            <button id="next-btn" aria-label="Next" title="Next" disabled>
+              <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M6 5.6L15.5 12 6 18.4z" />
+                <path fill="currentColor" d="M15.8 5.6H18v12.8h-2.2z" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- [UI-REDESIGN / Stage 6]
+               WHAT: The utility group — the two controls that OPEN something
+               rather than act on what is playing. Pushed away from the primary
+               group by `margin-inline-start: auto` in styles.css.
+               WHY: Favorite/Previous/Play-Pause/Next are reached constantly and
+               reward muscle memory; Playback and Fill are reached occasionally
+               and deliberately. Separating them means a mis-aimed thumb near
+               Next cannot land on Fill Panel and throw the app fullscreen.
+               FUTURE: A control belongs here only if it OPENS a surface. Do not
+               move a transport action into this group to balance the row. -->
+          <div class="player-transport-utility">
+            <!-- [UI-REDESIGN / Stage 3]
+                 WHAT: Opens the Playback popover below.
+                 WHY: The brief is explicit that it must NOT display the
+                 current interval ("7", "7s"). The popover controls
+                 shuffle, duplicates, loop and fill as well, so labelling
+                 it with one of those five values would misdescribe it.
+                 [UI-REDESIGN / Stage 6] The label "Playback ⚙" became a gear
+                 icon plus aria-label/title. #playback-settings-popover names
+                 itself from this button via aria-labelledby, and the accessible
+                 name computation reads this element's `aria-label` — which is
+                 why the label had to be a real aria-label and not a styled-away
+                 span.
+                 FUTURE: `playback-*` is a fresh id prefix — deliberately
+                 not `automation-*`, which belongs to Presentation Mode's
+                 Loop Automations. Keep new ids in this popover on the
+                 `playback-` prefix. -->
+            <button
+              id="playback-settings-btn"
+              class="secondary playback-settings-btn"
+              type="button"
+              aria-label="Playback settings"
+              title="Playback settings"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="playback-settings-popover"
+            >
+              <!-- Gear: four bars through the centre at 0/45/90/135° give the
+                   eight teeth; the thick stroked ring over them draws the body
+                   and leaves the hub open. All currentColor, no icon library. -->
+              <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect x="10.85" y="1.9" width="2.3" height="20.2" rx="1.15" fill="currentColor" />
+                <rect x="10.85" y="1.9" width="2.3" height="20.2" rx="1.15" fill="currentColor" transform="rotate(45 12 12)" />
+                <rect x="10.85" y="1.9" width="2.3" height="20.2" rx="1.15" fill="currentColor" transform="rotate(90 12 12)" />
+                <rect x="10.85" y="1.9" width="2.3" height="20.2" rx="1.15" fill="currentColor" transform="rotate(135 12 12)" />
+                <circle cx="12" cy="12" r="5.9" fill="none" stroke="currentColor" stroke-width="4.6" />
+              </svg>
+            </button>
+
+            <!-- [UI-REDESIGN / Stage 3]
+                 WHAT: Deliberate entry into Fill Panel / Presentation Mode.
+                 WHY: Replaces the old "Fullscreen / Fill Panel" checkbox,
+                 which made Fill a hidden side effect of pressing Start. An
+                 explicit button means Start just starts, and going
+                 fullscreen is its own decision the user makes when they
+                 want it.
+                 [UI-REDESIGN / Stage 6] Last in the row, immediately after
+                 Playback ⚙ per the approved order — settings then present.
+                 FUTURE: Routes through enterFillPanelDeliberately() in
+                 main.js, the SAME path the normal-mode `F` shortcut uses —
+                 that shared path is where the Autoplay on Fill preference
+                 is read. Never call enterFillMode() straight from a new
+                 control or that preference will silently not apply. -->
+            <button
+              id="fill-panel-btn"
+              class="secondary fill-panel-btn"
+              type="button"
+              aria-label="Fill Panel / Presentation Mode"
+              title="Enter Fill Panel / Presentation Mode"
+              disabled
+            >
+              <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M4 9V6a2 2 0 0 1 2-2h3M15 4h3a2 2 0 0 1 2 2v3M20 15v3a2 2 0 0 1-2 2h-3M9 20H6a2 2 0 0 1-2-2v-3"
+                />
+              </svg>
+            </button>
+          </div>
+
+          <!-- [UI-REDESIGN / Stage 3]
+               WHAT: The Playback popover. Its contents are the rail's
+               former Playback settings, moved intact: the interval stepper
+               (#interval-decrease-btn / #interval-input /
+               #interval-increase-btn) and the four checkboxes (#shuffle-input,
+               #skip-duplicates-input, #loop-input, #fill-input).
+               WHY: These are set-once-then-forget preferences, so they cost
+               permanent rail space for very occasional use. Every id,
+               listener and persistence call is unchanged — they already
+               auto-save through savePlaybackPreferences() into the existing
+               IndexedDB store in src/storage/app-preferences.js, and are
+               restored by applyLoadedPreferences() at boot. No new
+               preference storage was introduced for this move.
+               It opens downward over the Gallery grid, never upward over
+               the transport cluster, so the controls the user is most
+               likely to reach for next stay clickable while it is open.
+               FUTURE: Closed by default, and closePlaybackPopover() is the
+               single close path (second click, outside click, Escape, the
+               sheet's × button, entering Fill Panel). Do not add a second
+               one. -->
+
+          <!-- [UI-REDESIGN / Stage 6]
+               WHAT: The dimming backdrop behind the Playback SHEET. Shown only
+               while the popover is open AND only at the compact breakpoint —
+               `display: none` above it, so the desktop popover never dims
+               anything.
+               WHY: At phone widths the popover is a bottom sheet covering most
+               of the screen, and nothing said so: it read as part of the page,
+               which is the whole reason "how do I close this?" came up. A
+               backdrop states that the sheet is the active surface and that
+               the page behind it is a way out.
+               It needs NO click listener of its own. The document-level
+               outside-click handler that already closes this popover sees a
+               click on the backdrop as outside the popover — which it is —
+               and closes without stealing focus, exactly as a tap on any other
+               outside target does. Adding a second close path here is what the
+               FUTURE note above warns against.
+               FUTURE: Keep this presentational. It is a dimmer and a click
+               target; it must never hold controls, and it must never be the
+               thing that closes the sheet — closePlaybackPopover() is. -->
+          <div id="playback-sheet-scrim" class="playback-sheet-scrim" hidden></div>
+
+          <div id="playback-settings-popover" class="playback-popover hidden" role="group" aria-labelledby="playback-settings-btn">
+            <!-- [UI-REDESIGN / Stage 6]
+                 WHAT: The sheet header — title plus ×. Present in the markup at
+                 every width but `display: none` until the compact breakpoint,
+                 so the desktop popover is untouched, pixel for pixel.
+                 WHY: The desktop popover is anchored to the ⚙ that opened it
+                 and closes by clicking that ⚙ again or anywhere outside, both
+                 of which are obvious when the trigger is two centimetres away.
+                 As a full-width bottom sheet the trigger is behind the sheet
+                 and neither affordance survives, so the sheet has to carry its
+                 own way out.
+                 Deliberately NOT an Apply/Save/Cancel pair: every control below
+                 persists on its own `change` through savePlaybackPreferences()
+                 the moment it is touched, so a commit button would advertise a
+                 draft state that does not exist and a Cancel would promise an
+                 undo that was never recorded. The `Saved automatically` note
+                 below says the true thing instead.
+                 FUTURE: This header is a title and a close button. Do not grow
+                 a commit control here. -->
+            <div class="playback-sheet-header">
+              <h3 class="playback-sheet-title">Playback settings</h3>
+              <button
+                id="playback-sheet-close-btn"
+                class="secondary playback-sheet-close-btn"
+                type="button"
+                aria-label="Close Playback settings"
+                title="Close Playback settings"
+              >×</button>
+            </div>
+            <p class="playback-sheet-note">Saved automatically</p>
+
+            <div class="form-row interval-control">
+              <label for="interval-input">Interval (seconds)</label>
+              <div class="interval-stepper">
+                <button id="interval-decrease-btn" class="secondary" type="button" aria-label="Decrease interval">−</button>
+                <input id="interval-input" type="number" min="1" max="300" step="1" value="5" />
+                <button id="interval-increase-btn" class="secondary" type="button" aria-label="Increase interval">+</button>
+              </div>
+            </div>
+
+            <div class="checkbox-stack">
+              <label class="compact-check wide-check">
+                <input id="shuffle-input" type="checkbox" checked />
+                <span>Shuffle</span>
+              </label>
+
+              <label class="compact-check wide-check" title="Show only the first loaded item with each filename and file size">
+                <input id="skip-duplicates-input" type="checkbox" />
+                <span>Skip Duplicates</span>
+              </label>
+
+              <label class="compact-check wide-check">
+                <input id="loop-input" type="checkbox" checked />
+                <span>Loop Playlist</span>
+              </label>
+
+              <!-- [UI-REDESIGN / Stage 3]
+                   WHAT: The "Fullscreen / Fill Panel" checkbox (#fill-input)
+                   and its `fillPanel` preference are retired here, replaced
+                   by the explicit `Fill ⛶` button in the transport row.
+                   WHY: As a preference it conflated two things — a stored
+                   setting, and an action. Pressing Start would silently go
+                   fullscreen because of a checkbox ticked days earlier.
+                   Start now just starts; entering Fill is an explicit act.
+                   What survives is the genuinely preference-shaped half of
+                   it: Autoplay on Fill, below.
+                   FUTURE: `fillPanel` is intentionally NOT read or written
+                   any more. Stored records that still carry the key are
+                   harmless — normalizeRecord() drops unknown fields on the
+                   next write, so it retires itself without a migration.
+                   Do not revive the key for a new meaning. -->
+
+              <!-- [UI-REDESIGN / Stage 3]
+                   WHAT: A genuine new preference — whether DELIBERATELY
+                   entering Fill Panel should begin playback when nothing is
+                   currently playing.
+                   WHY: Entering Fill to look at the current image is a
+                   different intent from entering it to run a slideshow, and
+                   until now the two were the same action. Scoped strictly to
+                   deliberate entry: it never makes Fill mode automatic or
+                   persistent during ordinary Start/Space playback, and it
+                   has no effect at all when playback is already running.
+                   Backed by the new `autoplayOnFill` key in
+                   src/storage/app-preferences.js, default ON, saved through
+                   the same savePlaybackPreferences() path as every control
+                   above it. It does NOT reuse `fillPanel`.
+                   FUTURE: If a dedicated Fill entry control is added later,
+                   it must route through the same shared entry path this
+                   preference is read in — see enterFillPanelDeliberately()
+                   in main.js — rather than calling enterFillMode() itself,
+                   or this setting will silently not apply to it. -->
+              <label class="compact-check wide-check" title="Start playback automatically when you deliberately enter Fill Panel">
+                <input id="autoplay-on-fill-input" type="checkbox" checked />
+                <span>Autoplay on Fill</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
  
-        <hr />
+      <section class="panel gallery-panel">
+      <!-- [UI-REDESIGN / Stage 4]
+           WHAT: The filter row, moved here from above the Player. Same three
+           groups, same ids, same listeners, same filtering pipeline — only
+           the visible LABELS changed: "View" -> "Show", "Tags" -> "Tag",
+           and the neutral options now read "All media" / "Any type" /
+           "Any tag" so each group states what it does when it is not
+           narrowing anything.
+           WHY: "View" was ambiguous — it is reserved for a possible future
+           grid/list choice — and the row belongs with the thumbnails it
+           filters rather than in front of the Player.
+           Semantics are untouched. In particular the Tag filter remains
+           MULTI-select and AND-combining (an item must carry every active
+           tag; see filterMedia/activeTagFilters). The button reading "Any
+           tag" is the empty state, not a reduction to single-select.
+           FUTURE: Relabelling here must never become relabelling in
+           main.js. setViewMode("all"|"favorites") and setTypeFilter are
+           still the only vocabulary the filter pipeline knows. -->
+      <div class="gallery-filter-row">
+        <!-- [UI-REDESIGN / Stage 4 polish] The visible "Show" label is
+             removed — "All media / ♥ Favorites" already says what the group
+             does. The group keeps role="group" and its aria-label, so the
+             accessible name is unchanged; only the redundant visible text
+             is gone. -->
+        <div class="toolbar-filter-group">
+          <!-- [UI-REDESIGN / Stage 5] aria-pressed added to all five filter
+               buttons. The selected segment was communicated only by the
+               blue fill, so a screen-reader user got no indication of which
+               filter was active. Kept in sync by setViewMode()/
+               setTypeFilter() alongside the .active class they already set —
+               same call, no second source of truth.
+               aria-pressed rather than a radiogroup on purpose: it matches
+               what the Tag chips and the Find/Load buttons already use, and
+               it does not change the keyboard model these buttons have
+               always had. -->
+          <div class="filter-toggle" role="group" aria-label="Media filter">
+            <button id="all-media-btn" class="filter-btn active" type="button" aria-pressed="true">All media</button>
+            <button id="favorites-only-btn" class="filter-btn" type="button" aria-pressed="false">♥ Favorites</button>
+          </div>
+        </div>
+        <div class="toolbar-filter-group">
+          <span class="toolbar-filter-label">Type</span>
+          <div class="filter-toggle" role="group" aria-label="Media type filter">
+            <button id="type-all-btn" class="filter-btn active" type="button" aria-pressed="true">Any type</button>
+            <button id="type-images-btn" class="filter-btn" type="button" aria-pressed="false">Images</button>
+            <button id="type-videos-btn" class="filter-btn" type="button" aria-pressed="false">Videos</button>
+          </div>
+        </div>
+        <div class="toolbar-filter-group">
+          <span class="toolbar-filter-label">Tag</span>
+          <div class="filter-toggle" role="group" aria-label="Tag filter">
+            <!-- Label text is rewritten by renderTagsFilterToggleLabel() in
+                 main.js to report how many tags are active — "Any tag" only
+                 while none are. Purely a readout of activeTagFilters; it
+                 never changes what is selected. -->
+            <!-- [UI-REDESIGN / Stage 5] aria-controls added — the button
+                 announced that it opens something but never said what, so
+                 assistive tech had no path from the trigger to the panel. -->
+            <button id="tags-filter-toggle-btn" class="filter-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="tags-filter-panel">Any tag ▼</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Phase 6.3 — Gallery Tag Filtering. Grows horizontally first
+           (responsive multi-column grid), vertically only as a last
+           resort, so the media grid below shifts down as little as
+           possible — the "large multi-row dropdown" the original
+           Automation UI ran into and was later refactored away from.
+           [UI-REDESIGN / Stage 4] Moved from the viewer panel with the Tag
+           button it belongs to; unchanged otherwise. -->
+      <!-- [UI-REDESIGN / Stage 5] role/aria-label added: the panel is the
+           Tag button's disclosure and is now a named region its
+           aria-controls can point at, rather than an anonymous div. -->
+      <!-- [UI-REDESIGN / STAGE 6] [TAG-DISCOVERY-HANDOFF]
+           WHAT: #manage-tags-btn hands off to Profile → Tags — switches to
+           the Profile workspace, opens the Tags disclosure, scrolls it into
+           view, and focuses the tag-creation input, via
+           expandAndScrollToTagsSection() in main.js. Reuses the exact same
+           workspace-navigation / disclosure-opening pattern
+           expandAndScrollToProfileSection() already uses for the Associate
+           Profile hand-off — not a second navigation mechanism.
+           WHY: removing Tagging from primary navigation must not make tag
+           creation harder to discover; this empty state is the most common
+           place a user first looks for it. Wording is deliberately
+           user-facing (no "workspace", "settings section", or internal
+           term) — see PROFILE-TAGS-DISCLOSURE in index.html's Settings
+           section for the destination this opens. -->
+      <div id="tags-filter-panel" class="tags-filter-panel hidden" role="group" aria-label="Filter by tag">
+        <p id="tags-filter-empty" class="hint">No tags yet. Create and manage tags in Curations → Tags.</p>
+        <button id="manage-tags-btn" class="secondary hint-action-btn" type="button">Manage Tags</button>
+        <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
+      </div>
+
+      <!-- [UI-REDESIGN / Stage 4 polish]
+           WHAT: Separates the filter row above from the Gallery command row
+           below, per the approved mockup.
+           WHY: A plain <hr> deliberately — the existing element already
+           carries the app's divider token (border-top: 1px solid
+           var(--border), margin: 18px 0), which is the same rule the left
+           rail's dividers use. No new class and no new CSS, so there is one
+           divider language rather than two that can drift apart.
+           It sits BELOW #tags-filter-panel, not above it, so the Tag
+           button's disclosure stays grouped with the filters it belongs to
+           when open, and the line simply moves down to accommodate it.
+           As a block child of .gallery-panel it spans the panel's content
+           width on its own; nothing needs to force that.
+           FUTURE: Presentational only — no id, nothing in main.js addresses
+           it. -->
+      <hr />
+
+      <div class="viewer-header">
+        <div class="viewer-header-main">
+          <h2>Gallery</h2>
+          <span id="gallery-count">0 items</span>
+        </div>
+
+        <!-- Phase 1 — Gallery Media Navigation. Human-readable 1-based
+             numbering ("400" = the 400th item in the current
+             Gallery-visible sequence), same set the runtime/filter
+             pipeline already produces — no second ordering system.
+             [8.5] That's exactly why BOTH buttons below are already
+             "search-context" jumps (the number means "in your current
+             filter/search results", e.g. the Tags filter panel), not "in
+             the whole library" — they only differ in whether the target
+             also becomes the LOADED item (direct) or just gets scrolled to
+             (search/locate). Tooltips spell this out explicitly.
+             [Phase 8.3-2] The Status Update Center's "Find" actions feed
+             this same input for the same reason: a stored tagging position
+             is only meaningful against the visible-item total that existed
+             at tag time, which is exactly what this control already
+             validates against (an out-of-range number is rejected, same as
+             any manually-typed one) — no separate resume mechanism.
+             [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW] That
+             validation now lives in validateGalleryJumpTarget() in main.js —
+             same regex, same range check, same flash, just factored out of
+             the old performGalleryJump() so Step 1's Next button can run it
+             BEFORE Step 2's actions exist to run. resumeTagActivityToJump()
+             (the function behind the Status Update Center's Find/Resume) also
+             now forces the row back to Step 1 before writing into this
+             input, since Step 1 is the only step where it is ever visible. -->
+        <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+             WHAT: The Gallery navigation workflow, now a two-step disclosure
+             on BOTH desktop and mobile — one JS-owned step variable
+             (galleryJumpStep in main.js), exactly one `.gallery-jump-step`
+             visible at a time, the next step REPLACING the previous one
+             rather than stacking below it. Modelled directly on Presentation
+             Mode's Loop Automations panel (#automation-panel: same shape,
+             one step visible, next step replaces).
+             This SUPERSEDES the old one-line desktop sentence (Select →
+             input → Use Current → "then →" → Find Below → "or" → Load in
+             Player). "Use Current" is GONE — the target input now defaults
+             to and stays in sync with the actual current runtime position on
+             its own (see syncGalleryJumpTarget() in main.js), so there is
+             nothing left for a separate "use current" action to do. The
+             "then →" connective text is gone with it: Step 1 and Step 2 are
+             now always mutually exclusive, so nothing ever bridges them
+             visually.
+             STEP 1 (#gallery-jump-step-select): "Select [ target / total ]
+             [ Next → ]". The target INPUT is the interactive control — see
+             its own comment for the click/tap-to-clear contract. The total
+             (#gallery-jump-total) is a plain, non-editable readout.
+             STEP 2 (#gallery-jump-step-action): "[ Find Below ] or [ Load in
+             Player ]" on desktop — both EXISTING action buttons, ids
+             unchanged, now pure one-shot actions rather than a persistent
+             mode-toggle pair (aria-pressed/.active retired — see main.js;
+             nothing is "pressed" once every click both executes and
+             immediately resets the row).
+             [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT] On the
+             compact layout Step 2 gains a third, leading control — ↩ Back —
+             and drops the "or" text: "[ ↩ ] [ Find Below ] [ Load in
+             Player ]". Both are mobile-only (see styles.css); desktop Step 2
+             is untouched by this refinement.
+             WHY one workflow everywhere rather than desktop getting the old
+             sentence back: a Browser Preview pass showed the sentence
+             genuinely doesn't fit a compact width no matter how it's
+             trimmed, and keeping two different interactions for the same
+             feature was itself confusing. The step model reads identically
+             at every width — only the GEOMETRY (see styles.css) adapts.
+             FUTURE: setGalleryJumpStep() in main.js is the ONLY thing that
+             toggles which step is visible — do not hide either wrapper
+             directly. Do not add a third step; this models exactly one
+             disclosure (target confirmation → action choice), not a wizard. -->
+        <div class="gallery-jump-group" role="group" aria-label="Select and navigate to media">
+          <div id="gallery-jump-step-select" class="gallery-jump-step">
+            <span class="toolbar-filter-label">Select</span>
+            <div class="gallery-jump-target">
+              <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+                   WHAT: The target position. Defaults to, and re-syncs with,
+                   the actual current runtime position (see
+                   syncGalleryJumpTarget() in main.js, called from render() on
+                   every runtime state change) — never a second, competing
+                   idea of "current". A click or tap clears the digits
+                   immediately and focuses the field so the user can type a
+                   replacement without any select-all/backspace step; Tab
+                   arrival does NOT clear it, since keyboard traversal is not
+                   edit intent (main.js distinguishes the two by listening for
+                   `click`, which a text input only receives from a real
+                   pointer activation, never from Tab).
+                   WHY not greyed out: this is a live, always-correct value,
+                   not a placeholder hint — it is written as the input's
+                   actual `.value`, not its `placeholder`, specifically so it
+                   never picks up the muted placeholder color and reads as
+                   disabled. The border/hover/focus-visible states it already
+                   inherited from every other text input in this app ARE the
+                   affordance; nothing else (no pencil icon, no "Edit" label)
+                   is added.
+                   FUTURE: Do not write to `.value` from anywhere except
+                   syncGalleryJumpTarget() (idle sync), the click handler
+                   (clear-to-edit), the blur handler (abandoned-empty
+                   restore), and finishGalleryJumpAction() (post-action
+                   refresh) — four call sites, one meaning each. -->
+              <input
+                id="gallery-jump-input"
+                type="text"
+                inputmode="numeric"
+                autocomplete="off"
+                class="gallery-jump-input"
+                aria-label="Target media position"
+                aria-describedby="gallery-jump-total"
+              />
+              <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+                   WHAT: The valid-range total. A plain, non-editable <span> —
+                   there is no freeform "/ 17117" text a user could edit into
+                   something else, because it is never part of the input's own
+                   value at all. Written by syncGalleryJumpTarget() from
+                   state.total, the SAME total Gallery Jump validation already
+                   checks against. -->
+              <span id="gallery-jump-total" class="gallery-jump-total"></span>
+            </div>
+            <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+                 WHAT: Validates the target (the SAME check performGalleryJump
+                 used to run inline — see validateGalleryJumpTarget() in
+                 main.js) and, only if valid, advances to Step 2. It does not
+                 itself navigate anywhere; Find Below/Load in Player in Step 2
+                 do that, exactly as before.
+                 WHY this replaces "Use Current": that button existed only to
+                 populate the target with the current position before the
+                 user still had to choose Find Below or Load in Player
+                 anyway. Now the target already defaults to the current
+                 position on its own, so pressing Next with no edits reaches
+                 the identical outcome — "confirm the current item, then
+                 choose what to do with it" — in one fewer step, and typing a
+                 custom number first works through the exact same button. -->
+            <button
+              id="gallery-jump-next-btn"
+              class="secondary gallery-jump-next-btn"
+              type="button"
+              title="Confirm this target, then choose Find Below or Load in Player"
+              disabled
+            >Next →</button>
+          </div>
+          <div id="gallery-jump-step-action" class="gallery-jump-step gallery-jump-step-inactive">
+            <!-- [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT]
+                 WHAT: Mobile-only escape from Step 2 back to Step 1, without
+                 executing either action. `display: none` at every width by
+                 default (see styles.css) — desktop Step 2 stays exactly
+                 [ Find Below ] or [ Load in Player ], no Back button, per
+                 this pass's explicit scope.
+                 WHY an icon and not text: the button must read as visually
+                 quiet — secondary to the two real actions beside it — while
+                 still being a full accessible control; whatever glyph is
+                 there is presentational only, aria-label carries the real
+                 name. It returns to Step 1 via setGalleryJumpStep("select")
+                 alone — see its click handler in main.js. It does not touch
+                 galleryJumpConfirmedIndex (the confirmed target the user
+                 backed up TO SEE is exactly what Step 1 shows again — the
+                 input already holds it, since nothing has reset it), does
+                 not call executeGalleryJump(), and does not touch
+                 runtime/currentIndex/filters in any way.
+                 [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT]
+                 The literal ↩ character this button started with is gone —
+                 the icon is CSS-drawn from two border-only pseudo-elements
+                 (a rotated chevron + a short line), the same "empty button,
+                 icon in CSS, name in aria-label" pattern #mobile-controls-btn
+                 already uses. See that button's own comment in styles.css
+                 for why borders specifically, not a filled background, are
+                 the resistant choice against dark-mode/theme browser
+                 extensions. -->
+            <button
+              id="gallery-jump-back-btn"
+              class="secondary gallery-jump-back-btn"
+              type="button"
+              aria-label="Back to media selection"
+              title="Back"
+            ></button>
+            <!-- [UI-REDESIGN / STAGE 6] [GALLERY-TARGET-PROGRESSIVE-FLOW]
+                 aria-pressed/.active retired: these are one-shot actions now
+                 (see the WHAT/WHY on .gallery-jump-group above), not a
+                 persistent mode pair — nothing about either button is ever
+                 "pressed" once every click both executes and resets Step 1.
+                 Ids, click handlers' underlying jump logic, and tooltips are
+                 unchanged from before this pass. -->
+            <button
+              id="gallery-jump-mode-find-btn"
+              class="filter-btn"
+              type="button"
+              title="Search: scroll to this position in your current filtered Gallery view (does not load it)"
+            >Find Below</button>
+            <!-- [UI-REDESIGN / STAGE 6] [GALLERY-STEP2-ACTION-REFINEMENT]
+                 Mobile hides this — see styles.css. Two clearly-presented,
+                 mutually-exclusive buttons plus a Back control read as one
+                 system on a narrow row without needing prose between them;
+                 desktop, with more room and no Back button competing for it,
+                 keeps "or". -->
+            <span class="gallery-jump-separator">or</span>
+            <button
+              id="gallery-jump-mode-play-btn"
+              class="filter-btn"
+              type="button"
+              title="Direct jump: load this media into the Viewer immediately"
+            >Load in Player</button>
+          </div>
+        </div>
+      </div>
+ 
+      <div id="gallery-empty" class="gallery-empty">
+        No media loaded yet.
+      </div>
+ 
+      <div id="gallery-grid" class="gallery-grid hidden"></div>
+      </section>
+      </div>
+
+      <!-- [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN]
+           WHAT: #workspace-tagging (the standalone Tagging workspace) is
+           removed. Its administration content — same elements, same ids,
+           same listeners, same status messages, nothing cloned — now lives
+           inside #workspace-settings below, as the
+           <details class="tags-admin-section"> sibling of
+           <details class="profile-section">.
+           WHY: tags are used contextually in Gallery/Presentation (that
+           functionality is completely untouched — see .tags-filter-panel
+           in the Gallery section above and the Presentation Mode tags row
+           further down), but creation and administration are low-frequency
+           configuration tasks that belong in Profile rather than permanent
+           top-level navigation. -->
+
+      <div
+        id="workspace-cookbook"
+        class="workspace-panel"
+        role="tabpanel"
+        tabindex="0"
+        aria-labelledby="workspace-tab-cookbook"
+        hidden
+      >
+      <!-- [UI-REDESIGN / Stage 1C]
+           WHAT: The Automation Cookbook shell — a titled empty state and
+           nothing else. There is no Recipe engine, no persistence, no
+           schema, no trigger/action/delay model, and deliberately not one
+           control that implies otherwise.
+           WHY: The workspace has to exist now because every panel ships in
+           static markup (see #workspace-gallery). An honest empty state is
+           the only thing that can go in it without inventing a feature: a
+           disabled "New Recipe" button or a fake sample row would be a
+           promise the code cannot keep, and would have to be un-built
+           later. #cookbook-recipe-list is the reserved mount point.
+           These are the only two cookbook-* ids so far and no JavaScript
+           reads either one yet.
+           FUTURE: Cookbook Recipes are GLOBAL APPLICATION DATA, not Profile
+           data — they must never enter Profile export/import/merge/replace
+           or ProfileStore, unless a later approved architecture explicitly
+           changes that rule. Do not extend the automation-* namespace here;
+           that prefix belongs to Presentation Mode's Loop Automations. -->
+      <section class="panel cookbook-panel">
+        <h2>Automation Cookbook</h2>
+
+        <p id="cookbook-intro" class="hint">
+          Reusable named Recipes will be created and managed here. This workspace is a
+          placeholder — the Cookbook engine is a later feature phase and none of it is
+          built yet.
+        </p>
+
+        <div id="cookbook-recipe-list" class="cookbook-empty-state">
+          <p class="cookbook-empty-title">No Recipes yet</p>
+          <p class="hint">
+            Presentation Mode's existing Loop Automations are unaffected and stay where
+            they are, inside Presentation Mode.
+          </p>
+        </div>
+      </section>
+      </div>
+
+      <div
+        id="workspace-settings"
+        class="workspace-panel"
+        role="tabpanel"
+        tabindex="0"
+        aria-labelledby="workspace-tab-settings"
+        hidden
+      >
+      <!-- [UI-REDESIGN / Stage 1C]
+           WHAT: The Profile section, moved here intact from the left rail —
+           same elements, same ids, same listeners, same storage calls, same
+           import/export schema, same confirmation flows. It stays a
+           <details>, because main.js captures it via
+           querySelector(".profile-section") and sets `.open` in
+           expandAndScrollToProfileSection(); unwrapping it would make that
+           assignment a no-op on a plain <section>. It now ships with the
+           `open` attribute so the workspace does not open onto a collapsed
+           disclosure — nothing ever sets `.open = false`, and the expand
+           helper already no-ops when it is open.
+           WHY: Profiles are supporting infrastructure, not a creative
+           workspace. This workspace is where rare administration lives.
+           FUTURE: The rail must never grow a second Profile-management
+           implementation. Its Associate/Change shortcut is navigation only
+           — it calls expandAndScrollToProfileSection(), which now brings
+           this workspace forward first. Keep it that way.
+           [UI-REDESIGN / STAGE 6] [PROFILE-WORKSPACE-IDENTITY]
+           WHAT: The visible heading below reads "Profile" now, not
+           "Settings" — see the workspace tab's own comment for the full
+           rename note. The CSS class `settings-panel` and this workspace's
+           internal name ("settings", matching this panel's own id) are
+           deliberately UNCHANGED — only the user-facing identity moved.
+           [TAGS-PROFILE-ADMIN] This section also now contains
+           <details class="tags-admin-section"> — see its own comment,
+           right after </details> below — as a second, sibling disclosure
+           for the Tagging administration content relocated from the
+           now-removed top-level Tagging workspace. -->
+      <section class="panel settings-panel">
+        <h2>Settings</h2>
+
+        <details class="profile-section" open>
+        <summary>Curations &amp; Sync</summary>
+
+        <!-- [SYNCV3 / STAGE-10 / HELP-COMPRESSION]
+             BREADCRUMBS — IS: the first small utility inside the expanded
+               section replays the existing five-step introduction.
+             BREADCRUMBS — WAS: Help opened the complete concept glossary.
+             BREADCRUMBS — WILL BE / FUTURE: explain one concept in context;
+               never make the user study the product model before acting. -->
+        <button id="profile-sync-help-btn" class="secondary profile-sync-help-btn" type="button">? Help</button>
+
+        <!-- [SYNCV3 / STAGE-10 / CONTEXTUAL-FIRST-USE]
+             [WHY: this stays inline and hidden until intentional Profile & Sync
+              entry, preserving Choose folder -> work while keeping education
+              beside the canonical Help definitions it summarizes.] -->
+        <section id="profile-sync-intro" class="profile-sync-intro hidden" aria-labelledby="profile-sync-intro-title">
+          <!-- [SYNCV3 / STAGE-10 / REPLAY-CLOSE]
+               [WHY: Close belongs to the header, not the action row, so it never
+                sits where Skip Intro sat on the previous screen. It is shown
+                only in replay; see describeContextualFirstUseActions().] -->
+          <div class="profile-sync-intro-header">
+            <p id="profile-sync-intro-progress" class="profile-sync-intro-progress"></p>
+            <button
+              id="profile-sync-intro-close"
+              class="profile-sync-intro-close hidden"
+              type="button"
+              aria-label="Close introduction"
+            >✕</button>
+          </div>
+          <h3 id="profile-sync-intro-title"></h3>
+          <p id="profile-sync-intro-body"></p>
+          <div class="profile-sync-intro-actions">
+            <button id="profile-sync-intro-back" class="secondary" type="button">Back</button>
+            <button id="profile-sync-intro-skip" class="secondary" type="button">Skip Intro</button>
+            <button id="profile-sync-intro-next" class="secondary" type="button">Next</button>
+            <button id="profile-sync-intro-done" type="button">Done</button>
+          </div>
         </section>
- 
-        <details class="tags-section">
+
+        <!-- [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+             BREADCRUMBS — IS: this ordinary media area combines folder status
+              and Curation choice; identity administration exists only below in
+              Advanced, while required recovery remains here. -->
+        <div id="profile-folder-group" class="profile-settings-group">
+          <!-- BREADCRUMBS — IS: ordinary rendering is peer-, Sync-, and
+               catalog-independent. A device joining Sync cannot make identity
+               plumbing appear here. -->
+          <div id="profile-media-folder-controls">
+            <h3 class="profile-group-heading">This Media Folder</h3>
+            <p id="profile-folder-link-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
+            <button
+              id="profile-folder-link-btn"
+              class="secondary hidden"
+              type="button"
+              disabled
+              aria-describedby="profile-media-folder-context-help"
+            >Reconnect Media Folder</button>
+            <div id="profile-media-folder-context-help" class="contextual-help hidden" role="note">
+              <p id="profile-media-folder-help" class="hint"></p>
+            </div>
+          </div>
+
+          <h3 class="profile-group-heading">Curation</h3>
+          <p id="profile-library-association-text" class="product-status product-status-muted">No Media Folder loaded.</p>
+          <!-- [SYNCV3 / STAGE-09 / AMBIENT-PROFILE-PROMPT-UI]
+               [WHY: static, non-modal markup beside the relationship it
+                explains. Visibility follows the observer's single pending
+                offer; appearing ambiently never steals focus.] -->
+          <section
+            id="ambient-profile-offer"
+            class="ambient-profile-offer hidden"
+            aria-labelledby="ambient-profile-offer-heading"
+          >
+            <div class="ambient-profile-offer-header">
+              <h4 id="ambient-profile-offer-heading">This folder remembers another Curation</h4>
+              <button
+                id="ambient-profile-offer-close"
+                class="ambient-profile-offer-close"
+                type="button"
+                aria-label="Decide later"
+              >×</button>
+            </div>
+            <p id="ambient-profile-offer-text" aria-live="polite"></p>
+            <div class="ambient-profile-offer-actions">
+              <button id="ambient-profile-offer-yes" class="secondary" type="button">Use Curation</button>
+              <button id="ambient-profile-offer-no" class="secondary" type="button">Keep Current Curation</button>
+              <button id="ambient-profile-offer-later" class="secondary" type="button">Later</button>
+            </div>
+          </section>
+          <p id="ambient-profile-offer-result" class="hint" role="status" aria-live="polite"></p>
+
+          <!-- [NORTH-STAR / N4 / REVERSE-SUGGESTION]
+               Proven descendant agreement licenses this one quiet question,
+               never an automatic upward association. -->
+          <section
+            id="reverse-curation-offer"
+            class="ambient-profile-offer hidden"
+            aria-labelledby="reverse-curation-offer-heading"
+          >
+            <h4 id="reverse-curation-offer-heading">Use the same Curation here?</h4>
+            <p id="reverse-curation-offer-text" aria-live="polite"></p>
+            <div class="ambient-profile-offer-actions">
+              <button id="reverse-curation-offer-yes" class="secondary" type="button">Use Curation</button>
+              <button id="reverse-curation-offer-no" class="secondary" type="button">Not now</button>
+            </div>
+          </section>
+          <p id="reverse-curation-offer-result" class="hint" role="status" aria-live="polite"></p>
+
+          <!-- [NORTH-STAR / N2 / DEVICE-AWARE-HUMAN-QUESTION]
+               Shown only after N5 identifies one strong peer candidate. The
+               device name presents that evidence; it never creates it. -->
+          <section
+            id="device-aware-media-question"
+            class="ambient-profile-offer hidden"
+            aria-labelledby="device-aware-media-question-heading"
+          >
+            <h4 id="device-aware-media-question-heading">Same media?</h4>
+            <p id="device-aware-media-question-text" aria-live="polite"></p>
+            <div class="ambient-profile-offer-actions">
+              <button id="device-aware-media-question-yes" class="secondary" type="button">Yes</button>
+              <button id="device-aware-media-question-no" class="secondary" type="button">No</button>
+            </div>
+          </section>
+          <p id="device-aware-media-question-result" class="hint" role="status" aria-live="polite"></p>
+          <button
+            id="profile-associate-btn"
+            class="secondary hidden"
+            type="button"
+            aria-expanded="false"
+            aria-controls="profile-association-row"
+            disabled
+          >Choose a Curation for this folder</button>
+
+          <!-- [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
+               [WHY: association is shared state while active Profile is a
+                local device choice; association changes must never silently
+                switch the active Profile.] -->
+          <div id="profile-association-row" class="profile-association-row hidden">
+            <label for="profile-association-select">Curation for this folder</label>
+            <select id="profile-association-select" class="field-control"></select>
+            <div class="profile-association-actions">
+              <button id="profile-association-save-btn" class="secondary" type="button">Save Curation for this folder</button>
+              <button id="profile-association-cancel-btn" class="secondary" type="button">Cancel</button>
+            </div>
+            <p class="hint">Only the Curation remembered for this folder changes. Favorites, Hidden items and Tags stay in their own Curations.</p>
+            <p class="hint">This choice is shared with your other devices. The Curation this device is using does not change.</p>
+          </div>
+          <p id="profile-association-result" class="hint" role="status"></p>
+
+          <!-- [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+               Creation belongs with the single ordinary Curation concept, not
+               beneath a second permanent representation of active state. -->
+          <div class="profile-create-row">
+            <input id="profile-create-input" class="field-control" type="text" placeholder="New Curation name" maxlength="60" />
+            <button id="profile-create-btn" class="secondary" type="button">Create Curation</button>
+          </div>
+          <p id="profile-active-status-text" class="hint" role="status"></p>
+        </div>
+
+        <!-- [NORTH-STAR / N3-2 / CURATION-UI-COMPRESSION]
+             This group is retained for a real unresolved/divergent local
+             Active-Curation decision. Runtime presentation hides it when it
+             merely repeats the folder's already-resolved Curation. -->
+        <div id="profile-active-group" class="profile-settings-group">
+          <h3 class="profile-group-heading">This Device Is Using</h3>
+          <!-- [SYNCV3 / STAGE-10 / FINAL-UX-POLISH]
+               [WHY: the standalone "Curation" label duplicated the group
+                heading and pushed the select off the left edge the rest of
+                this section's controls share. Each option now carries the
+                word, so the select reads "{Curation} Curation" on its own and
+                lines up with the create row below it. The visible label is
+                gone, so the accessible name moves to aria-label — the select
+                is still focused directly by the rail shortcut. -->
+          <div class="profile-current-row">
+            <select id="profile-select" class="field-control" aria-label="Curation this device is using" aria-describedby="profile-active-context-help"></select>
+          </div>
+          <div id="profile-active-context-help" class="contextual-help hidden" role="note">
+            <p class="hint"></p>
+          </div>
+        </div>
+
+        <div id="profile-device-group" class="profile-settings-group">
+          <h3 class="profile-group-heading">This Device</h3>
+          <label for="profile-sync-v3-device-name" class="hint">Name this device</label>
+          <div class="profile-device-row">
+            <input
+              id="profile-sync-v3-device-name"
+              class="field-control"
+              type="text"
+              maxlength="120"
+              placeholder="e.g. Chromebook Pro"
+              aria-describedby="profile-sync-v3-device-name-status"
+            />
+            <button id="profile-sync-v3-device-name-save-btn" class="secondary" type="button">Save Device Name</button>
+            <button id="profile-sync-v3-device-name-reset-btn" class="secondary" type="button">Reset to Detected</button>
+          </div>
+          <p id="profile-sync-v3-device-name-status" class="hint" role="status"></p>
+        </div>
+
+        <div id="profile-sync-group" class="profile-settings-group">
+          <h3 class="profile-group-heading">Sync</h3>
+          <p id="profile-sync-product-status" class="product-status product-status-muted" role="status">Not syncing — no sync folder chosen</p>
+          <div class="control-stack">
+            <button id="profile-sync-v3-choose-btn" class="secondary" type="button" aria-describedby="profile-sync-context-help">Choose Sync Folder</button>
+            <button id="profile-sync-v3-reconnect-btn" class="secondary hidden" type="button">Reconnect Sync Folder</button>
+            <button id="profile-sync-v3-disconnect-btn" class="secondary hidden" type="button">Disconnect Sync Folder</button>
+          </div>
+          <div id="profile-sync-context-help" class="contextual-help hidden" role="note">
+            <p id="profile-sync-media-safety" class="hint"></p>
+            <p class="role-descriptor">Google Drive Sync Folder</p>
+            <p class="role-descriptor-detail">Browser Gallery information only · No photos or videos</p>
+          </div>
+        </div>
+
+
+        <hr class="profile-inline-hr" />
+
+        <details class="profile-import-export-section">
+        <summary>Import / Export</summary>
+
+        <div class="control-stack">
+          <button id="profile-export-btn" class="secondary" type="button">Export Curation (.json)</button>
+          <button id="profile-import-merge-btn" class="secondary" type="button">Import Curation (Merge)</button>
+          <button id="profile-import-replace-btn" class="secondary" type="button">Import Curation (Replace)</button>
+          <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
+          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
+               WHAT: Creates a brand-new, independent Profile pre-populated
+               from an exported .json, instead of merging/replacing into
+               whichever Profile is currently active.
+               WHY: Section 9 — "reuse another Profile as a starting point"
+               without two libraries ending up silently sharing one mutable
+               Profile. Built entirely from EXISTING primitives
+               (createProfile + switchProfile + importJSON(\"replace\")) —
+               no new Profile-storage mechanism.
+               FUTURE: The created Profile diverges independently from here
+               on — this is a one-time copy, not an ongoing link back to
+               the source file. -->
+          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Curation</button>
+          <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
+        </div>
+
+        <label class="compact-check wide-check">
+          <input id="profile-skip-missing-input" type="checkbox" />
+          <span>Only import entries for files currently loaded</span>
+        </label>
+
+        <p id="profile-status-text" class="hint" role="status"></p>
+        </details>
+
+        <!-- [SYNCV3 / STAGE-10 / NARRATIVE-HIERARCHY]
+             [WHY: destructive administration remains discoverable but no
+              longer competes with current setup status. Native details keeps
+              keyboard/disclosure behavior without a parallel UI system.] -->
+        <details class="profile-import-export-section profile-delete-section">
+          <summary>Delete Curation</summary>
+          <div class="control-stack">
+            <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this Curation">Delete Curation</button>
+          </div>
+        </details>
+
+        </details>
+
+        <!-- [UI-REDESIGN / STAGE 6] [TAGS-PROFILE-ADMIN] [PROFILE-TAGS-DISCLOSURE]
+             WHAT: Tag administration, relocated intact from the removed
+             top-level Tagging workspace — same elements, same ids, same
+             listeners, same status messages, nothing cloned or rebuilt.
+             Collapsed by default (no `open` attribute), unlike
+             .profile-section above: Profile is this workspace's primary
+             identity and stays open; Tags administration is intentionally
+             lower-frequency and was removed from top-level navigation
+             specifically so it does not permanently consume attention or
+             space here either.
+             main.js captures this via querySelector(".tags-admin-section")
+             and opens it explicitly from expandAndScrollToTagsSection() —
+             the same "Manage Tags" / tag-activity "Find"-style hand-off
+             pattern expandAndScrollToProfileSection() already uses for
+             Profile, not a second navigation mechanism.
+             WHY: tags are used contextually in Gallery/Presentation (see
+             .tags-filter-panel and Presentation Mode's own tags row —
+             completely unaffected by this move); creation and
+             administration are the low-frequency configuration task that
+             belongs here instead. -->
+        <details class="tags-admin-section">
         <summary>Tags</summary>
- 
+
         <div id="tag-activity-center" class="tag-activity-center" role="status" aria-live="polite" aria-label="Tag Status Update Center">
           <div id="tag-activity-neutral" class="tag-activity-neutral">Select a tag to view its latest activity.</div>
           <div id="tag-activity-content" class="hidden">
@@ -119,41 +1604,165 @@
             <span id="tag-activity-empty" class="tag-activity-neutral hidden">No tag activity recorded</span>
           </div>
         </div>
- 
+
         <div class="tag-create-row">
           <input id="tag-create-input" type="text" placeholder="New tag name" maxlength="40" />
           <button id="tag-create-btn" class="secondary" type="button">Add</button>
         </div>
- 
+
         <p id="tags-status-text" class="hint" role="status"></p>
- 
+
         <div id="tags-empty" class="hint">No tags yet.</div>
         <div id="tags-grid" class="tags-grid hidden"></div>
         </details>
- 
-        <hr />
- 
-        <details class="profile-section">
-        <summary>Profile</summary>
- 
-        <p class="hint">
-          Favorites live in a portable Profile, keyed by file path — not tied to this browser tab.
-        </p>
- 
-        <div class="profile-current-row">
-          <label for="profile-select" class="profile-select-label">Profile</label>
-          <select id="profile-select"></select>
-          <button id="profile-associate-btn" class="secondary hidden" type="button" disabled>Associate Current Library</button>
-        </div>
- 
-        <div class="profile-create-row">
-          <input id="profile-create-input" type="text" placeholder="New profile name" maxlength="60" />
-          <button id="profile-create-btn" class="secondary" type="button">Save Profile</button>
-        </div>
- 
-        <p id="profile-active-status-text" class="hint" role="status"></p>
 
-        <hr class="profile-inline-hr" />
+        <!-- [SYNCV3 / STAGE-06 / ADVANCED-SETTINGS]
+             [WHY: legacy transports, recovery, and V3 mode switches remain
+              available without competing with the normal Profile & Sync flow.] -->
+        <details class="advanced-settings-section">
+          <summary>Advanced Settings</summary>
+
+          <!-- [NORTH-STAR / N1 / PROGRESSIVE-DISCLOSURE]
+               BREADCRUMBS — IS: the full identity-management surface lives in
+                Advanced and uses the same state and handlers as before.
+               [N6-4 / ADVANCED-DISCLOSURES]
+               [WHY: closed by default, same as the other three nested
+                disclosures below — "Advanced means complexity is available on
+                demand, not displayed all at once." getElementById() still
+                finds every control inside a closed <details>, so no id or
+                handler below needed to change.] -->
+          <details class="advanced-media-library-section">
+            <summary>Media Library diagnostics</summary>
+            <p id="profile-folder-link-advanced-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
+            <div id="profile-folder-link-row" class="profile-folder-link-row hidden">
+              <label for="profile-folder-link-select">Media Library</label>
+              <select id="profile-folder-link-select" class="field-control" aria-describedby="profile-folder-link-conflict profile-media-library-context-help"></select>
+
+              <div id="profile-folder-new-library-row" class="profile-folder-new-library-row hidden">
+                <label for="profile-folder-new-library-input">Media Library name</label>
+                <input id="profile-folder-new-library-input" class="field-control" type="text" maxlength="120" aria-describedby="profile-folder-new-library-help" />
+                <p id="profile-folder-new-library-help" class="hint">This name is only used inside Browser Gallery. Your Media Folder keeps its own name and stays where it is. Nothing is copied or uploaded.</p>
+              </div>
+
+              <p id="profile-folder-library-sync-hint" class="hint hidden">Media Libraries from your other devices appear here after Sync is set up.</p>
+              <button id="profile-folder-library-sync-btn" class="secondary hint-action-btn hidden" type="button">Set Up Sync</button>
+              <div class="profile-folder-link-actions">
+                <button id="profile-folder-link-save-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-link-conflict">Use This Media Library</button>
+                <button id="profile-folder-link-cancel-btn" class="secondary hidden" type="button">Cancel</button>
+                <button id="profile-folder-unlink-btn" class="secondary hidden" type="button" aria-describedby="profile-folder-unlink-help">Remove from This Media Library</button>
+              </div>
+              <p id="profile-folder-unlink-help" class="hint hidden">Removing only clears which Media Library this Media Folder represents on this device. Your photos, videos, Media Library, Curation, Favorites, Hidden items and Tags are not deleted.</p>
+              <div id="profile-folder-link-conflict" class="profile-folder-link-conflict hidden" role="status" aria-live="polite">
+                <strong id="profile-folder-link-conflict-heading"></strong>
+                <p id="profile-folder-link-conflict-detail"></p>
+                <p id="profile-folder-link-conflict-action"></p>
+              </div>
+              <div id="profile-media-library-context-help" class="contextual-help hidden" role="note">
+                <p id="profile-folder-action-help" class="hint"></p>
+                <p id="profile-folder-link-help" class="hint"></p>
+              </div>
+            </div>
+            <p id="profile-folder-link-result" class="hint" role="status"></p>
+          </details>
+
+          <details class="advanced-playback-section">
+            <summary>Arcade animations</summary>
+            <label for="arcade-animation-order-select" class="hint">Animation order</label>
+            <select id="arcade-animation-order-select" class="field-control">
+              <option value="sequential">Sequential</option>
+              <option value="true-random">True Shuffle</option>
+              <option value="shuffle-loop">Shuffle Loop</option>
+            </select>
+            <p id="arcade-animation-order-helper" class="hint">Every loading animation is picked randomly. Repeats can happen.</p>
+          </details>
+
+          <!-- [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-9]
+               BREADCRUMBS — IS: Normal Browser Gallery and StreamLoop each
+               own an independent startup policy (including an explicit "Do
+               not load media automatically" choice — see startupPolicy() in
+               app-preferences.js) and an independent post-load Auto Fill
+               preference. Auto Fill only ever occurs after the same
+               authoritative startup media-load completion attemptStartupMedia()
+               already awaits — see that function in main.js.
+               BREADCRUMBS — WAS: StreamLoop's startup controls used to live
+               here too, visually split from StreamLoop Integration's Auto
+               Fill checkbox. N6-9 moved them into StreamLoop Integration so
+               one customer-facing context (StreamLoop) has one home; this
+               disclosure now holds Normal Browser Gallery only.
+               [WHY: "Last used folder" remains the default and is exactly
+                N6's original zero-ceremony-reopen behaviour, unchanged. The
+                eligible-folder checkbox list is populated by
+                renderStartupMediaSettings(context) in main.js from the same
+                remembered-durable-FSA-folder population Recent Libraries
+                already shows. See boot-restore.js's decideStartupMedia() for
+                the selection policy itself, and launch-context.js for how
+                the live launch context is determined.] -->
+          <details class="advanced-startup-media-section">
+            <summary>Startup Media</summary>
+
+            <div class="startup-media-context-group">
+              <h4 class="startup-media-context-heading">Normal Browser Gallery</h4>
+              <label for="startup-media-browser-policy-select" class="hint">What loads when Browser Gallery opens</label>
+              <select id="startup-media-browser-policy-select" class="field-control">
+                <option value="off">Do not load media automatically</option>
+                <option value="last-used">Last used folder</option>
+                <option value="random-remembered">Random remembered folder</option>
+                <option value="random-selected">Random from selected folders</option>
+              </select>
+              <p id="startup-media-browser-policy-helper" class="hint">Opens whichever folder you used last, if Browser Gallery still has access.</p>
+
+              <div id="startup-media-browser-eligible-section" class="startup-media-eligible-section hidden">
+                <p id="startup-media-browser-eligible-empty" class="hint hidden">No remembered folders yet — choose a folder first, then come back here to include it.</p>
+                <div id="startup-media-browser-eligible-list" class="startup-media-eligible-list"></div>
+              </div>
+
+              <label class="compact-check wide-check" title="Automatically enter Fill Panel once Browser Gallery's startup media has finished loading">
+                <input id="startup-media-browser-auto-fill-panel-input" type="checkbox" />
+                <span>Auto Fill Panel after media loads</span>
+              </label>
+              <p id="startup-media-browser-auto-fill-helper" class="hint hidden">Available when media loads automatically.</p>
+            </div>
+          </details>
+
+          <!-- [STREAMLOOP-INTEGRATION / N6-7] [STREAMLOOP-INTEGRATION / N6-9]
+               [WHY: BG-owned configuration for behavior that applies ONLY
+                when this tab was explicitly launched with
+                ?launch=streamloop (see launch-context.js) — never a
+                StreamLoop/GS3-side settings panel. ALL StreamLoop-specific
+                customer-facing configuration lives together here, including
+                its startup policy and eligible-folder pool (moved from
+                Startup Media in N6-9) — one customer context, one home. See
+                the N6-7 handoff's Part 1 for why StreamLoop-specific
+                playback (shuffle/interval/loop) overrides are NOT added
+                here — existing BG Playback Settings remain authoritative
+                for both launch contexts.] -->
+          <details class="advanced-streamloop-integration-section">
+            <summary>StreamLoop Integration</summary>
+            <p class="hint">Applies only when Browser Gallery is launched by StreamLoop.</p>
+
+            <div class="startup-media-context-group">
+              <h4 class="startup-media-context-heading">When launched by StreamLoop</h4>
+              <label for="startup-media-streamloop-policy-select" class="hint">What loads when StreamLoop launches Browser Gallery</label>
+              <select id="startup-media-streamloop-policy-select" class="field-control">
+                <option value="off">Do not load media automatically</option>
+                <option value="last-used">Last used folder</option>
+                <option value="random-remembered">Random remembered folder</option>
+                <option value="random-selected">Random from selected folders</option>
+              </select>
+              <p id="startup-media-streamloop-policy-helper" class="hint">Opens whichever folder you used last, if Browser Gallery still has access.</p>
+
+              <div id="startup-media-streamloop-eligible-section" class="startup-media-eligible-section hidden">
+                <p id="startup-media-streamloop-eligible-empty" class="hint hidden">No remembered folders yet — choose a folder first, then come back here to include it.</p>
+                <div id="startup-media-streamloop-eligible-list" class="startup-media-eligible-list"></div>
+              </div>
+
+              <label class="compact-check wide-check" title="Automatically enter Fill Panel once StreamLoop's media has finished loading">
+                <input id="streamloop-auto-fill-panel-input" type="checkbox" />
+                <span>Auto Fill Panel after media loads</span>
+              </label>
+              <p id="streamloop-auto-fill-helper" class="hint hidden">Available when media loads automatically.</p>
+            </div>
+          </details>
 
         <!-- [PROFILE-SYNC]
              WHAT: Compact status + controls for the Profile Sync Folder POC
@@ -168,13 +1777,15 @@
              media-source controls (FSA/legacy pickers) elsewhere in this
              page — loading a different library must never show, hide, or
              otherwise touch anything here. See profile-sync.js's header. -->
-        <div class="profile-sync-section" id="profile-sync-section">
-          <h3 class="profile-sync-heading">Profile Sync</h3>
+        <details class="profile-sync-section" id="profile-sync-section">
+          <summary>Sync Your Curations</summary>
+
+          <p class="hint">Choose a Google Drive Sync Folder. Browser Gallery uses it to make your Curations available across your devices. It is separate from a Google Drive Media Folder and does not contain your photos and videos.</p>
 
           <p id="profile-sync-status-text" class="hint" role="status">Status: Not configured</p>
 
           <div class="control-stack">
-            <button id="profile-sync-choose-btn" class="secondary" type="button">Choose Google Drive Folder</button>
+            <button id="profile-sync-choose-btn" class="secondary" type="button">Choose Google Drive Sync Folder</button>
             <button id="profile-sync-reconnect-btn" class="secondary hidden" type="button">Reconnect</button>
             <div class="profile-sync-connected-row hidden" id="profile-sync-connected-row">
               <button id="profile-sync-now-btn" class="secondary" type="button">Sync Now</button>
@@ -187,249 +1798,198 @@
             <button id="profile-sync-disconnect-btn" class="danger" type="button">Disconnect Sync</button>
           </div>
 
+          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+               [WHY: activation is one-way and user-initiated, so it gets its
+                own explicit control rather than happening on connect. Shown
+                only while this installation is still on V1 — after cutover
+                there is nothing left to activate, and re-offering it would
+                imply the installation could go back.] -->
+          <div id="profile-sync-activate-panel" class="profile-sync-activate-panel hidden">
+            <p class="hint">
+              Sync V2 merges changes from every device instead of replacing whole Curations.
+              Activating is one-way for this device. Your existing data stays exactly as it is.
+            </p>
+            <button id="profile-sync-activate-btn" class="secondary" type="button">Activate Sync V2</button>
+          </div>
+
+          <!-- [SYNCV3 / STAGE-06 / SCAFFOLDING-CLEANUP]
+               [WHY: the status below retains implementation-facing mode,
+                folder, and tab-role detail that is useful in Advanced. Normal
+                folder actions and product copy live only in Profile & Sync.] -->
+          <div class="profile-sync-activate-panel">
+            <h4 class="profile-sync-heading">Sync V3 diagnostics</h4>
+            <p id="profile-sync-v3-status-text" class="hint" role="status">Sync V3: not connected</p>
+            <div class="control-stack">
+              <button id="profile-sync-v3-activate-btn" class="secondary" type="button">Activate Sync V3</button>
+              <button id="profile-sync-v3-leave-btn" class="secondary hidden" type="button">Leave V3 Mode</button>
+            </div>
+          </div>
+
+          <!-- [PHASE-6-SYNC-V2][STAGE-E-LIVE-INTEGRATION]
+               [WHY: relabelled from "conflict" to RECOVERY. Sync V2 never asks
+                this question — it merges per fact, so "both sides changed" has
+                a correct answer. These controls survive only for a V1
+                installation, and as a deliberate escape hatch; renderProfileSync
+                hides them entirely once mode is v2.] -->
           <div id="profile-sync-conflict-panel" class="profile-sync-conflict-panel hidden">
-            <p class="hint">Profile changed on another device.</p>
+            <p class="hint">
+              <strong>Recovery only.</strong> A Curation changed on another device and could not be
+              reconciled automatically. Choosing here replaces one whole version with the other.
+            </p>
             <div class="control-stack">
               <button id="profile-sync-use-synced-btn" class="secondary" type="button">Use Synced Version</button>
               <button id="profile-sync-keep-local-btn" class="secondary" type="button">Keep Local Version</button>
             </div>
           </div>
-        </div>
-
-        <hr class="profile-inline-hr" />
-
-        <details class="profile-import-export-section">
-        <summary>Import / Export</summary>
-
-        <div class="control-stack">
-          <button id="profile-export-btn" class="secondary" type="button">Export Profile (.json)</button>
-          <button id="profile-import-merge-btn" class="secondary" type="button">Import Profile (Merge)</button>
-          <button id="profile-import-replace-btn" class="secondary" type="button">Import Profile (Replace)</button>
-          <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
-          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
-               WHAT: Creates a brand-new, independent Profile pre-populated
-               from an exported .json, instead of merging/replacing into
-               whichever Profile is currently active.
-               WHY: Section 9 — "reuse another Profile as a starting point"
-               without two libraries ending up silently sharing one mutable
-               Profile. Built entirely from EXISTING primitives
-               (createProfile + switchProfile + importJSON(\"replace\")) —
-               no new Profile-storage mechanism.
-               FUTURE: The created Profile diverges independently from here
-               on — this is a one-time copy, not an ongoing link back to
-               the source file. -->
-          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Profile</button>
-          <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
-        </div>
-
-        <label class="compact-check wide-check">
-          <input id="profile-skip-missing-input" type="checkbox" />
-          <span>Only import entries for files currently loaded</span>
-        </label>
-
-        <p id="profile-status-text" class="hint" role="status"></p>
         </details>
 
-        <button id="profile-delete-btn" class="danger profile-delete-btn" type="button" title="Delete this profile">Delete Profile</button>
-
-        <hr />
         </details>
- 
-        <section class="slideshow-settings-section">
- 
-        <div class="form-row interval-control">
-          <label for="interval-input">Interval (seconds)</label>
-          <div class="interval-stepper">
-            <button id="interval-decrease-btn" class="secondary" type="button" aria-label="Decrease interval">−</button>
-            <input id="interval-input" type="number" min="1" max="300" step="1" value="5" />
-            <button id="interval-increase-btn" class="secondary" type="button" aria-label="Increase interval">+</button>
-          </div>
-        </div>
- 
-        <div class="checkbox-stack">
-          <label class="compact-check wide-check">
-            <input id="shuffle-input" type="checkbox" checked />
-            <span>Shuffle</span>
-          </label>
 
-          <label class="compact-check wide-check" title="Show only the first loaded item with each filename and file size">
-            <input id="skip-duplicates-input" type="checkbox" />
-            <span>Skip Duplicates</span>
-          </label>
- 
-          <label class="compact-check wide-check">
-            <input id="loop-input" type="checkbox" checked />
-            <span>Loop Playlist</span>
-          </label>
- 
-          <label class="compact-check wide-check">
-            <input id="fill-input" type="checkbox" checked />
-            <span>Fill Panel</span>
-          </label>
-        </div>
- 
-        <div class="status-box">
-          <div><strong>Status:</strong> <span id="status-text">No media loaded</span></div>
-          <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
-          <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
-          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
-               WHAT: Live Library<->Profile association state for whatever
-               is CURRENTLY LOADED — not the globally active profile name.
-               WHY: The old association affordance only lived in a button
-               that could scroll out of view; this makes the state itself
-               always visible, same green/terminal language as the rest of
-               this box and the Status Update Center.
-               FUTURE: Driven entirely by updateAssociatedStatusRow() in
-               main.js, itself derived from currentSourceKind/
-               activeLibraryRecord — never a separate stored value. Do not
-               let this drift out of sync with those; if a new source kind
-               is ever added, update that one function, not this markup. -->
-          <div><strong>Associated:</strong> <span id="associated-text">—</span></div>
-        </div>
-        <hr />
-        </section>
       </section>
- 
-      <div class="media-content">
-      <section id="viewer-panel" class="panel viewer-panel">
-        <div class="viewer-header">
-          <div class="viewer-header-main">
-            <h2>Gallery</h2>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">View</span>
-              <div class="filter-toggle" role="group" aria-label="Library filter">
-                <button id="all-media-btn" class="filter-btn active" type="button">All</button>
-                <button id="favorites-only-btn" class="filter-btn" type="button">♥ Favorites</button>
-              </div>
-            </div>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">Type</span>
-              <div class="filter-toggle" role="group" aria-label="Media type filter">
-                <button id="type-all-btn" class="filter-btn active" type="button">All</button>
-                <button id="type-images-btn" class="filter-btn" type="button">Images</button>
-                <button id="type-videos-btn" class="filter-btn" type="button">Videos</button>
-              </div>
-            </div>
-            <button id="favorite-btn" class="favorite-toggle hidden" type="button" aria-label="Toggle favorite">
-              ♡
-            </button>
-            <div class="toolbar-filter-group">
-              <span class="toolbar-filter-label">Tags</span>
-              <div class="filter-toggle" role="group" aria-label="Tag filter">
-                <button id="tags-filter-toggle-btn" class="filter-btn" type="button" aria-haspopup="true" aria-expanded="false">Tags ▼</button>
-              </div>
-            </div>
-          </div>
-          <span id="counter-text">0 / 0</span>
-        </div>
- 
-        <!-- Phase 6.3 — Gallery Tag Filtering. Grows horizontally first
-             (responsive multi-column grid), vertically only as a last
-             resort, so the media grid below shifts down as little as
-             possible — the "large multi-row dropdown" the original
-             Automation UI ran into and was later refactored away from. -->
-        <div id="tags-filter-panel" class="tags-filter-panel hidden">
-          <p id="tags-filter-empty" class="hint">No tags yet — create some in Gallery Settings.</p>
-          <div id="tags-filter-grid" class="tags-filter-grid hidden"></div>
-        </div>
- 
-        <div id="viewer-empty" class="viewer-empty">
-          Choose files or a folder to begin.
-        </div>
- 
-        <div id="viewer-stage" class="viewer-stage hidden"></div>
-      </section>
- 
-      <section class="panel gallery-panel">
-      <div class="viewer-header">
-        <div class="viewer-header-main">
-          <h2>Gallery</h2>
-          <span id="gallery-count">0 items</span>
-        </div>
- 
-        <!-- Phase 1 — Gallery Media Navigation. Human-readable 1-based
-             numbering ("400" = the 400th item in the current
-             Gallery-visible sequence), same set the runtime/filter
-             pipeline already produces — no second ordering system.
-             [8.5] That's exactly why BOTH buttons below are already
-             "search-context" jumps (the number means "in your current
-             filter/search results", e.g. the Tags filter panel), not "in
-             the whole library" — they only differ in whether the target
-             also becomes the LOADED item (direct) or just gets scrolled to
-             (search/locate). Tooltips spell this out explicitly.
-             [Phase 8.3-2] The Status Update Center's "Find" actions feed
-             this same input for the same reason: a stored tagging position
-             is only meaningful against the visible-item total that existed
-             at tag time, which is exactly what this control already
-             validates against (an out-of-range number is rejected, same as
-             any manually-typed one) — no separate resume mechanism. -->
-        <div class="gallery-jump-group" role="group" aria-label="Select and navigate to media">
-          <span class="toolbar-filter-label">Select</span>
-          <input
-            id="gallery-jump-input"
-            type="text"
-            inputmode="numeric"
-            autocomplete="off"
-            class="gallery-jump-input"
-            aria-label="Media number to jump to"
-          />
-          <span class="gallery-jump-separator">then →</span>
-          <button
-            id="gallery-jump-mode-find-btn"
-            class="filter-btn active"
-            type="button"
-            aria-pressed="true"
-            title="Search: scroll to this position in your current filtered Gallery view (does not load it)"
-          >Find Below</button>
-          <span class="gallery-jump-separator">or</span>
-          <button
-            id="gallery-jump-mode-play-btn"
-            class="filter-btn"
-            type="button"
-            aria-pressed="false"
-            title="Direct jump: load this media into the Viewer immediately"
-          >Load in Player</button>
-        </div>
       </div>
- 
-      <div id="gallery-empty" class="gallery-empty">
-        No media loaded yet.
+
+      <!-- [UI-REDESIGN / Stage 4]
+           WHAT: The now-playing strip. Appears only while a slideshow is
+           running AND the user has navigated away from the Gallery
+           workspace. Shows the current filename, a Stop, and a way back.
+           WHY: Leaving Gallery mid-playback otherwise gives no sign that
+           anything is still running and no way to stop it without first
+           navigating back.
+           This is the ONE place in the redesign that creates a second
+           control surface for an existing runtime action, so it is
+           deliberately minimal and deliberately does NOT clone any id.
+           #now-playing-stop-btn is a distinct element that calls the same
+           runtime.stop() the transport's Play/Pause button reaches through
+           toggleTransportPlayback() — one runtime action reached from two
+           places, never two implementations. (The transport's separate
+           #stop-btn it used to name was retired in Stage 6; this strip's
+           button is unaffected and deliberately still reads Stop, because
+           from another workspace "stop the thing running elsewhere" is the
+           actual intent, not "pause what I am watching".)
+           #now-playing-return-btn calls the existing
+           ensureGalleryWorkspaceVisible().
+           A sibling of the workspace panels rather than a child of one, so
+           it survives whichever workspace is showing.
+           FUTURE: Keep this to status plus Stop plus Return. It is not a
+           second transport — do not grow Previous/Next/Favorite here. Any
+           control added must call an existing runtime function rather than
+           re-implementing one. -->
+      <!-- [UI-REDESIGN / Stage 5] role="status" + aria-live="polite": the
+           strip appears on its own when playback continues past a workspace
+           switch, and a region that appears unannounced is invisible to a
+           screen-reader user. Polite rather than assertive — it is context,
+           not an alert, and must not interrupt. -->
+      <div id="now-playing-strip" class="now-playing-strip" role="status" aria-live="polite" hidden>
+        <span class="now-playing-label">Now playing</span>
+        <span id="now-playing-name" class="now-playing-name"></span>
+        <button id="now-playing-stop-btn" class="secondary" type="button">Stop</button>
+        <button id="now-playing-return-btn" class="secondary" type="button">Return to Gallery</button>
       </div>
- 
-      <div id="gallery-grid" class="gallery-grid hidden"></div>
-      </section>
       </div>
     </main>
   </div>
- 
+
   <div id="presentation-controls" class="presentation-controls hidden" tabindex="0" aria-label="Presentation controls">
     <div class="presentation-controls-bar">
       <button id="overlay-favorite-btn" class="overlay-btn overlay-btn-favorite hidden" type="button" aria-label="Toggle favorite">♡</button>
-      <label id="video-loop-control" class="loop-toggle-control overlay-loop-toggle" title="Loop: OFF (click to enable)">
-        <input id="video-loop-input" type="checkbox" />
-        <span id="video-loop-state-text">🔁</span>
-      </label>
-      <button id="overlay-automation-btn" class="overlay-btn overlay-btn-automation" type="button" title="Loop Automations" aria-label="Loop Automations">🤖</button>
+      <!-- [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
+           WHAT: The canonical PM Automations entry point at EVERY width now
+           — was deep-compact-only/desktop-off; that split is gone. Opens
+           #pm-automations-group below, which now replaces the OLD permanent
+           Loop + 🤖 primary-toolbar buttons everywhere, not just <448px.
+           WHY: Loop and Loop Automations belong to one scalable automation
+           family; future PM automations should expand inside that secondary
+           row rather than consuming new primary-toolbar slots. See that
+           element's own comment for the full architecture note. -->
+      <button
+        id="overlay-automations-menu-btn"
+        class="overlay-btn overlay-btn-automations-menu"
+        type="button"
+        aria-label="Automations"
+        title="Automations"
+        aria-haspopup="true"
+        aria-expanded="false"
+        aria-controls="pm-automations-group"
+      ></button>
+      <!-- [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-CANONICAL]
+           WHAT: Wraps the EXISTING Loop toggle and 🤖 Loop Automations
+           button — same ids, same handlers, nothing cloned or rebuilt. This
+           is now the ONE PM Automations model at every width: closed by
+           default, opened by #overlay-automations-menu-btn above, with a
+           `flex-basis: 100%` / `order: 99` layout inside
+           .presentation-controls-bar's own `flex-wrap` (see styles.css)
+           that becomes a real second row when open. There is no longer a
+           wide-width "inline in the primary toolbar" state.
+           [PM-AUTOMATIONS-MEDIA-SUPPORT] #pm-automations-photo-empty is the
+           third child — Loop/🤖 are video-only automations (main.js's
+           existing engine already gates their actual EXECUTION on
+           `isShowingVideo`; this is the matching PRESENTATION-layer gate,
+           so the controls never visually invite a click that would do
+           nothing). Exactly one of "Loop + 🤖" or the empty-state message
+           is visible at a time, driven by the current item's real `kind` —
+           see syncAutomationsMediaAvailability() in main.js. ⚡ itself is
+           NEVER gated — Automations remains available as a destination for
+           both photos and videos; only its CONTENT is media-aware.
+           FUTURE: This secondary row is the intended expansion point for
+           future Presentation/Playback Automations and recipes — add new
+           automation controls HERE, not as new permanent primary-toolbar
+           buttons. -->
+      <div id="pm-automations-group" class="pm-automations-group">
+        <label id="video-loop-control" class="loop-toggle-control overlay-loop-toggle" title="Loop: OFF (click to enable)">
+          <input id="video-loop-input" type="checkbox" />
+          <span id="video-loop-state-text">🔁</span>
+        </label>
+        <button id="overlay-automation-btn" class="overlay-btn overlay-btn-automation" type="button" title="Loop Automations" aria-label="Loop Automations">🤖</button>
+        <p id="pm-automations-photo-empty" class="pm-automations-photo-empty hint hidden">No automations available for photos yet.</p>
+      </div>
       <button id="overlay-prev-btn" class="overlay-btn" type="button">◀</button>
       <button id="overlay-play-btn" class="overlay-btn" type="button">⏯</button>
       <button id="overlay-next-btn" class="overlay-btn" type="button">▶</button>
-      <button id="overlay-hide-btn" class="overlay-btn overlay-btn-hide" type="button" aria-label="Hide from presentation">🙈 Hide</button>
-      <button id="overlay-undo-hide-btn" class="overlay-btn overlay-btn-undo-hide" type="button" aria-label="Undo last hide" disabled>↩ Undo</button>
+      <!-- [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT]
+           WHAT: Wraps the EXISTING #overlay-hide-btn/#overlay-undo-hide-btn
+           — same ids, same handlers, nothing cloned. `display: contents`
+           (the base/desktop rule in styles.css) makes this wrapper
+           invisible to layout above 448px, so both buttons render exactly
+           as direct flex items of .presentation-controls-bar, precisely
+           where they always have — the wide/normalized PM toolbar (Hide
+           AND Undo both visible, Undo greyed out when unavailable) is
+           completely unchanged. Only the ≤448px deep-compact tier turns
+           this into a real single, fixed-size slot showing exactly one of
+           the two, driven by syncUndoHideButton()'s truthful
+           lastHiddenRelativePath check — see that function in main.js. -->
+      <div id="pm-hide-undo-slot" class="pm-hide-undo-slot">
+        <button id="overlay-hide-btn" class="overlay-btn overlay-btn-hide" type="button" aria-label="Hide from presentation">🙈 Hide</button>
+        <button id="overlay-undo-hide-btn" class="overlay-btn overlay-btn-undo-hide" type="button" aria-label="Undo last hide" disabled>↩ Undo</button>
+      </div>
       <button id="overlay-exit-btn" class="overlay-btn overlay-btn-danger" type="button">Exit</button>
       <button id="overlay-settings-btn" class="overlay-btn overlay-btn-gear" type="button">⚙</button>
     </div>
  
     <!-- Sits between the toolbar above and the ⚙ row below — a sibling of
-         both — and only occupies layout space while open. One row, same
-         height as the toolbar: "Ghost Opacity" label, slider, percentage,
-         left to right. -->
+         both — and only occupies layout space while open. Two rows, same
+         shape: label, slider, percentage, Remember checkbox, left to right.
+         [PM-TOOLBAR-OPACITY] Exactly two configurable PM toolbar opacity
+         states, never a third: Toolbar Opacity (not-hovered — this is the
+         pre-existing "Ghost Opacity" mechanism, id/storage unchanged, only
+         its on-screen label changed) and Hover Opacity (hovered — replaces
+         what used to be a hardcoded 100%). Hover never changes the stored
+         Toolbar Opacity value. -->
     <div id="ghost-popunder" class="ghost-popunder hidden">
       <div class="ghost-popunder-row">
-        <label class="ghost-popunder-label" for="ghost-opacity-input">Ghost Opacity</label>
+        <label class="ghost-popunder-label" for="ghost-opacity-input">Toolbar Opacity</label>
         <input id="ghost-opacity-input" type="range" min="0" max="100" step="1" value="15" />
-        <span id="ghost-opacity-label">15%</span>
+        <span id="ghost-opacity-label" class="ghost-popunder-value">15%</span>
         <label class="ghost-popunder-remember" for="ghost-remember-input">
           <input id="ghost-remember-input" type="checkbox" checked />
+          <span>Remember this value</span>
+        </label>
+      </div>
+      <div class="ghost-popunder-row">
+        <label class="ghost-popunder-label" for="hover-opacity-input">Hover Opacity</label>
+        <input id="hover-opacity-input" type="range" min="0" max="100" step="1" value="100" />
+        <span id="hover-opacity-label" class="ghost-popunder-value">100%</span>
+        <label class="ghost-popunder-remember" for="hover-remember-input">
+          <input id="hover-remember-input" type="checkbox" checked />
           <span>Remember this value</span>
         </label>
       </div>
@@ -449,11 +2009,17 @@
           type="button"
           aria-haspopup="true"
           aria-expanded="false"
-          aria-label="Ghost Opacity"
-          title="Ghost Opacity"
+          aria-label="Toolbar Opacity"
+          title="Toolbar Opacity"
         >👻</button>
         <span class="presentation-settings-label">Tags</span>
-        <p id="presentation-tags-empty" class="hint presentation-tags-empty">No tags yet — create some in Gallery Settings.</p>
+        <!-- [UI-REDESIGN / STAGE 6] [MVP-WORKSPACE-IA] Wording only — tag
+             creation moved from the (now-removed) Tagging workspace into
+             Profile → Tags; see TAGS-PROFILE-ADMIN. No button added here:
+             Presentation Mode is a focused overlay, and sending the user to
+             a different workspace mid-presentation is a bigger interaction
+             than this compact settings row should take on unprompted. -->
+        <p id="presentation-tags-empty" class="hint presentation-tags-empty">No tags yet — create and manage tags in Curations → Tags.</p>
         <div id="presentation-tags-row" class="presentation-tags-row hidden"></div>
       </div>
       <div id="presentation-tags-overflow" class="presentation-tags-overflow hidden"></div>
@@ -523,17 +2089,17 @@
        so the two can never drift. -->
   <dialog id="profile-sync-setup-dialog" class="app-dialog profile-sync-setup-dialog" aria-labelledby="profile-sync-setup-title">
     <div class="app-dialog-inner">
-      <h2 id="profile-sync-setup-title" class="app-dialog-title">Set Up Profile Sync</h2>
-      <p class="app-dialog-body">Choose a dedicated folder inside Google Drive so your Profiles can sync between devices.</p>
+      <h2 id="profile-sync-setup-title" class="app-dialog-title">Set Up Curation Sync</h2>
+      <p class="app-dialog-body">Choose a Google Drive Sync Folder so your Curations are available on each device you want to use. This is not a Google Drive Media Folder — it holds Browser Gallery information only, never your photos and videos.</p>
 
       <p class="profile-sync-setup-step"><strong>First device:</strong> Create a folder named:</p>
-      <div class="profile-sync-setup-foldername" id="profile-sync-setup-foldername">Browser Gallery Profiles</div>
+      <div class="profile-sync-setup-foldername" id="profile-sync-setup-foldername">Browser Gallery Sync</div>
 
       <p class="profile-sync-setup-step"><strong>Additional devices:</strong> Select that same existing folder.</p>
 
       <p class="profile-sync-setup-once"><strong>You only need to do this once on each device.</strong></p>
 
-      <p class="hint">Browser Gallery will create and manage the files inside this folder automatically. Do not select your media folder.</p>
+      <p class="hint">Browser Gallery manages Curation data in this Sync Folder. It does not contain your photos or videos.</p>
 
       <div class="app-dialog-actions">
         <button id="profile-sync-setup-copy-btn" class="secondary" type="button">Copy Folder Name</button>

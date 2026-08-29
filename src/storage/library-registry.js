@@ -85,6 +85,21 @@ function generateLibraryId() {
   return `lib-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// [PHASE-6-SYNC-V2]
+// [STAGE-D3-LIBRARY-IDENTITY]
+// [WHY: this is a DIFFERENT identity from the `id` above. `id` is minted the
+//  instant a folder is FSA-picked, purely to key this local row — it exists on
+//  every library, associated or not, and never leaves this device. `libraryId`
+//  is the SHARED identity two installations agree a physical folder (each on
+//  its own machine) refers to the same logical library — it must be minted
+//  only on an explicit association (see ensureLibraryId below), never merely
+//  because a folder was opened, or every folder anyone ever picks would
+//  acquire a synchronized identity nobody asked for.]
+export function generateSharedLibraryId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `sharedlib-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function requestToPromise(request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -288,6 +303,200 @@ export async function setLibraryProfile(id, profileId) {
     writeTx.objectStore(STORE_NAME).put(updated);
     await completeTransaction(writeTx);
 
+    return updated;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * [PHASE-6-SYNC-V2]
+ * [STAGE-D3-LIBRARY-IDENTITY]
+ * [WHY: mint-once, preserve-forever. Called from ProfileStore#setLibraryAssociation
+ *  at the moment an approved Curation policy associates this library with a
+ *  Profile — an explicit customer choice, or N3's deterministic one-time
+ *  inheritance from a proven parent; never merely from opening a folder. An existing libraryId is returned unchanged
+ *  (re-associating, or changing WHICH Profile, must never mint a second
+ *  identity for the same physical folder — that would fork it into two
+ *  logical libraries as far as any peer is concerned).]
+ *
+ * No-op (returns null) if the local library id isn't known.
+ *
+ * BREADCRUMBS — WILL BE / FUTURE: libraryId becomes MORE load-bearing as a
+ * machine address for sync, automation and StreamLoop as it becomes LESS
+ * customer-visible. Hiding it must never license weakening or removing it.
+ */
+export async function ensureLibraryId(id) {
+  const database = await openDatabase();
+
+  try {
+    const readTx = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(readTx.objectStore(STORE_NAME).get(id));
+    await completeTransaction(readTx);
+    if (!record) return null;
+    if (record.libraryId) return record;
+
+    const updated = { ...record, libraryId: generateSharedLibraryId() };
+    const writeTx = database.transaction(STORE_NAME, "readwrite");
+    writeTx.objectStore(STORE_NAME).put(updated);
+    await completeTransaction(writeTx);
+    return updated;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Every local library id currently linked to a shared libraryId, as
+ * { id, libraryId } pairs. Used to self-heal a local row's UI-facing
+ * `profileId` against whatever ProfileStore currently holds for that
+ * libraryId — not just rows whose association changed in the CURRENT sync
+ * pass. Without this, a row freshly linked via linkLocalLibraryToSharedId (a
+ * raw storage operation with no ProfileStore involvement) would only pick up
+ * the already-known association value on some FUTURE pass where the fact
+ * itself happens to change again.
+ */
+export async function listKnownLibraryIds() {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const records = await requestToPromise(transaction.objectStore(STORE_NAME).getAll());
+    await completeTransaction(transaction);
+    return records.filter((record) => record.libraryId).map((record) => ({ id: record.id, libraryId: record.libraryId }));
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Reads one local library row by its LOCAL id, without modifying anything.
+ *
+ * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+ * [WHY: a READ-ONLY sibling of ensureLibraryId. ProfileStore#recordLibraryLoaded
+ *  needs to know whether this row already carries a shared libraryId, and must
+ *  NOT create one if it does not - minting on a folder open is exactly what
+ *  ensureLibraryId's own comment forbids, since it would give every folder
+ *  anyone ever opened a synchronized identity nobody asked for. Reusing
+ *  ensureLibraryId there would have done precisely that, silently.]
+ *
+ * Returns null if the id isn't known.
+ */
+export async function getLibraryById(id) {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const record = await requestToPromise(transaction.objectStore(STORE_NAME).get(id));
+    await completeTransaction(transaction);
+    return record || null;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Finds the local library row (if any) already linked to a given SHARED
+ * libraryId. Used to keep a local row's UI-facing `profileId` in step after
+ * an association fact for it arrives via sync — see
+ * ProfileStore#adoptMergedReplica. Returns null if no local row carries it,
+ * which is the ordinary case for a library another device owns.
+ */
+export async function getLibraryByLibraryId(libraryId) {
+  const database = await openDatabase();
+
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const records = await requestToPromise(transaction.objectStore(STORE_NAME).getAll());
+    await completeTransaction(transaction);
+    return records.find((record) => record.libraryId === libraryId) || null;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * [PHASE-6-SYNC-V2]
+ * [STAGE-D3-LIBRARY-IDENTITY]
+ * [WHY: this is the ONLY way a second device's local physical folder acquires
+ *  an EXISTING shared libraryId — an explicit user action supplying the exact
+ *  id (Stage E surfaces the picker; this just performs the link), never a
+ *  folder-name or signature guess. Refuses to relink a row that already
+ *  carries a DIFFERENT libraryId — that would silently fork one physical
+ *  folder's identity onto another logical library's history, which no amount
+ *  of "the user probably meant this" heuristic can safely undo.]
+ *
+ * No-op (returns null) if the local id isn't known, or if it is already
+ * linked to a different shared libraryId.
+ */
+export async function linkLocalLibraryToSharedId(id, sharedLibraryId) {
+  if (typeof sharedLibraryId !== "string" || !sharedLibraryId) return null;
+  const database = await openDatabase();
+
+  try {
+    // [SYNCV3 / STAGE-08 / CLAIMANT-GUARD]
+    // [WHY: one shared Library may have only one local physical-folder owner
+    // per device; refusal must be enforced atomically at storage, not only in UI.]
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+    let outcome = null;
+    await new Promise((resolve, reject) => {
+      const request = store.getAll();
+      request.onerror = () => reject(request.error || new Error("Could not inspect local Library claimants."));
+      request.onsuccess = () => {
+        const records = request.result || [];
+        const record = records.find((candidate) => candidate.id === id);
+        if (!record) return resolve();
+        if (record.libraryId && record.libraryId !== sharedLibraryId) {
+          console.warn(`[SYNC-V2] Library "${id}" is already linked to a different shared libraryId; refusing to relink.`);
+          return resolve();
+        }
+        const claimant = records.find(
+          (candidate) => candidate.id !== id && candidate.libraryId === sharedLibraryId
+        );
+        if (claimant) {
+          outcome = {
+            ok: false,
+            reason: "claimed",
+            by: { id: claimant.id, name: claimant.name || "Another folder", sourceKind: claimant.sourceKind || null },
+          };
+          return resolve();
+        }
+        outcome = { ...record, libraryId: sharedLibraryId };
+        store.put(outcome);
+        resolve();
+      };
+    });
+    await completeTransaction(transaction);
+    return outcome;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * [SYNCV3 / STAGE-08 / UNLINK]
+ * [WHY: unlink removes only this device's physical-folder mapping; it must not
+ * delete shared Library identity, Profile association, curation, or media identity.]
+ */
+export async function unlinkLocalLibraryFromSharedId(localLibraryId) {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+    let updated = null;
+    await new Promise((resolve, reject) => {
+      const request = store.get(localLibraryId);
+      request.onerror = () => reject(request.error || new Error("Could not read the local Library link."));
+      request.onsuccess = () => {
+        const record = request.result;
+        if (!record) return resolve();
+        updated = { ...record, libraryId: null };
+        store.put(updated);
+        resolve();
+      };
+    });
+    await completeTransaction(transaction);
     return updated;
   } finally {
     database.close();

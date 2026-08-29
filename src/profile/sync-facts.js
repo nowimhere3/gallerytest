@@ -1,0 +1,637 @@
+// [PHASE-6-SYNC-V2]
+// [STAGE-C-MERGE-SEMANTICS]
+// [WHY: every synchronized fact must merge deterministically and survive
+//  concurrent writers, and that is only possible if the state is MODELLED as
+//  facts in the first place. Sync V1 stored curation as a document whose shape
+//  made negative actions invisible: unfavorite deleted the record, untag
+//  emptied an array, deleting a tag spliced it out — so "I un-favorited this"
+//  and "I have never heard of this" had byte-identical representations, and no
+//  merge could ever tell them apart. This module gives every synchronized
+//  action, positive AND negative, an explicit stamped fact at the smallest
+//  boundary that can independently change, so unrelated work never collides
+//  and deletion can outrank a stale client that still remembers the old value.]
+//
+// WHAT: The Sync V2 fact model — replica shape, the pure mutation builders
+// that produce new replicas, the projection that turns facts back into what
+// the UI shows, and the shape guard that keeps session state out.
+//
+// This file is PURE: no DOM, no IndexedDB, no FSA, no time source of its own
+// (every mutation takes a stamp from the caller's clock). It knows nothing
+// about ProfileStore's storage shape — translating between the two is Stage D.
+//
+// FUTURE / DO-NOT-BREAK: Do not add a "remove this key" operation. Removing a
+// key is exactly the representation that cannot survive merge, because the
+// other client's copy of that key simply wins and the removal evaporates. Every
+// removal is expressed as a fact whose VALUE says removed.
+
+import { makeFact, mergeFact, isFact } from "./sync-merge.js";
+
+export const REPLICA_SCHEMA_VERSION = 2;
+
+// ---- Replica shape -------------------------------------------------------
+//
+// Replica {
+//   schemaVersion: 2
+//   profiles: { [profileId]: ProfileFacts }
+//   associations: { [libraryId]: Fact<profileId | null> }
+//   libraries: { [libraryId]: LibraryFacts }
+// }
+//
+// LibraryFacts { name: Fact<string>, sourceDeviceId: Fact<string>,
+//                lastLoadedAt: Fact<number> }
+//
+// ProfileFacts { name: Fact<string>, deleted: Fact<boolean>,
+//                items: { [relativePath]: ItemFacts },
+//                tags:  { [tagId]: TagFacts } }
+//
+// ItemFacts { favorite: Fact<{ on: boolean, at: number|null }>,
+//             hidden:   Fact<boolean>,
+//             tags:     { [tagId]: Fact<boolean> } }
+//
+// TagFacts  { name: Fact<string>, deleted: Fact<boolean> }
+//
+// Fact<V>   { v: V, t: number, d: deviceId }
+
+export function emptyReplica() {
+  return { schemaVersion: REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: {}, structure: {} };
+}
+
+function emptyProfileFacts() {
+  return { items: {}, tags: {} };
+}
+
+function emptyItemFacts() {
+  return { tags: {} };
+}
+
+// ---- Immutable update helpers -------------------------------------------
+//
+// Every builder returns a NEW replica and never mutates its input. Stage B's
+// finding applies with full force here: a value that is fingerprinted, merged
+// or published must not change underneath the code holding it. Structural
+// sharing keeps that cheap — only the path being changed is copied.
+
+function withProfile(replica, profileId, updater) {
+  const current = replica.profiles[profileId] || emptyProfileFacts();
+  return {
+    ...replica,
+    profiles: { ...replica.profiles, [profileId]: updater(current) },
+  };
+}
+
+function withItem(profile, path, updater) {
+  const current = profile.items[path] || emptyItemFacts();
+  return { ...profile, items: { ...profile.items, [path]: updater(current) } };
+}
+
+function withTag(profile, tagId, updater) {
+  const current = profile.tags[tagId] || {};
+  return { ...profile, tags: { ...profile.tags, [tagId]: updater(current) } };
+}
+
+// [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
+// [WHY: a mutation is applied through mergeFact against the fact already
+//  present, not by overwriting it. That makes every builder idempotent and
+//  safe to replay, and it means a stamp that is somehow older than what is
+//  already stored simply loses — a local action can never roll state backwards
+//  just because it happened locally. "Local" carries no privilege anywhere in
+//  this model; only stamps decide.]
+function put(existing, value, stamp) {
+  return mergeFact(existing, makeFact(value, stamp));
+}
+
+// ---- Profile identity ----------------------------------------------------
+
+export function setProfileName(replica, profileId, name, stamp) {
+  return withProfile(replica, profileId, (p) => ({ ...p, name: put(p.name, String(name), stamp) }));
+}
+
+export function deleteProfile(replica, profileId, stamp) {
+  return withProfile(replica, profileId, (p) => ({ ...p, deleted: put(p.deleted, true, stamp) }));
+}
+
+export function restoreProfile(replica, profileId, stamp) {
+  return withProfile(replica, profileId, (p) => ({ ...p, deleted: put(p.deleted, false, stamp) }));
+}
+
+// ---- Item curation -------------------------------------------------------
+
+/**
+ * Favorite and un-favorite are the SAME fact with different values — which is
+ * what lets an un-favorite propagate at all. `at` travels inside the value
+ * because "favorited, and when" is one indivisible fact; splitting the
+ * timestamp into its own fact would let a merge pair an un-favorite with a
+ * stale favorited-at from the other side.
+ */
+export function setFavorite(replica, profileId, path, on, stamp, { at } = {}) {
+  const value = { on: Boolean(on), at: on ? (Number.isFinite(at) ? at : stamp.t) : null };
+  return withProfile(replica, profileId, (p) =>
+    withItem(p, path, (item) => ({ ...item, favorite: put(item.favorite, value, stamp) }))
+  );
+}
+
+export function setHidden(replica, profileId, path, hidden, stamp) {
+  return withProfile(replica, profileId, (p) =>
+    withItem(p, path, (item) => ({ ...item, hidden: put(item.hidden, Boolean(hidden), stamp) }))
+  );
+}
+
+/**
+ * One fact per (media, tag) pair. This is the boundary that makes "A tags X
+ * while B tags Y" a non-event: they are different keys, so there is nothing to
+ * resolve. Storing a tag LIST on the item instead would make every tagging
+ * action collide with every other one on the same item.
+ */
+export function setItemTag(replica, profileId, path, tagId, assigned, stamp) {
+  return withProfile(replica, profileId, (p) =>
+    withItem(p, path, (item) => ({
+      ...item,
+      tags: { ...item.tags, [tagId]: put(item.tags[tagId], Boolean(assigned), stamp) },
+    }))
+  );
+}
+
+// ---- Tag vocabulary ------------------------------------------------------
+
+/** Creating a tag asserts both facts about it: its name, and that it lives. */
+export function createTag(replica, profileId, tagId, name, stamp) {
+  return withProfile(replica, profileId, (p) =>
+    withTag(p, tagId, (tag) => ({
+      ...tag,
+      name: put(tag.name, String(name), stamp),
+      deleted: put(tag.deleted, false, stamp),
+    }))
+  );
+}
+
+export function renameTag(replica, profileId, tagId, name, stamp) {
+  return withProfile(replica, profileId, (p) =>
+    withTag(p, tagId, (tag) => ({ ...tag, name: put(tag.name, String(name), stamp) }))
+  );
+}
+
+// [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
+// [WHY: deletion touches ONLY the `deleted` fact and deliberately leaves
+//  `name` alone. Because they are separate facts, a rename that is older than
+//  the delete loses the name race but cannot resurrect the tag, and a rename
+//  that is NEWER updates a name nobody sees without undeleting it — which is
+//  section 13's required semantics falling out of the model rather than being
+//  special-cased. Deletion also does NOT rewrite the tag's assignments: the
+//  tombstone alone hides them at projection time, so deleting a tag costs one
+//  fact instead of one per tagged item, and an Undo restores the previous
+//  assignments for free.]
+export function deleteTag(replica, profileId, tagId, stamp) {
+  return withProfile(replica, profileId, (p) =>
+    withTag(p, tagId, (tag) => ({ ...tag, deleted: put(tag.deleted, true, stamp) }))
+  );
+}
+
+/** Undo. A new, newer mutation — never a weakening of what delete means. */
+export function restoreTag(replica, profileId, tagId, stamp) {
+  return withProfile(replica, profileId, (p) =>
+    withTag(p, tagId, (tag) => ({ ...tag, deleted: put(tag.deleted, false, stamp) }))
+  );
+}
+
+// ---- Library association -------------------------------------------------
+
+// [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
+// [WHY: the synchronized fact is libraryId -> associatedProfileId, and nothing
+//  else. The physical folder — the FSA handle or the legacy folder signature —
+//  is local device state and has no representation in this model at all, so it
+//  cannot leak into a published replica by accident. This lives outside the
+//  profiles map because it is a fact about the LIBRARY: moving Library A from
+//  BEAST to BBG4 must not read as curation belonging to either Profile.
+//  Minting a libraryId and matching a physical folder to one is Stage D/E; the
+//  pure model only needs the fact to exist and to merge.]
+export function setLibraryAssociation(replica, libraryId, profileId, stamp) {
+  const value = profileId === null || profileId === undefined ? null : String(profileId);
+  return {
+    ...replica,
+    associations: { ...replica.associations, [libraryId]: put(replica.associations[libraryId], value, stamp) },
+  };
+}
+
+// ---- Shared Library catalog ----------------------------------------------
+
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: the shared catalog answers "which Libraries exist, what are they
+//  called, and who last actually opened one" - and it answers that
+//  INDEPENDENTLY of association, of whether any device has a physical folder
+//  for it, and of whether it is loaded right now. Those are four separate
+//  concepts and collapsing any pair of them is how a disassociated Library
+//  silently disappears from the catalog.
+//
+//  All three fields are stamped together here because one meaningful load is
+//  ONE semantic event, but they are stored as three separate facts so a later
+//  rename on another device cannot roll back this device's load time (see
+//  mergeLibraryFacts in sync-merge.js).
+//
+//  The physical folder - handle, signature, device-local folder name, local
+//  lastOpenedAt - has no representation here, exactly as it has none in
+//  setLibraryAssociation above. `name` is the human name the LOADING device
+//  knew; it is descriptive state, never identity.]
+export function recordLibraryLoaded(replica, libraryId, { name, sourceDeviceId, at }, stamp) {
+  const current = replica.libraries[libraryId] || {};
+  const loadedAt = Number.isFinite(at) ? at : stamp.t;
+  return {
+    ...replica,
+    libraries: {
+      ...replica.libraries,
+      [libraryId]: {
+        ...current,
+        name: put(current.name, String(name == null ? "" : name), stamp),
+        sourceDeviceId: put(current.sourceDeviceId, String(sourceDeviceId == null ? "" : sourceDeviceId), stamp),
+        lastLoadedAt: put(current.lastLoadedAt, loadedAt, stamp),
+      },
+    },
+  };
+}
+
+// ---- Portable structure evidence ----------------------------------------
+
+export function setLibraryStructureSample(replica, libraryId, sample, stamp) {
+  const current = (replica.structure || {})[libraryId] || { children: {} };
+  return {
+    ...replica,
+    structure: {
+      ...(replica.structure || {}),
+      [libraryId]: {
+        ...current,
+        children: current.children || {},
+        sample: put(current.sample, sample, stamp),
+      },
+    },
+  };
+}
+
+// ---- Projection ----------------------------------------------------------
+//
+// [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
+// [WHY: tombstones are synchronization bookkeeping and must never reach the
+//  user. Projection is the one place that distinction is enforced: deleted
+//  profiles and deleted tags vanish here immediately, assignments to a deleted
+//  tag stop being reported, and a fact whose value is false is simply absent
+//  from the positive lists. Anything rendering Sync V2 state reads a
+//  projection, never the facts.]
+
+// [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
+// [WHY: two devices independently creating a tag with the SAME display name
+//  produce two distinct tag ids, and merge keeps both. That is deliberate and
+//  approved: neither creation is wrong, and collapsing them would mean
+//  rewriting one device's assignments onto the other's id purely because two
+//  display strings matched — the merge layer guessing at user intent and
+//  destroying information to do it. The merge algebra preserves information and
+//  converges; it does not reconcile meaning.]
+// FUTURE: duplicate display names are a PROJECTION/UI policy question, not a
+// merge one. If the duplicate chips prove annoying in practice, resolve them at
+// or above this projection boundary in Stage D/E — deterministically, from
+// merged state alone, so every device computes the same answer. Do not push
+// that policy down into sync-merge.js.
+
+/** Profile ids that are not tombstoned, sorted for determinism. */
+export function liveProfileIds(replica) {
+  return Object.keys(replica.profiles)
+    .filter((id) => !isTrue(replica.profiles[id].deleted))
+    .sort();
+}
+
+export function isProfileDeleted(replica, profileId) {
+  const profile = replica.profiles[profileId];
+  return Boolean(profile && isTrue(profile.deleted));
+}
+
+/**
+ * Turns one profile's facts into the shape a UI would render.
+ * Returns null if the profile is unknown.
+ */
+export function projectProfile(replica, profileId) {
+  const profile = replica.profiles[profileId];
+  if (!profile) return null;
+
+  const liveTagIds = new Set(
+    Object.keys(profile.tags).filter((tagId) => !isTrue(profile.tags[tagId].deleted))
+  );
+
+  const tags = [...liveTagIds]
+    .map((tagId) => ({ id: tagId, name: profile.tags[tagId].name ? profile.tags[tagId].name.v : "" }))
+    .sort((a, b) => (a.name === b.name ? (a.id < b.id ? -1 : 1) : a.name < b.name ? -1 : 1));
+
+  const favorites = [];
+  const hidden = [];
+  const itemTags = {};
+
+  for (const path of Object.keys(profile.items).sort()) {
+    const item = profile.items[path];
+
+    if (item.favorite && item.favorite.v && item.favorite.v.on) {
+      favorites.push({ path, at: item.favorite.v.at });
+    }
+    if (isTrue(item.hidden)) hidden.push(path);
+
+    const assigned = Object.keys(item.tags || {})
+      .filter((tagId) => liveTagIds.has(tagId) && isTrue(item.tags[tagId]))
+      .sort();
+    if (assigned.length) itemTags[path] = assigned;
+  }
+
+  // Newest favorite first, matching the Gallery's existing favourite ordering;
+  // path breaks ties so the order is total rather than merely stable.
+  favorites.sort((a, b) => (b.at || 0) - (a.at || 0) || (a.path < b.path ? -1 : 1));
+
+  return {
+    id: profileId,
+    name: profile.name ? profile.name.v : null,
+    deleted: isTrue(profile.deleted),
+    favorites,
+    hidden,
+    tags,
+    itemTags,
+  };
+}
+
+/** libraryId -> profileId for every association that currently points somewhere. */
+export function projectAssociations(replica) {
+  const out = {};
+  for (const libraryId of Object.keys(replica.associations).sort()) {
+    const value = replica.associations[libraryId].v;
+    if (value) out[libraryId] = value;
+  }
+  return out;
+}
+
+/**
+ * One shared Library as a UI would render it, or null if unknown.
+ *
+ * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+ * [WHY: `associatedProfileId` is read from the ASSOCIATIONS map, not from the
+ *  Library record, and is reported as null when there is no association rather
+ *  than making the Library vanish. Existence and association are separate
+ *  questions and this is the boundary where a caller could most easily conflate
+ *  them - projectAssociations above deliberately DROPS null-valued entries,
+ *  which is correct for "what is associated" and would be catastrophic for
+ *  "what exists".
+ *
+ *  Every stamp a future picker needs for ranking is carried out here rather
+ *  than being recomputed from raw facts by each caller: lastLoadedAt for
+ *  "recently loaded", associationChangedAt for "recently associated", and
+ *  changedAt as the max over everything for "recently touched at all". No
+ *  extra persisted field is required for any of them.]
+ */
+export function projectLibrary(replica, libraryId) {
+  const library = replica.libraries[libraryId];
+  if (!library) return null;
+
+  const associationFact = (replica.associations || {})[libraryId];
+  const stampOf = (fact) => (fact && Number.isFinite(fact.t) ? fact.t : 0);
+
+  return {
+    id: libraryId,
+    name: library.name && typeof library.name.v === "string" ? library.name.v : "",
+    sourceDeviceId:
+      library.sourceDeviceId && typeof library.sourceDeviceId.v === "string" ? library.sourceDeviceId.v : null,
+    lastLoadedAt: library.lastLoadedAt && Number.isFinite(library.lastLoadedAt.v) ? library.lastLoadedAt.v : null,
+    associatedProfileId: associationFact && associationFact.v ? associationFact.v : null,
+    associationChangedAt: stampOf(associationFact),
+    changedAt: Math.max(
+      stampOf(library.name),
+      stampOf(library.sourceDeviceId),
+      stampOf(library.lastLoadedAt),
+      stampOf(associationFact)
+    ),
+  };
+}
+
+/**
+ * Every known shared Library, sorted by libraryId for determinism.
+ *
+ * [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+ * [WHY: enumerates replica.libraries, NEVER the associations map. A Library
+ *  whose association is explicitly null is still a Library - Drive keeps it
+ *  all - and deriving the catalog from associations would delete exactly the
+ *  history a user needs to re-associate it. Sorted by ID, not by name: names
+ *  are mutable descriptive state and two Libraries may legitimately share one.]
+ */
+export function projectLibraries(replica) {
+  return Object.keys(replica.libraries || {})
+    .sort()
+    .map((libraryId) => projectLibrary(replica, libraryId))
+    .filter(Boolean);
+}
+
+function isTrue(fact) {
+  return Boolean(fact && fact.v === true);
+}
+
+// ---- Shape guard ---------------------------------------------------------
+
+// [PHASE-6-SYNC-V2][STAGE-C-MERGE-SEMANTICS]
+// [WHY: section 5 forbids Profile Sync from becoming session synchronization,
+//  and the failure mode is silent — a field added to a Profile record for a
+//  local convenience quietly starts travelling between machines. This guard is
+//  an ALLOW-list of the keys the model defines, not a block-list of today's
+//  known session fields, because a block-list only ever catches the leaks
+//  somebody already thought of. Anything unrecognized is reported.]
+
+// [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+// [WHY: `libraries` joins the replica allow-list and gains its own key set in
+//  the SAME edit. These two lines cannot be split across changes: adding the
+//  top-level key without the shape below would let any object at all through
+//  under `libraries`, and adding the shape without the top-level key would make
+//  every replica in the system - V1 and V2 included - fail the guard the moment
+//  anything published a Library. The allow-list stays an ALLOW-list: nothing is
+//  relaxed elsewhere to make Libraries pass.]
+const ALLOWED = {
+  replica: new Set(["schemaVersion", "profiles", "associations", "libraries", "structure"]),
+  profile: new Set(["name", "deleted", "items", "tags"]),
+  item: new Set(["favorite", "hidden", "tags"]),
+  tag: new Set(["name", "deleted"]),
+  library: new Set(["name", "sourceDeviceId", "lastLoadedAt"]),
+  structure: new Set(["children", "sample"]),
+};
+
+/**
+ * Fields that are explicitly session/local-only and must never appear in a
+ * replica. Documentation for humans — the guard below does not consult it,
+ * since the allow-list already excludes them and everything like them.
+ *
+ * tagActivity / lastTagPosition / totalAtTime / lastTaggedAt / lastTagShuffle
+ * are per-tag PLAYBACK RESUME POSITIONS ("where was I in this tag, in this
+ * shuffle mode"). They are position-in-a-collection values whose meaning
+ * depends on how many items the local device has actually loaded, so they are
+ * not even well-defined on another machine with a different library. Approved
+ * as local-only.
+ */
+export const SESSION_ONLY_FIELDS = Object.freeze([
+  "tagActivity",
+  "lastTagPosition",
+  "totalAtTime",
+  "lastTaggedAt",
+  "lastTagShuffle",
+  "handle",
+  "currentItem",
+  "playbackPosition",
+  "shuffleHistory",
+  "navigationHistory",
+]);
+
+/**
+ * Returns a list of paths in `replica` that are not part of the fact model.
+ * Empty means the replica is exactly the approved shape — no session state, no
+ * stray fields, and every fact well-formed.
+ */
+export function findSessionStateLeaks(replica) {
+  const leaks = [];
+
+  const checkFact = (fact, path) => {
+    if (!isFact(fact)) {
+      leaks.push(`${path} (not a well-formed fact)`);
+      return;
+    }
+    for (const key of Object.keys(fact)) {
+      if (key !== "v" && key !== "t" && key !== "d") leaks.push(`${path}.${key}`);
+    }
+  };
+
+  if (!replica || typeof replica !== "object") return ["(replica is not an object)"];
+
+  for (const key of Object.keys(replica)) {
+    if (!ALLOWED.replica.has(key)) leaks.push(key);
+  }
+
+  for (const [libraryId, fact] of Object.entries(replica.associations || {})) {
+    checkFact(fact, `associations[${libraryId}]`);
+  }
+
+  // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+  // [WHY: checks the same three things for a Library that the Profile/item/tag
+  //  loops below check for their own shapes - that the container is an object,
+  //  that every key is one this model defines, and that every value present is a
+  //  well-formed Fact. The VALUE types are checked too (string/string/finite
+  //  number), which the older loops do not do, because a Library record is the
+  //  first shape whose fields are read straight into a UI: a name that is
+  //  secretly an object, or a lastLoadedAt that is a string, would render or
+  //  sort as nonsense rather than failing loudly anywhere.
+  //
+  //  Fields are individually optional - a record mid-way through its first
+  //  publish legitimately has fewer than three - but anything PRESENT must be
+  //  correct.]
+  for (const [libraryId, library] of Object.entries(replica.libraries || {})) {
+    const libraryBase = `libraries[${libraryId}]`;
+    if (!library || typeof library !== "object" || Array.isArray(library)) {
+      leaks.push(`${libraryBase} (not an object)`);
+      continue;
+    }
+    for (const key of Object.keys(library)) {
+      if (!ALLOWED.library.has(key)) leaks.push(`${libraryBase}.${key}`);
+    }
+    if (library.name !== undefined) {
+      checkFact(library.name, `${libraryBase}.name`);
+      if (isFact(library.name) && typeof library.name.v !== "string") {
+        leaks.push(`${libraryBase}.name (value is not a string)`);
+      }
+    }
+    if (library.sourceDeviceId !== undefined) {
+      checkFact(library.sourceDeviceId, `${libraryBase}.sourceDeviceId`);
+      if (isFact(library.sourceDeviceId) && typeof library.sourceDeviceId.v !== "string") {
+        leaks.push(`${libraryBase}.sourceDeviceId (value is not a string)`);
+      }
+    }
+    if (library.lastLoadedAt !== undefined) {
+      checkFact(library.lastLoadedAt, `${libraryBase}.lastLoadedAt`);
+      if (isFact(library.lastLoadedAt) && !Number.isFinite(library.lastLoadedAt.v)) {
+        leaks.push(`${libraryBase}.lastLoadedAt (value is not a finite number)`);
+      }
+    }
+  }
+
+  // [NORTH-STAR / N5 / PORTABLE-STRUCTURE-EVIDENCE]
+  // Structure has its own strict shape in the same edit that admits the
+  // top-level key. Local capability/evidence fields therefore remain leaks.
+  for (const [libraryId, structure] of Object.entries(replica.structure || {})) {
+    const base = `structure[${libraryId}]`;
+    if (!structure || typeof structure !== "object" || Array.isArray(structure)) {
+      leaks.push(`${base} (not an object)`);
+      continue;
+    }
+    for (const key of Object.keys(structure)) {
+      if (!ALLOWED.structure.has(key)) leaks.push(`${base}.${key}`);
+    }
+    if (structure.sample !== undefined) {
+      checkFact(structure.sample, `${base}.sample`);
+      const value = structure.sample?.v;
+      const valid = value && value.v === 1
+        && Number.isInteger(value.count) && value.count >= 0
+        && Number.isFinite(value.totalSize) && value.totalSize >= 0
+        && Array.isArray(value.entries)
+        && value.entries.every((entry) => entry
+          && typeof entry === "object" && !Array.isArray(entry)
+          && Object.keys(entry).every((key) => key === "path" || key === "size")
+          && typeof entry.path === "string" && entry.path
+          && !entry.path.startsWith("/") && !entry.path.startsWith("\\")
+          && !/^[A-Za-z]:[\\/]/.test(entry.path)
+          && !entry.path.split(/[\\/]/).includes("..")
+          && Number.isFinite(entry.size) && entry.size >= 0);
+      if (isFact(structure.sample) && !valid) leaks.push(`${base}.sample (invalid portable sample)`);
+    }
+    const children = structure.children || {};
+    if (!children || typeof children !== "object" || Array.isArray(children)) {
+      leaks.push(`${base}.children (not an object)`);
+    } else {
+      for (const [prefix, fact] of Object.entries(children)) {
+        if (!prefix || prefix.startsWith("/") || prefix.startsWith("\\")
+          || /^[A-Za-z]:[\\/]/.test(prefix) || prefix.split(/[\\/]/).includes("..")) {
+          leaks.push(`${base}.children[${prefix}] (invalid relative prefix)`);
+        }
+        checkFact(fact, `${base}.children[${prefix}]`);
+        if (isFact(fact) && fact.v !== null && (typeof fact.v !== "string" || !fact.v)) {
+          leaks.push(`${base}.children[${prefix}] (value is not a library id or null)`);
+        }
+      }
+    }
+  }
+
+  for (const [profileId, profile] of Object.entries(replica.profiles || {})) {
+    const base = `profiles[${profileId}]`;
+    if (!profile || typeof profile !== "object") {
+      leaks.push(`${base} (not an object)`);
+      continue;
+    }
+    for (const key of Object.keys(profile)) {
+      if (!ALLOWED.profile.has(key)) leaks.push(`${base}.${key}`);
+    }
+    if (profile.name !== undefined) checkFact(profile.name, `${base}.name`);
+    if (profile.deleted !== undefined) checkFact(profile.deleted, `${base}.deleted`);
+
+    for (const [path, item] of Object.entries(profile.items || {})) {
+      const itemBase = `${base}.items[${path}]`;
+      if (!item || typeof item !== "object") {
+        leaks.push(`${itemBase} (not an object)`);
+        continue;
+      }
+      for (const key of Object.keys(item)) {
+        if (!ALLOWED.item.has(key)) leaks.push(`${itemBase}.${key}`);
+      }
+      if (item.favorite !== undefined) checkFact(item.favorite, `${itemBase}.favorite`);
+      if (item.hidden !== undefined) checkFact(item.hidden, `${itemBase}.hidden`);
+      for (const [tagId, assignment] of Object.entries(item.tags || {})) {
+        checkFact(assignment, `${itemBase}.tags[${tagId}]`);
+      }
+    }
+
+    for (const [tagId, tag] of Object.entries(profile.tags || {})) {
+      const tagBase = `${base}.tags[${tagId}]`;
+      if (!tag || typeof tag !== "object") {
+        leaks.push(`${tagBase} (not an object)`);
+        continue;
+      }
+      for (const key of Object.keys(tag)) {
+        if (!ALLOWED.tag.has(key)) leaks.push(`${tagBase}.${key}`);
+      }
+      if (tag.name !== undefined) checkFact(tag.name, `${tagBase}.name`);
+      if (tag.deleted !== undefined) checkFact(tag.deleted, `${tagBase}.deleted`);
+    }
+  }
+
+  return leaks;
+}
