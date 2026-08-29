@@ -3413,6 +3413,26 @@ hr {
   border-color: rgba(0, 255, 0, 0.35);
 }
 
+/* [PM-SHUFFLE-FOLDERS] Sized and weighted exactly like .overlay-btn-automation
+   above — 🎲 is a sibling secondary control inside the ⚡ tray, so it should
+   read as one of that row's controls rather than announce itself as a new
+   kind of thing. Deliberately given NO "is-available"-style glow: that green
+   is .loop-toggle-control.is-enabled's shared "Loop is on" signal, and 🎲 has
+   no on-state to signal — it acts once and is done.
+   `:disabled` only ever applies for the moment a switch is actually in
+   flight (see shuffleToAnotherRememberedFolder() in main.js), so a second
+   click cannot land mid-load. */
+.overlay-btn-shuffle-folders {
+  flex: 0 0 44px;
+  font-size: 1.1rem;
+  background: rgba(9, 16, 29, 0.65);
+}
+
+.overlay-btn-shuffle-folders:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
 .overlay-btn-gear {
   flex: 0 0 56px;
   font-size: 1.1rem;
@@ -4024,6 +4044,7 @@ hr {
   .overlay-loop-toggle,
   .overlay-btn-favorite,
   .overlay-btn-automation,
+  .overlay-btn-shuffle-folders,
   .overlay-btn-gear {
     flex: 0 0 var(--pm-control-size);
     width: var(--pm-control-size);
@@ -4143,6 +4164,7 @@ hr {
   .overlay-loop-toggle,
   .overlay-btn-favorite,
   .overlay-btn-automation,
+  .overlay-btn-shuffle-folders,
   .overlay-btn-gear {
     flex: 0 1 var(--pm-control-size);
     min-width: calc(var(--pm-control-size) - 8px);
@@ -4434,7 +4456,8 @@ hr {
      below — #video-loop-control and #overlay-automation-btn (still the
      SAME two elements, never cloned) pick that up automatically. */
   .overlay-loop-toggle,
-  .overlay-btn-automation {
+  .overlay-btn-automation,
+  .overlay-btn-shuffle-folders {
     flex: 0 0 var(--pm-control-size);
     width: var(--pm-control-size);
     min-width: var(--pm-control-size);
@@ -4493,7 +4516,8 @@ hr {
   .overlay-btn-gear,
   .overlay-btn-automations-menu,
   .overlay-loop-toggle,
-  .overlay-btn-automation {
+  .overlay-btn-automation,
+  .overlay-btn-shuffle-folders {
     flex: 0 0 var(--pm-control-size);
     width: var(--pm-control-size);
     min-width: var(--pm-control-size);
@@ -4569,7 +4593,8 @@ hr {
   .overlay-btn-gear,
   .overlay-btn-automations-menu,
   .overlay-loop-toggle,
-  .overlay-btn-automation {
+  .overlay-btn-automation,
+  .overlay-btn-shuffle-folders {
     flex: 0 1 var(--pm-control-size);
     min-width: calc(var(--pm-control-size) - 6px);
     height: var(--pm-control-size);

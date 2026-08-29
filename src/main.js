@@ -12,6 +12,10 @@ import {
   getLibraryByLibraryId,
 } from "./storage/library-registry.js";
 import { decideBootRestore, decideStartupMedia } from "./storage/boot-restore.js";
+// [PM-SHUFFLE-FOLDERS] Pure candidate ORDERING only — the switching itself
+// stays on this file's existing authoritative resumeLibrary() path. See that
+// module's header for why the two halves are split this way.
+import { orderShuffleFolderCandidates } from "./runtime/folder-shuffle.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -522,6 +526,11 @@ const overlayAutomationsMenuBtn = document.getElementById("overlay-automations-m
 const pmAutomationsGroup = document.getElementById("pm-automations-group");
 // [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-MEDIA-SUPPORT]
 const pmAutomationsPhotoEmpty = document.getElementById("pm-automations-photo-empty");
+// [PM-SHUFFLE-FOLDERS] The one-shot 🎲 action inside that same tray — see
+// shuffleToAnotherRememberedFolder() below for why it is an ACTION and not
+// an automation, and index.html's comment on this element for why it is not
+// media-gated the way Loop/🤖 are.
+const overlayShuffleFoldersBtn = document.getElementById("overlay-shuffle-folders-btn");
 
 const automationPanel = document.getElementById("automation-panel");
 const automationStepChoose = document.getElementById("automation-step-choose");
@@ -7388,6 +7397,23 @@ function closeAutomationsTray() {
   overlayAutomationsMenuBtn.setAttribute("aria-expanded", "false");
 }
 
+// [PM-SHUFFLE-FOLDERS] Extracted verbatim from toggleAutomationsTray()'s own
+// open branch (which now calls it) so there is still exactly ONE way the tray
+// opens. Needed as a callable step because a 🎲 switch runs through
+// loadFromFsaHandle(), whose exitFillMode() closes the tray along with
+// Presentation Mode itself — restoring it afterwards has to reach the same
+// mutual-exclusion + aria-expanded work a click does, not re-set the class by
+// hand and let aria drift.
+function openAutomationsTray() {
+  // Only one pop-out panel makes sense open at a time — same rule
+  // #overlay-automation-btn and #overlay-settings-btn already follow.
+  presentationSettings.classList.add("hidden");
+  closeGhostPopunder();
+  pmAutomationsGroup.classList.add("is-open");
+  overlayAutomationsMenuBtn.classList.add("is-open");
+  overlayAutomationsMenuBtn.setAttribute("aria-expanded", "true");
+}
+
 function toggleAutomationsTray() {
   const willOpen = !pmAutomationsGroup.classList.contains("is-open");
 
@@ -7396,13 +7422,130 @@ function toggleAutomationsTray() {
     return;
   }
 
-  // Only one pop-out panel makes sense open at a time — same rule
-  // #overlay-automation-btn and #overlay-settings-btn already follow.
-  presentationSettings.classList.add("hidden");
-  closeGhostPopunder();
-  pmAutomationsGroup.classList.add("is-open");
-  overlayAutomationsMenuBtn.classList.add("is-open");
-  overlayAutomationsMenuBtn.setAttribute("aria-expanded", "true");
+  openAutomationsTray();
+}
+
+// ---- PM Shuffle Folders (immediate runtime action) -------------------------
+//
+// [PM-SHUFFLE-FOLDERS]
+// WHAT: ⚡ → 🎲 switches Browser Gallery to another remembered Media Folder,
+// now. The whole customer interaction is those two clicks: no Settings trip,
+// no Advanced Settings, no folder picker, no restart, and nothing to
+// configure first.
+//
+// WHY it is an ACTION, not an automation: it happens once and is then over.
+// It writes no state that outlives the switch, which is what keeps ⚡'s
+// protected contract intact — syncAutomationsActiveIndicator() derives "an
+// automation is active" from videoLoopInput.checked ALONE, this action never
+// touches that checkbox or activeLoopRule, and so ⚡ keeps behaving exactly
+// as before (idle → toggle the tray; Loop active → stop it). There is
+// deliberately no Stop state for a one-shot: by the time one could be
+// offered, there is nothing left running to stop.
+//
+// Guarded against re-entry by `isShufflingFolders` AND by the loader's own
+// `isLoadingFiles`: loadFromFsaHandle() silently returns if a load is
+// already in flight, so a second 🎲 landing mid-switch would otherwise look
+// like it did nothing at all rather than like a control that was busy.
+let isShufflingFolders = false;
+
+// [PM-SHUFFLE-FOLDERS] "Can this remembered folder be opened WITHOUT asking
+// the customer for anything?" — the live half of usability that
+// folder-shuffle.js deliberately cannot answer.
+//
+// queryPermission() is a question, never a ceremony; requestPermission() is
+// the ceremony, and this action must never reach it. That is the whole
+// reason permission is pre-checked here rather than left to resumeLibrary():
+// resumeLibrary() will happily PROMPT for a folder whose permission has
+// lapsed (correct for a deliberate Recent-Media-Folders click, wrong for a
+// die roll the customer expects to just switch), so only already-granted
+// candidates are ever handed to it. A candidate that fails this is skipped
+// and the next one tried — a revoked permission, a disconnected drive or a
+// stale handle is a reason to move on, not to interrupt.
+async function canShuffleToRememberedFolder(record) {
+  const handle = record && record.handle;
+  if (!handle || typeof handle.queryPermission !== "function") return false;
+
+  try {
+    return (await handle.queryPermission({ mode: "read" })) === "granted";
+  } catch (error) {
+    // A handle can be genuinely invalid (folder deleted/moved, browser data
+    // cleared). Skip it quietly — unlike resumeLibrary()'s own catch, this
+    // deliberately does NOT removeFromRecents(): the customer did not ask
+    // for THIS folder, so a die roll must not prune their remembered list
+    // as a side effect.
+    console.warn("[PM-SHUFFLE-FOLDERS] Skipping a remembered Media Folder that could not be checked.", error);
+    return false;
+  }
+}
+
+async function shuffleToAnotherRememberedFolder() {
+  if (isShufflingFolders || isLoadingFiles) return;
+
+  isShufflingFolders = true;
+  overlayShuffleFoldersBtn.disabled = true;
+
+  try {
+    // [LIBRARY-REGISTRY] listLibraries() is THE authoritative remembered-
+    // Media-Folder collection — the same read renderRecentLibraries() and
+    // the startup-media pass use. Read fresh on every click rather than
+    // cached, so a folder added or removed since Presentation Mode opened
+    // is reflected without this action needing its own invalidation.
+    let rows;
+    try {
+      rows = await listLibraries();
+    } catch (error) {
+      console.warn("[PM-SHUFFLE-FOLDERS] Could not read the remembered Media Folders.", error);
+      return;
+    }
+
+    const candidates = orderShuffleFolderCandidates({
+      libraries: rows,
+      currentLibraryId: activeLibraryRecord?.id || null,
+    });
+
+    for (const candidate of candidates) {
+      if (!(await canShuffleToRememberedFolder(candidate))) continue;
+
+      // Captured BEFORE the load, because loadFromFsaHandle() calls
+      // exitFillMode() as part of its ordinary staging — that is existing,
+      // protected behavior for every media load, not something to change
+      // for this one caller. Restoring Presentation Mode afterwards is the
+      // smallest safe continuation: it reuses enterFillMode()/
+      // openAutomationsTray() exactly as a click would, and adds no new PM
+      // navigation or playback mechanism.
+      const wasPresenting = fillModeActive;
+      const trayWasOpen = pmAutomationsGroup.classList.contains("is-open");
+
+      // [LIBRARY-REGISTRY] The canonical remembered-folder load path, reused
+      // whole: resumeLibrary() → loadFromFsaHandle(). Nothing about
+      // directory scanning, media projection, FSA handling, profile
+      // association or startup-media behavior is duplicated here. Because
+      // permission was already confirmed granted just above, resumeLibrary()
+      // takes its no-prompt path.
+      //
+      // Awaited to COMPLETION, not merely started: loadFromFsaHandle() only
+      // reaches finishLoadingItems() — the MEDIA LOADED boundary, where
+      // runtime.load() publishes the new media set — near the end of its own
+      // work. Re-entering Presentation Mode before that would put the
+      // customer back in front of the OUTGOING media set.
+      await resumeLibrary(candidate);
+
+      if (wasPresenting) {
+        enterFillMode();
+        if (trayWasOpen) openAutomationsTray();
+      }
+      return;
+    }
+
+    // Nothing usable to switch to — the only remembered folder is the one
+    // already loaded, or every alternative needs customer intervention.
+    // Staying put IS the correct outcome here: there is no failure to
+    // report, so Presentation Mode is left exactly as it was rather than
+    // pushed into an error state or interrupted by a modal.
+  } finally {
+    isShufflingFolders = false;
+    overlayShuffleFoldersBtn.disabled = false;
+  }
 }
 
 // ---- Fill Panel (simulated fullscreen) ---------------------------------
@@ -8010,11 +8153,26 @@ function syncHideButton(item) {
 // resets to "forever" without itself unchecking the box) — this is
 // exactly the case hiding the controls here is a real, needed safety net
 // for, not merely decorative.
+// [PM-SHUFFLE-FOLDERS] Loop/🤖 gating below is UNCHANGED — still exactly
+// `!isVideo`, still the same two elements. What changed is the empty state's
+// derivation: it used to be `isVideo` on the assumption that "photo" and
+// "tray has nothing in it" were the same fact. 🎲 is the tray's first
+// media-agnostic control (switching Media Folders means the same thing on a
+// photo as on a video, so it is deliberately not gated here), which makes
+// that assumption false. The message is now derived from what is ACTUALLY
+// available — no control visible, nothing to offer — so it can never claim
+// "no automations available" while one is sitting next to it. Kept rather
+// than deleted: a tray whose whole contents are media-gated again is exactly
+// what this element is for.
 function syncAutomationsMediaAvailability(item) {
   const isVideo = Boolean(item && item.kind === "video");
   videoLoopControl.classList.toggle("hidden", !isVideo);
   overlayAutomationBtn.classList.toggle("hidden", !isVideo);
-  pmAutomationsPhotoEmpty.classList.toggle("hidden", isVideo);
+
+  const anyAvailable = [videoLoopControl, overlayAutomationBtn, overlayShuffleFoldersBtn].some(
+    (element) => !element.classList.contains("hidden")
+  );
+  pmAutomationsPhotoEmpty.classList.toggle("hidden", anyAvailable);
 }
 
 // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT] [PM-HIDE-UNDO-WAYPOINT] [PM-HIDE-UNDO-WAYPOINT-RUNTIME-FIX]
@@ -9314,6 +9472,15 @@ overlayAutomationsMenuBtn.addEventListener("click", () => {
     return;
   }
   toggleAutomationsTray();
+});
+
+// [PM-SHUFFLE-FOLDERS] Deliberately the ONLY thing this click does — it does
+// not close the tray, does not touch videoLoopInput/activeLoopRule, and does
+// not call syncAutomationsActiveIndicator(): a one-shot action leaves ⚡
+// idle, so repeated ⚡ → 🎲 → 🎲 keeps switching folders from the same open
+// shelf. See shuffleToAnotherRememberedFolder() for the re-entry guard.
+overlayShuffleFoldersBtn.addEventListener("click", () => {
+  shuffleToAnotherRememberedFolder();
 });
 
 overlayAutomationBtn.addEventListener("click", () => {

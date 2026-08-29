@@ -1940,6 +1940,25 @@
           <span id="video-loop-state-text">🔁</span>
         </label>
         <button id="overlay-automation-btn" class="overlay-btn overlay-btn-automation" type="button" title="Loop Automations" aria-label="Loop Automations">🤖</button>
+        <!-- [PM-SHUFFLE-FOLDERS]
+             WHAT: An IMMEDIATE RUNTIME ACTION, not an automation: one click
+             switches Browser Gallery to another remembered Media Folder,
+             right now, and is then finished. It deliberately establishes no
+             ongoing state, so ⚡'s protected two-state contract is untouched
+             — syncAutomationsActiveIndicator() still derives "an automation
+             is active" from videoLoopInput.checked alone, which 🎲 never
+             writes, and there is deliberately no Stop state for a one-shot.
+             WHY it lives here anyway: this tray is the declared expansion
+             point for PM automations and actions (see the group's own
+             comment above), and ⚡ → 🎲 is the whole interaction — no
+             Settings trip, no picker, no configuration.
+             NOT gated by syncAutomationsMediaAvailability() the way Loop/🤖
+             are: switching Media Folders is exactly as meaningful for a
+             photo as for a video, so it is the tray's first media-agnostic
+             control — which is also why the photo empty state below is now
+             derived from what is actually available rather than from
+             "is this a video". -->
+        <button id="overlay-shuffle-folders-btn" class="overlay-btn overlay-btn-shuffle-folders" type="button" title="Shuffle Folders" aria-label="Shuffle Folders">🎲</button>
         <p id="pm-automations-photo-empty" class="pm-automations-photo-empty hint hidden">No automations available for photos yet.</p>
       </div>
       <button id="overlay-prev-btn" class="overlay-btn" type="button">◀</button>
