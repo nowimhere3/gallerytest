@@ -1,6 +1,6 @@
 # Phase 3-2 - Held Frame Implementation Report
 
-**Timestamp:** 2026-09-02 15:46:08 -06:00 (Calgary, Alberta)
+**Timestamp:** 2026-09-02 17:21:24 -06:00 (Calgary, Alberta; updated after human evidence)
 
 # Stage
 
@@ -8,7 +8,7 @@ Browser Gallery Remote — Phase 3A: Held Frame and Transition Instrumentation.
 
 Claude accidentally began the implementation due to an agent-routing error. Codex subsequently audited the preserved working tree against the approved Phase 3-1 handoff and completed/verified the Builder work. The preserved implementation required no corrective code change.
 
-Implementation and automated gates are complete. Human evidence is **PENDING HUMAN TEST**. No commit or push was performed.
+Implementation, automated gates, and the two authorized human runs are complete.
 
 # Goal
 
@@ -96,23 +96,36 @@ The settled pre-change human baseline over 25 real Remote Cassette transitions w
 | Application dispatch (`advance_to_src_ms`) | ~0.8 ms | Expected substantially unchanged |
 | Resource wait (`src_to_load_ms` / `src_wait_ms`) | ~4647 ms | Expected unchanged; Phase 3A does not accelerate the resource |
 | Ready (`advance_to_ready_ms` / `ready_ms`) | ~4665 ms | Expected unchanged; rAF remains only a readiness proxy, not paint |
-| **Black/blank gap (`black_gap_to_ready_ms` / `blank_ms`)** | **~4664 ms** | **PENDING HUMAN TEST; designed to collapse toward one synchronous swap/frame on held image→image transitions** |
+| **Black/blank gap (`black_gap_to_ready_ms` / `blank_ms`)** | **~4664 ms** | **Black frame visually gone — PASS** |
 
-The authorized claim after implementation is structural: the outgoing image remains mounted throughout `src_wait_ms`, and outgoing teardown plus prepared-image insertion occur without an intervening `await`. The customer should no longer look at black while waiting, but real visual confirmation and post-change console measurements remain pending.
+The human confirmed that the black frame is gone and navigation remains correct. The experience did not yet feel substantially faster, and rapid repeated Next produced weirdness. This is consistent with Phase 3A's boundary: it hides the unprepared resource wait but does not remove that wait from the critical path. Exact post-change console values were not supplied with the human evidence and are not fabricated here.
+
+Run 1 — Real Remote Cassette, Presentation Mode, Shuffle ON, five-second interval:
+
+```text
+Black frame gone:            YES
+Navigation correct:          YES
+Feels substantially better:  NO
+Rapid Next weirdness:        YES
+```
+
+Run 2 — Remembered local folder, Presentation image transitions:
+
+```text
+Local playback normal: YES
+```
 
 Instrumentation uses honest boundaries: `dispatch_to_src_ms` begins at `render()` entry rather than the click/timer; `src_wait_ms` is not labeled network latency; and the rAF-derived `ready_ms` is not called paint time.
 
 # Regressions
 
-No automated regression was found. Video construction/playback code remains on the eager path and was not changed. Local image behavior and real Presentation navigation remain pending the two minimal browser runs.
+No automated regression was found. Video construction/playback code remains on the eager path and was not changed. Human testing confirmed correct remote navigation and normal local playback.
 
 # Known Unknowns
 
-- Whether the black frame is visually gone for the tested real Remote Cassette.
 - Actual post-change `blank_ms`, `src_wait_ms`, and `ready_ms` observations.
-- Whether several rapid manual Next actions feel adequately acknowledged while the prior frame remains held; no cue was pre-built.
-- Human confirmation that shuffle navigation remains correct.
-- Human confirmation that remembered local-folder image transitions remain correct.
+- The exact mechanism and eventual product treatment for the observed rapid-Next weirdness. Phase 3A does not pre-solve it.
+- Whether planned preparation in Phase 3B will make five-second cadence approximately stable under the tested resource conditions.
 
 # Breadcrumbs Added
 
@@ -135,8 +148,8 @@ The new module, test, and report remain untracked until the later authorized com
 
 # Recommendation
 
-Implementation ready; takeover audit and automated gates complete; human evidence pending.
+**Phase 3A technical gate: PASS.** The black-frame defect is removed, navigation remains correct, and local playback remains normal.
 
-Run exactly the two approved minimal checks, then return the evidence for the Phase 3A gate. Do not begin Phase 3B.
+**Product speed target: not yet met.** Resource readiness remains unprepared, so cadence still does not feel substantially faster and rapid Next has observable weirdness.
 
-**STOP FOR HUMAN TEST.**
+**Next authorized architecture: Phase 3B.** Close Phase 3A without reverting its successful held-frame behavior.
