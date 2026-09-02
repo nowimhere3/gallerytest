@@ -1,5 +1,7 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
+import { extractRemoteUrls } from "./providers/remote-url-parser.js";
+import { RemoteUrlProvider } from "./providers/remote-url-provider.js";
 import {
   listLibraries,
   addOrUpdateLibrary,
@@ -113,6 +115,7 @@ const provider = new LocalFileInputProvider();
 // (see loadFiles/loadFromFsaHandle below), since only one media set is
 // ever actually loaded into the app at once.
 const fsaProvider = new FsaFileProvider();
+const remoteProvider = new RemoteUrlProvider();
 const profile = new ProfileStore();
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
 // [WHY: constructed immediately beside `profile` and handed to MediaRuntime
@@ -193,6 +196,8 @@ const legacyPickerDetails = document.getElementById("legacy-picker-details");
 const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
 const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
+const remoteSessionInput = document.getElementById("remote-session-input");
+const remoteStatusText = document.getElementById("remote-status-text");
 const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
 const fsaAssociateBtnLabel = document.getElementById("fsa-associate-btn-label");
 const fsaAssociateHelp = document.getElementById("fsa-associate-help");
@@ -5054,6 +5059,68 @@ function finishLoadingItems(items) {
   reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
 }
 
+async function loadRemoteSession(text, { name } = {}) {
+  if (isLoadingFiles) return;
+
+  isLoadingFiles = true;
+  const loadToken = ++libraryLoadGeneration;
+  clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
+  lastMobileLoadFailed = false;
+  syncMobileLoadState();
+  bumpGalleryGeneration();
+  runtime.clear();
+  clearViewerNode();
+  exitFillMode();
+  recentHideUndo = null;
+  syncUndoHideButton();
+
+  provider.dispose();
+  fsaProvider.dispose();
+  activeLibraryRecord = null;
+  associationWriteSuppression.setLoadedLibrary(null);
+  ambientProfileObserver.clearContext();
+  renderAmbientProfileOffer();
+  activeLibraryDisplayName = null;
+  currentSourceKind = "none";
+  currentFolderPermissionState = "granted";
+  legacySessionAssociated = false;
+  legacyHasDurableIdentity = false;
+  pendingLegacySignature = null;
+  pendingLibraryAssociationIntent = false;
+  syncAssociateButtonVisibility();
+
+  remoteStatusText.textContent = "Loading remote session…";
+
+  try {
+    const parsed = extractRemoteUrls(text);
+    const result = await remoteProvider.loadFromUrls(parsed.urls, {
+      batchSize: BATCH_SIZE,
+    });
+    if (loadToken !== libraryLoadGeneration) return;
+
+    const skipped = parsed.diagnostics.rejected + result.diagnostics.skipped;
+    if (!result.items.length) {
+      remoteStatusText.textContent = "No valid media URLs found in this file.";
+    } else {
+      remoteStatusText.textContent =
+        `Remote session ready. ${result.items.length} items · ` +
+        `${result.diagnostics.images} images · ${result.diagnostics.videos} videos` +
+        (skipped ? ` · ${skipped} links skipped` : "");
+    }
+
+    console.info("[REMOTE SESSION] Load counts", {
+      parser: parsed.diagnostics,
+      provider: result.diagnostics,
+    });
+
+    finishLoadingItems(result.items);
+  } finally {
+    isLoadingFiles = false;
+    syncMobileLoadState();
+  }
+}
+
 async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {}) {
   const total = (fileList || []).length;
   if (!total || isLoadingFiles) return;
@@ -5089,6 +5156,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
+  remoteProvider.dispose();
   activeLibraryRecord = null;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
@@ -5397,6 +5465,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // [FSA] Switching TO the FSA path — release whatever the local <input>
   // picker had loaded.
   provider.dispose();
+  remoteProvider.dispose();
 
   fsaStatusText.textContent = "";
 
@@ -8729,6 +8798,13 @@ fileInput.addEventListener("change", (event) => {
   fileInput.value = "";
 });
 
+remoteSessionInput.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  remoteSessionInput.value = "";
+  if (!file) return;
+  await loadRemoteSession(await file.text(), { name: file.name });
+});
+
 folderInput.addEventListener("change", (event) => {
   const files = event.target.files;
 
@@ -9307,6 +9383,7 @@ clearBtn.addEventListener("click", () => {
   runtime.clear();
   provider.dispose();
   fsaProvider.dispose(); // [FSA] whichever source was active, release it
+  remoteProvider.dispose();
   allItems = [];
   clearViewerNode();
   exitFillMode();
@@ -11679,6 +11756,7 @@ window.addEventListener("beforeunload", () => {
   runtime.stop();
   provider.dispose();
   fsaProvider.dispose(); // [FSA]
+  remoteProvider.dispose();
 });
 
 // [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-7]

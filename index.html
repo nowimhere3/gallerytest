@@ -179,6 +179,13 @@
             <span>Choose Folder (FSA)</span>
           </button>
         </div>
+        <div class="media-picker-row">
+          <label class="button-like secondary">
+            <span>Open Remote Session</span>
+            <input id="remote-session-input" type="file" accept=".txt,text/plain" hidden />
+          </label>
+        </div>
+        <p id="remote-status-text" class="hint" role="status"></p>
         <!-- [LIBRARY-REGISTRY] Populated by renderRecentLibraries() in
              main.js — one row per previously-chosen FSA folder, most
              recently opened first. Hidden (via the `hidden` class) when

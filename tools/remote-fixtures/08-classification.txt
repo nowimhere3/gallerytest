@@ -1,0 +1,14 @@
+https://cdn.example.com/classify/photo.jpg
+https://cdn.example.com/classify/photo.jpeg
+https://cdn.example.com/classify/photo.png
+https://cdn.example.com/classify/photo.webp
+https://cdn.example.com/classify/animation.gif
+https://cdn.example.com/classify/movie.mp4
+https://cdn.example.com/classify/movie.webm
+https://cdn.example.com/classify/movie.mov
+https://cdn.example.com/classify/movie.m4v
+https://cdn.example.com/classify/segment.ts
+https://cdn.example.com/classify/extensionless
+https://cdn.example.com/classify/resource?format=jpg
+https://cdn.example.com/classify/encoded%20photo.jpg
+https://fallback.example.com/
