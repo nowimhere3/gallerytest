@@ -1,0 +1,8 @@
+https://cdn.example.com/media/photo.jpg
+https://cdn.example.com/media/photo.png
+https://cdn.example.com/media/photo.webp
+https://cdn.example.com/media/animation.gif
+https://cdn.example.com/media/movie.mp4
+https://cdn.example.com/media/movie.webm
+https://cdn.example.com/media/extensionless
+https://cdn.example.com/media/resource?format=original

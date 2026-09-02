@@ -1,0 +1,4 @@
+	https://cdn.example.com/mixed/one.jpg	
+
+  https://cdn.example.com/mixed/two.png   	   
+https://cdn.example.com/mixed/three.webp

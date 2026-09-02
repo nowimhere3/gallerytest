@@ -1,0 +1,9 @@
+This is prose, not a URL.
+bareword
+javascript:alert(1)
+data:text/html,x
+file:///C:/x.jpg
+ftp://example.com/x.jpg
+https://user:pass@cdn.example.com/private.jpg
+http://
+https://cdn.example.com/media/survivor.jpg
