@@ -27,6 +27,7 @@ for (const extension of ["mp4", "webm", "mov", "m4v"]) {
   assert(result.items.find((item) => item.url.endsWith(`.${extension}`))?.kind === "video", `.${extension} maps to video`);
 }
 assert(result.items.every((item) => !item.url.endsWith(".ts")), ".ts is skipped");
+assert(result.items.every((item) => !item.name.toLowerCase().endsWith(".ts")), "provider emits no TS display names");
 assert(result.items.every((item) => !item.url.endsWith("/extensionless")), "extensionless URL is skipped");
 assert(
   result.items.every((item) => !item.url.includes("resource?format=jpg")),
@@ -56,6 +57,19 @@ assert(result.items.every((item) => item.relativePath !== "photos/example.jpg"),
 assert(new Set(result.items.map((item) => item.id)).size === result.items.length, "session-local IDs are unique");
 assert(result.items.every((item) => !item.id.includes(item.url)), "IDs do not contain complete remote URLs");
 assert(result.items.every((item) => /^remote-\d+$/.test(item.id)), "IDs make only an index-based session-local claim");
+
+const tsExclusion = await new RemoteUrlProvider().loadFromUrls([
+  "https://cdn.example.com/segment.ts",
+  "https://cdn.example.com/segment.TS",
+  "https://cdn.example.com/a%2Ets",
+  "https://cdn.example.com/clip.ts?format=mp4",
+]);
+assert(tsExclusion.items.length === 0, "deliberate TS inputs emit no remote items");
+assert(tsExclusion.diagnostics.skipped === 4, "all deliberate TS inputs are classified as skipped");
+assert(tsExclusion.items.every((item) => !item.name.toLowerCase().endsWith(".ts")), "TS exclusion matches viewer routing predicate");
+
+const decodedTsName = await new RemoteUrlProvider().loadFromUrls(["https://cdn.example.com/decoded%2Ets"]);
+assert(decodedTsName.items.length === 0, "decoded display name ending in .ts emits no remote item");
 
 const names = await new RemoteUrlProvider().loadFromUrls([
   "https://cdn.example.com/path/normal.jpg",

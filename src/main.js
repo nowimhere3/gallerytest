@@ -1396,6 +1396,46 @@ let galleryThumbEls = [];
 let galleryObserver = null;
 let galleryJumpTargetIndex = null;
 
+// [REMOTE-CASSETTE / PHASE 1C]
+// BREADCRUMBS - WAS
+// Before remote media existed, mounted media came from local File-backed
+// sources and object URLs. buildViewer() and mountThumbMedia() assigned media
+// sources without observing load success or failure because failure was
+// effectively outside the normal local model.
+//
+// BREADCRUMBS - IS
+// Media addresses can now originate outside the machine, so mounting is an
+// attempt rather than a certainty. This shared rendering seam observes outcomes
+// source-neutrally and counts success/failure; it does not retry, substitute,
+// reorder, or remove. A failed current item receives one human sentence while
+// the overall session continues: one bad item must not destroy the session.
+//
+// BREADCRUMBS - WILL BE
+// Remote .ts remains excluded upstream, with that invariant frozen by provider
+// tests. ts-playback-adapter.js stays untouched because the remote TS path is
+// structurally unreachable. Outcome counts remain console-only until real
+// evidence justifies user-facing failure counts; no failure taxonomy is encoded
+// yet. No retry, proxy, header, or cookie solution exists yet because those
+// belong to later evidence-driven architecture. Load timings exist only to
+// inform a future optimization decision; this stage must not pre-optimize.
+let mediaRenderOutcomes = { mounted: 0, loaded: 0, failed: 0 };
+let mediaRenderOutcomeTimer = null;
+
+function resetMediaRenderOutcomes() {
+  if (mediaRenderOutcomeTimer !== null) clearTimeout(mediaRenderOutcomeTimer);
+  mediaRenderOutcomeTimer = null;
+  mediaRenderOutcomes = { mounted: 0, loaded: 0, failed: 0 };
+}
+
+function recordMediaRenderOutcome(outcome) {
+  mediaRenderOutcomes[outcome] += 1;
+  if (mediaRenderOutcomeTimer !== null) clearTimeout(mediaRenderOutcomeTimer);
+  mediaRenderOutcomeTimer = setTimeout(() => {
+    console.info("[MEDIA RENDER] Outcomes", { ...mediaRenderOutcomes });
+    mediaRenderOutcomeTimer = null;
+  }, 1000);
+}
+
 // ---- Loop Automations (Phase 5 + Phase 5.1 refinement) ---------------------
 //
 // A Loop Rule governs how many times (or how long) the CURRENTLY DISPLAYED
@@ -5089,15 +5129,24 @@ async function loadRemoteSession(text, { name } = {}) {
   pendingLegacySignature = null;
   pendingLibraryAssociationIntent = false;
   syncAssociateButtonVisibility();
+  fsaStatusText.textContent = "";
+  resetMediaRenderOutcomes();
 
   remoteStatusText.textContent = "Loading remote session…";
 
   try {
+    const parseStartedAt = performance.now();
     const parsed = extractRemoteUrls(text);
+    const parseMs = performance.now() - parseStartedAt;
+    const providerStartedAt = performance.now();
     const result = await remoteProvider.loadFromUrls(parsed.urls, {
       batchSize: BATCH_SIZE,
     });
-    if (loadToken !== libraryLoadGeneration) return;
+    const providerMs = performance.now() - providerStartedAt;
+    if (loadToken !== libraryLoadGeneration) {
+      remoteStatusText.textContent = "";
+      return;
+    }
 
     const skipped = parsed.diagnostics.rejected + result.diagnostics.skipped;
     if (!result.items.length) {
@@ -5114,7 +5163,25 @@ async function loadRemoteSession(text, { name } = {}) {
       provider: result.diagnostics,
     });
 
+    const firstPaintStartedAt = performance.now();
     finishLoadingItems(result.items);
+    const toFirstPaintMs = performance.now() - firstPaintStartedAt;
+    console.info("[REMOTE SESSION] Load phases", {
+      parse_ms: parseMs,
+      provider_ms: providerMs,
+      to_first_paint_ms: toFirstPaintMs,
+      parsed: parsed.urls.length,
+      items: result.items.length,
+    });
+  } catch (error) {
+    if (loadToken !== libraryLoadGeneration) {
+      remoteStatusText.textContent = "";
+      return;
+    }
+    remoteStatusText.textContent = "That file could not be read.";
+    console.warn("[REMOTE SESSION] The selected file could not be loaded.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
   } finally {
     isLoadingFiles = false;
     syncMobileLoadState();
@@ -5157,6 +5224,8 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
   remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
   activeLibraryRecord = null;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
@@ -5466,6 +5535,8 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // picker had loaded.
   provider.dispose();
   remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
 
   fsaStatusText.textContent = "";
 
@@ -7871,6 +7942,18 @@ function buildViewer(state) {
   if (item.kind === "image") {
     const img = document.createElement("img");
     img.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    img.addEventListener("load", () => {
+      if (currentViewerNode !== img) return;
+      recordMediaRenderOutcome("loaded");
+    });
+    img.addEventListener("error", () => {
+      if (currentViewerNode !== img) return;
+      recordMediaRenderOutcome("failed");
+      viewerEmpty.textContent = "This item could not be loaded.";
+      viewerStage.classList.add("hidden");
+      viewerEmpty.classList.remove("hidden");
+    });
     img.alt = item.name;
     currentViewerNode = img;
     viewerStage.appendChild(img);
@@ -7897,6 +7980,18 @@ function buildViewer(state) {
       });
     } else {
       video.src = item.url;
+      recordMediaRenderOutcome("mounted");
+      video.addEventListener("loadedmetadata", () => {
+        if (currentViewerNode !== video) return;
+        recordMediaRenderOutcome("loaded");
+      });
+      video.addEventListener("error", () => {
+        if (currentViewerNode !== video) return;
+        recordMediaRenderOutcome("failed");
+        viewerEmpty.textContent = "This item could not be loaded.";
+        viewerStage.classList.add("hidden");
+        viewerEmpty.classList.remove("hidden");
+      });
     }
 
     // A fresh video is on screen — arm whatever the active Loop Rule
@@ -8149,14 +8244,33 @@ function mountThumbMedia(thumb) {
   if (!item || thumb.dataset.mounted === "true") return;
 
   let mediaEl;
+  const mountedGeneration = galleryGeneration;
 
   if (item.kind === "image") {
     mediaEl = document.createElement("img");
     mediaEl.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    mediaEl.addEventListener("load", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("loaded");
+    });
+    mediaEl.addEventListener("error", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("failed");
+    });
     mediaEl.alt = item.name;
   } else if (item.kind === "video") {
     mediaEl = document.createElement("video");
     mediaEl.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    mediaEl.addEventListener("loadedmetadata", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("loaded");
+    });
+    mediaEl.addEventListener("error", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("failed");
+    });
     mediaEl.muted = true;
     mediaEl.preload = "metadata";
   } else {
@@ -8802,7 +8916,20 @@ remoteSessionInput.addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   remoteSessionInput.value = "";
   if (!file) return;
-  await loadRemoteSession(await file.text(), { name: file.name });
+  const fileReadGeneration = libraryLoadGeneration;
+  try {
+    const text = await file.text();
+    await loadRemoteSession(text, { name: file.name });
+  } catch (error) {
+    if (fileReadGeneration !== libraryLoadGeneration) {
+      remoteStatusText.textContent = "";
+      return;
+    }
+    remoteStatusText.textContent = "That file could not be read.";
+    console.warn("[REMOTE SESSION] The selected file could not be read.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
 });
 
 folderInput.addEventListener("change", (event) => {
@@ -9384,6 +9511,8 @@ clearBtn.addEventListener("click", () => {
   provider.dispose();
   fsaProvider.dispose(); // [FSA] whichever source was active, release it
   remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
   allItems = [];
   clearViewerNode();
   exitFillMode();
