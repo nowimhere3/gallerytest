@@ -24,6 +24,10 @@ import { decideBootRestore, decideStartupMedia } from "./storage/boot-restore.js
 // stays on this file's existing authoritative resumeLibrary() path. See that
 // module's header for why the two halves are split this way.
 import { orderShuffleFolderCandidates } from "./runtime/folder-shuffle.js";
+// [PRESENTATION-PERF / PHASE 3A] Pure staleness decision only — the preparing,
+// the timing and the DOM commit all stay in this file. See that module's header
+// for what each of the four guarded facts protects against.
+import { shouldCommitPreparedViewer } from "./runtime/viewer-commit.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -1442,6 +1446,150 @@ function recordMediaRenderOutcome(outcome) {
     console.info("[MEDIA RENDER] Outcomes", { ...mediaRenderOutcomes });
     mediaRenderOutcomeTimer = null;
   }, 1000);
+}
+
+// [PRESENTATION-PERF / PHASE 3A]
+//
+// BREADCRUMBS - WAS
+// buildViewer() tore down the outgoing media unconditionally — clearViewerNode()
+// empties #viewer-stage — before creating the incoming element, so the stage was
+// empty for the whole of the resource wait. That was invisible while every
+// source was a local blob: URL, and became the dominant customer-visible defect
+// once media addresses started originating off-machine: 25 real manual-Next
+// transitions through a Remote Cassette measured a ~4.65 s MEDIAN blank gap
+// against a ~0.8 ms median application dispatch. The application was never slow;
+// it was showing black while it waited.
+//
+// BREADCRUMBS - IS
+// For an image following an image, the outgoing frame is HELD on screen while
+// the incoming image loads and (best-effort) decodes. Teardown and insertion
+// then happen in one synchronous block, so no empty stage is ever painted. A
+// prepared node may commit only if its token, load generation, gallery
+// generation and item identity ALL still match — otherwise it is discarded in
+// silence (see runtime/viewer-commit.js). The path is advisory: any failure
+// converges onto the pre-existing eager path and Phase 1C's "This item could not
+// be loaded." It is source-neutral — a blob: URL and an https: URL take the
+// identical route, and nothing here asks where an item came from.
+//
+// BREADCRUMBS - WILL BE
+// This stage deliberately does NOT predict what comes next: no lookahead, no
+// ready queue, no second RNG, and MediaRuntime remains untouched. Evidence shows
+// resource readiness dominates (~4.65 s median vs ~0.8 ms dispatch), so a
+// planned shuffle sequence feeding a small bounded preload queue is the
+// justified next step — and it must keep ONE shuffle authority inside
+// MediaRuntime, with next() consuming the plan rather than any external peek
+// drawing separately. The per-transition CPU costs found during the audit (the
+// O(n) passes in next(), the ~4,600 gallery DOM operations, the pool-key
+// stringify) are real but measured at ~0.8 ms in total: they are cleanup
+// candidates, not performance work, and must not be confused for this defect.
+// Video readiness is a different problem — buffering, codec init, seek state —
+// and is NOT covered by this mechanism, which is why the held path is restricted
+// to image-following-image.
+//
+// Incremented on every entry into the held path. A prepared node whose token no
+// longer matches has been superseded and may never commit. Same generation-token
+// discipline as libraryLoadGeneration, galleryGeneration and the providers'
+// private #loadToken — stale-result rejection, never cancellation.
+let viewerPreparationCounter = 0;
+
+// t0 for a transition: the moment render() began. Deliberately NOT the button
+// press or the interval tick — MediaRuntime owns those and is protected, so its
+// own selection work is excluded from every number below. The human's profiler
+// already bounded that exclusion at ~0.8 ms median for the whole dispatch.
+let lastRenderEntryAt = 0;
+
+const PM_TRANSITION_SUMMARY_EVERY = 10;
+let transitionSamples = [];
+let transitionSampleGeneration = -1;
+let transitionCount = 0;
+
+function transitionHost(item) {
+  try {
+    return new URL(item.url).hostname;
+  } catch {
+    // blob: URLs have no hostname, and a malformed URL must never break a
+    // measurement. Either way there is nothing to report.
+    return "";
+  }
+}
+
+function percentileMs(values, fraction) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round(fraction * (sorted.length - 1))));
+  return Math.round(sorted[index]);
+}
+
+// One concise line per COMMITTED transition, plus a rolling summary. Discarded
+// preparations log nothing — they are not transitions, they are answers that
+// arrived too late.
+//
+// Counts, durations and hostname at most. Never a full remote URL and never a
+// query string: a signed URL can carry a token (Part 2 Section 52).
+function recordPresentationTransition(sample) {
+  if (transitionSampleGeneration !== libraryLoadGeneration) {
+    // Numbers from two different sources must never mix in one window.
+    transitionSampleGeneration = libraryLoadGeneration;
+    transitionSamples = [];
+    transitionCount = 0;
+  }
+
+  transitionCount += 1;
+  transitionSamples.push(sample);
+
+  console.info("[PM TRANSITION]", {
+    n: transitionCount,
+    held: sample.held,
+    dispatch_to_src_ms: Math.round(sample.dispatchToSrcMs),
+    src_wait_ms: Math.round(sample.srcWaitMs),
+    decode_ms: sample.decodeMs === null ? null : Math.round(sample.decodeMs),
+    blank_ms: Math.round(sample.blankMs),
+    ready_ms: Math.round(sample.readyMs),
+    host: sample.host,
+  });
+
+  if (transitionSamples.length < PM_TRANSITION_SUMMARY_EVERY) return;
+
+  const window = transitionSamples;
+  transitionSamples = [];
+  const srcWait = window.map((entry) => entry.srcWaitMs);
+  const blank = window.map((entry) => entry.blankMs);
+  const ready = window.map((entry) => entry.readyMs);
+  const heldCount = window.filter((entry) => entry.held).length;
+
+  console.info("[PM TRANSITION] Summary", {
+    count: window.length,
+    held: `${heldCount}/${window.length}`,
+    src_wait_ms: { median: percentileMs(srcWait, 0.5), p90: percentileMs(srcWait, 0.9) },
+    blank_ms: { median: percentileMs(blank, 0.5), p90: percentileMs(blank, 0.9) },
+    ready_ms: { median: percentileMs(ready, 0.5), p90: percentileMs(ready, 0.9) },
+  });
+}
+
+// Schedules the one honest readiness timestamp: the animation frame AFTER a
+// loaded image is in the stage.
+//
+// This is a PROXY for paint, not paint. rAF fires before the frame is
+// composited, so it is the closest honest observation available without
+// Element Timing — do not call it, or let any report call it, "painted".
+function measureTransitionReady({ held, renderEntryAt, srcAt, loadAt, decodeAt, teardownAt, item }) {
+  requestAnimationFrame(() => {
+    const readyAt = performance.now();
+    recordPresentationTransition({
+      held,
+      dispatchToSrcMs: srcAt - renderEntryAt,
+      srcWaitMs: loadAt - srcAt,
+      decodeMs: decodeAt === null ? null : decodeAt - loadAt,
+      // The interval the customer actually spends looking at no image: from the
+      // moment the outgoing content was removed to the frame after a loaded
+      // image occupies the stage. On the held path teardown and insertion are
+      // one synchronous block, so this collapses to roughly a single frame. On
+      // the eager path it is the whole resource wait, which is the defect.
+      blankMs: readyAt - teardownAt,
+      readyMs: readyAt - renderEntryAt,
+      host: transitionHost(item),
+    });
+  });
 }
 
 // ---- Loop Automations (Phase 5 + Phase 5.1 refinement) ---------------------
@@ -7995,6 +8143,130 @@ function clearViewerNode() {
   currentViewerItem = null;
 }
 
+// [PRESENTATION-PERF / PHASE 3A]
+// The held path. Starts the incoming image loading WITHOUT tearing down the
+// outgoing one, then swaps only once the incoming image is genuinely ready —
+// and only if it is still the image the viewer is waiting for.
+//
+// buildViewer() itself stays synchronous: this kicks off a detached promise
+// chain and returns immediately, exactly as the eager path returns immediately
+// after assigning src. The customer-visible difference is only WHEN the stage
+// changes, never what ends up on it.
+function prepareHeldFrameImage(item) {
+  const renderEntryAt = lastRenderEntryAt;
+  const token = ++viewerPreparationCounter;
+  const preparedLoadGeneration = libraryLoadGeneration;
+  const preparedGalleryGeneration = galleryGeneration;
+
+  // Claimed EAGERLY, before any await. This is what makes buildViewer()'s
+  // same-item early return absorb every intervening re-emit — a profile change,
+  // a favourite toggle, a status refresh — instead of starting a duplicate
+  // preparation for the same item on each one. currentViewerItem therefore
+  // means "the item the viewer is showing OR preparing" from here on.
+  //
+  // currentViewerNode is deliberately NOT touched: it still points at the
+  // outgoing image, which is still on screen and still owns the stage. That is
+  // the held frame.
+  currentViewerItem = item;
+
+  const img = document.createElement("img");
+  img.alt = item.name;
+  img.decoding = "async";
+  const srcAt = performance.now();
+  img.src = item.url;
+  recordMediaRenderOutcome("mounted");
+
+  // The load/error events are the AUTHORITY on success or failure. Phase 1C's
+  // own listeners are deliberately not attached on this path: this promise is
+  // the single outcome source for a prepared node, and attaching both would
+  // double-count the tally.
+  const loaded = new Promise((resolve, reject) => {
+    img.addEventListener("load", resolve, { once: true });
+    img.addEventListener("error", reject, { once: true });
+  });
+
+  (async () => {
+    let loadAt = 0;
+    let decodeAt = null;
+    let failed = false;
+
+    try {
+      await loaded;
+      loadAt = performance.now();
+      if (typeof img.decode === "function") {
+        try {
+          await img.decode();
+        } catch {
+          // decode() is a refinement, never the verdict. It can reject for
+          // images that render perfectly well, and `load` has already told us
+          // the bytes arrived — so a rejection here must not become a failure.
+        }
+        decodeAt = performance.now();
+      }
+    } catch {
+      failed = true;
+    }
+
+    const commit = shouldCommitPreparedViewer({
+      preparedToken: token,
+      currentToken: viewerPreparationCounter,
+      preparedLoadGeneration,
+      currentLoadGeneration: libraryLoadGeneration,
+      preparedGalleryGeneration,
+      currentGalleryGeneration: galleryGeneration,
+      preparedItem: item,
+      currentViewerItem,
+    });
+
+    if (!commit) {
+      // Superseded, or the source/filter/viewer moved on. Release the decoded
+      // bitmap and the pending request and do nothing else — no DOM, no
+      // classes, no status text, and no outcome recorded, matching the eager
+      // path's own `currentViewerNode !== img` guard.
+      img.src = "";
+      return;
+    }
+
+    // Teardown and insertion in ONE synchronous block, with no await between
+    // them. This is the entire mechanism: the browser never gets a chance to
+    // paint an empty stage.
+    clearViewerNode();
+    const teardownAt = performance.now();
+    // clearViewerNode() nulls both refs; re-establish what this preparation
+    // already owns.
+    currentViewerItem = item;
+
+    if (failed) {
+      // Converge exactly onto Phase 1C's existing behaviour. The held frame is
+      // released here, which is correct: image A cannot be held forever on
+      // behalf of a dead image B. Nothing skips, retries, removes, reorders or
+      // classifies — that is Phase 1C's territory and it stays there.
+      recordMediaRenderOutcome("failed");
+      viewerEmpty.textContent = "This item could not be loaded.";
+      viewerStage.classList.add("hidden");
+      viewerEmpty.classList.remove("hidden");
+      return;
+    }
+
+    currentViewerNode = img;
+    viewerStage.appendChild(img);
+    recordMediaRenderOutcome("loaded");
+
+    // #viewer-stage was already visible and #viewer-empty already hidden — the
+    // held path only runs when a real image was on screen — so neither class is
+    // touched here.
+    measureTransitionReady({
+      held: true,
+      renderEntryAt,
+      srcAt,
+      loadAt,
+      decodeAt,
+      teardownAt,
+      item,
+    });
+  })();
+}
+
 function buildViewer(state) {
   const { currentItem: item, isPlaying, hasItems, hasVisibleItems } = state;
 
@@ -8049,7 +8321,36 @@ function buildViewer(state) {
     return;
   }
 
+  // [PRESENTATION-PERF / PHASE 3A] Held-frame eligibility, decided BEFORE
+  // teardown — because holding the outgoing frame means not calling
+  // clearViewerNode() yet. Reaching this line is itself the fourth condition:
+  // the same-item early return above did not fire, so this is a genuine item
+  // change rather than a re-emit for the item already on screen.
+  //
+  // Restricted to image-following-image deliberately. Holding a PLAYING video
+  // while an image prepares would entangle armLoopRuleForCurrentVideo(),
+  // notifyVideoEnded() and the TS adapter, none of which are in scope. Every
+  // other combination — image -> video, video -> image, video -> video, the
+  // first item of a session, and recovery from the "could not be loaded" state
+  // (where #viewer-stage is hidden and there is no frame worth holding) — falls
+  // through to the eager path below, byte for byte unchanged.
+  const outgoingNode = currentViewerNode;
+  const canHoldOutgoingFrame =
+    Boolean(item) &&
+    item.kind === "image" &&
+    Boolean(outgoingNode) &&
+    outgoingNode.tagName === "IMG" &&
+    !viewerStage.classList.contains("hidden");
+
+  if (canHoldOutgoingFrame) {
+    prepareHeldFrameImage(item);
+    return;
+  }
+
   clearViewerNode();
+  // Captured at the call site rather than inside clearViewerNode(), which stays
+  // the single teardown owner and keeps doing exactly what it did before.
+  const teardownAt = performance.now();
 
   if (!item) {
     viewerStage.classList.add("hidden");
@@ -8064,11 +8365,27 @@ function buildViewer(state) {
 
   if (item.kind === "image") {
     const img = document.createElement("img");
+    const renderEntryAt = lastRenderEntryAt;
+    const srcAt = performance.now();
     img.src = item.url;
     recordMediaRenderOutcome("mounted");
     img.addEventListener("load", () => {
       if (currentViewerNode !== img) return;
       recordMediaRenderOutcome("loaded");
+      // [PRESENTATION-PERF / PHASE 3A] The eager path measures itself with the
+      // same definitions the held path uses, so before/after is one comparison
+      // rather than two. On this path the element was appended EMPTY and only
+      // becomes visible now — which is precisely why blank_ms here is the whole
+      // resource wait, and why it is the number this stage exists to collapse.
+      measureTransitionReady({
+        held: false,
+        renderEntryAt,
+        srcAt,
+        loadAt: performance.now(),
+        decodeAt: null,
+        teardownAt,
+        item,
+      });
     });
     img.addEventListener("error", () => {
       if (currentViewerNode !== img) return;
@@ -9018,8 +9335,33 @@ function syncControls(state) {
 }
 
 function render(state) {
-  renderGallery(state);
+  // [PRESENTATION-PERF / PHASE 3A] t0 for every transition measurement. This is
+  // the earliest point this file can honestly observe — MediaRuntime's own
+  // selection work happens before it and is protected, so every number derived
+  // from this excludes it. That exclusion is bounded and known: the pre-change
+  // profiler measured the whole dispatch at ~0.8 ms median.
+  lastRenderEntryAt = performance.now();
+
+  // [PRESENTATION-PERF / PHASE 3A] Player first, gallery second. buildViewer()
+  // is where the incoming image's src is assigned, so running it ahead of
+  // renderGallery() starts the request before the gallery's per-card
+  // bookkeeping rather than after it.
+  //
+  // Small, low-risk and regression-tested — NOT zero-risk, and not sold as one.
+  // Verified by inspection before the swap: renderGallery() writes only gallery
+  // state (renderedGalleryGeneration, galleryCardEls, galleryThumbEls,
+  // galleryObserver, galleryJumpTargetIndex and the grid DOM), none of which
+  // buildViewer() reads; both functions are called from here and nowhere else;
+  // and syncGalleryJumpTarget() reads only `state` and its own input, so it is
+  // unaffected by their relative order. The one comment in this file that
+  // reasons about buildViewer()'s timing (see syncMobileLoadState's
+  // .app-has-media note) depends on buildViewer() running inside this same
+  // synchronous render() call, which moving it earlier only strengthens.
+  //
+  // The measured benefit is sub-millisecond. This is an ordering-correctness
+  // change, not a performance fix — the blank frame was the defect.
   buildViewer(state);
+  renderGallery(state);
   syncControls(state);
   syncGalleryJumpTarget(state);
   // [UI-REDESIGN / Stage 4] Catches the playback half of the strip's
