@@ -13,6 +13,12 @@ import {
   getLibraryById,
   getLibraryByLibraryId,
 } from "./storage/library-registry.js";
+import {
+  listCassettes,
+  addOrUpdateCassette,
+  touchCassette,
+  removeCassette,
+} from "./storage/cassette-registry.js";
 import { decideBootRestore, decideStartupMedia } from "./storage/boot-restore.js";
 // [PM-SHUFFLE-FOLDERS] Pure candidate ORDERING only — the switching itself
 // stays on this file's existing authoritative resumeLibrary() path. See that
@@ -198,6 +204,8 @@ const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
 const remoteSessionInput = document.getElementById("remote-session-input");
 const remoteStatusText = document.getElementById("remote-status-text");
+const cassetteAddBtn = document.getElementById("cassette-add-btn");
+const remoteCassettesEl = document.getElementById("remote-cassettes");
 const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
 const fsaAssociateBtnLabel = document.getElementById("fsa-associate-btn-label");
 const fsaAssociateHelp = document.getElementById("fsa-associate-help");
@@ -5432,6 +5440,10 @@ function isFsaSupported() {
   return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 }
 
+function isCassettePickerSupported() {
+  return typeof window !== "undefined" && typeof window.showOpenFilePicker === "function";
+}
+
 async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
@@ -5741,6 +5753,117 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
 
   await loadFromFsaHandle(dirHandle, record);
 });
+
+async function addRemoteCassette() {
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      multiple: false,
+      types: [{ description: "Remote cassette", accept: { "text/plain": [".txt"] } }],
+    });
+    if (!handle) return;
+    const record = await addOrUpdateCassette(handle);
+    await renderRemoteCassettes();
+    await openRemoteCassette(record);
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    remoteStatusText.textContent = "That cassette could not be opened.";
+    console.warn("[REMOTE CASSETTE] Could not add the selected cassette.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+}
+
+async function openRemoteCassette(record) {
+  const handle = record && record.handle;
+  if (!handle) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted.`;
+    return;
+  }
+
+  let text;
+  try {
+    let permission = await handle.queryPermission({ mode: "read" });
+    if (permission !== "granted") permission = await handle.requestPermission({ mode: "read" });
+    if (permission !== "granted") {
+      remoteStatusText.textContent = `Access to "${record.name}" was not granted.`;
+      return;
+    }
+
+    const file = await handle.getFile();
+    text = await file.text();
+  } catch (error) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted.`;
+    console.warn("[REMOTE CASSETTE] A remembered cassette could not be opened.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return;
+  }
+
+  await touchCassette(record.id);
+  await loadRemoteSession(text, { name: record.name });
+}
+
+async function renderRemoteCassettes() {
+  if (!isCassettePickerSupported()) {
+    cassetteAddBtn.classList.add("hidden");
+    remoteCassettesEl.replaceChildren();
+    remoteCassettesEl.classList.add("hidden");
+    return;
+  }
+
+  cassetteAddBtn.classList.remove("hidden");
+  let records;
+  try {
+    records = await listCassettes();
+  } catch (error) {
+    console.warn("[REMOTE CASSETTE] Could not read remembered cassettes.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    records = [];
+  }
+
+  remoteCassettesEl.replaceChildren();
+  remoteCassettesEl.classList.toggle("hidden", records.length === 0);
+
+  for (const record of records) {
+    const row = document.createElement("div");
+    row.className = "fsa-recent-library-row";
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "fsa-recent-library-btn";
+    openBtn.addEventListener("click", () => openRemoteCassette(record));
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "fsa-recent-library-name";
+    nameEl.textContent = record.name;
+    openBtn.appendChild(nameEl);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "fsa-recent-library-remove-btn";
+    removeBtn.title = `Remove "${record.name}" from Remote Cassettes`;
+    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Remote Cassettes`);
+    removeBtn.textContent = "✕";
+    removeBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        await removeCassette(record.id);
+      } catch (error) {
+        console.warn("[REMOTE CASSETTE] Could not remove this cassette.", {
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+      await renderRemoteCassettes();
+    });
+
+    row.appendChild(openBtn);
+    row.appendChild(removeBtn);
+    remoteCassettesEl.appendChild(row);
+  }
+}
+
+cassetteAddBtn.addEventListener("click", addRemoteCassette);
 
 // [LIBRARY-REGISTRY] Resumes one specific remembered library (a click on a
 // "Recent Libraries" row) — checks/re-requests read permission for its
@@ -12062,6 +12185,12 @@ async function attemptBootRestore() {
   // permission check should never block the rest of boot, and nothing here
   // depends on startup media restore having settled.
   attemptStartupMedia();
+})();
+
+// Cassette file picking is an independent capability from directory picking;
+// this boot path must still run when initFsaLibraries() returns early.
+(async function initRemoteCassettes() {
+  await renderRemoteCassettes();
 })();
 
 // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]
