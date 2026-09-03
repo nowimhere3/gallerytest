@@ -133,13 +133,14 @@
              heading structure is unchanged for assistive tech — this is a
              type treatment, not a demotion. The name matches the rail IA,
              which calls this section Libraries. -->
-        <h2 class="rail-section-label">Media Folders</h2>
+        <h2 class="rail-section-label media-rail-title">Your Media</h2>
         <!-- [SYNCV3 / STAGE-10 / DRIVE-ROLES]
              [WHY: Google Drive plays two different roles in this product. The
               role descriptor is structural at BOTH choosers so neither can be
               read as "your Google Drive folder"; the Sync Folder's own
               descriptor lives beside its chooser in Curations & Sync.] -->
-        <p class="role-descriptor">Your photos and videos</p>
+        <section class="media-source-group" aria-labelledby="local-media-heading">
+        <h3 id="local-media-heading" class="media-source-heading">Local Media</h3>
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
              WHAT: Collapses the legacy Choose Files/Choose Folder controls
@@ -151,53 +152,53 @@
              collapsed, may become a user Preference later (see Gallery
              Control Settings Preferences, not built yet) — this hardcoded
              default is a placeholder for that, not a permanent decision. -->
-        <details id="legacy-picker-details" class="legacy-picker-details" open>
-        <summary>Legacy Picker</summary>
-
-        <div class="media-picker-row">
-          <label class="button-like secondary">
-            <span>Choose Files</span>
+        <div id="legacy-picker-details" class="local-media-actions">
+        <div class="media-picker-row media-picker-primary-row">
+          <label class="button-like">
+            <span>Open Files</span>
             <input id="file-input" type="file" accept="image/*,video/*" multiple hidden />
           </label>
  
           <label class="button-like">
-            <span>Choose Folder</span>
+            <span>Open Folder</span>
             <input id="folder-input" type="file" accept="image/*,video/*" multiple webkitdirectory hidden />
           </label>
         </div>
  
-        <p class="hint">
-          Files stay local in your browser. Nothing is uploaded.
-        </p>
-        </details>
+        </div>
 
         <!-- [FSA] File System Access folder access — an ADDITIONAL way to
              load a folder, alongside Choose Files/Choose Folder above (not
              a replacement). -->
         <div class="media-picker-row fsa-picker-row">
           <button id="fsa-choose-folder-btn" class="button-like secondary" type="button">
-            <span>Choose Folder (FSA)</span>
+            <span>Remember This Folder</span>
           </button>
         </div>
+        </section>
+
+        <section class="media-source-group" aria-labelledby="floppy-disks-heading">
+        <h3 id="floppy-disks-heading" class="media-source-heading">Floppy Disks</h3>
         <div class="media-picker-row">
           <label class="button-like secondary">
-            <span>Open Remote Session</span>
+            <span>Open Floppy Disk</span>
             <input id="remote-session-input" type="file" accept=".txt,text/plain" hidden />
           </label>
-        </div>
-        <p id="remote-status-text" class="hint" role="status"></p>
-        <div class="media-picker-row">
           <button id="cassette-add-btn" class="button-like secondary" type="button">
-            <span>Add Remote Cassette</span>
+            <span>Remember Floppy Disk</span>
           </button>
         </div>
-        <div id="remote-cassettes" class="fsa-recent-libraries hidden"></div>
+        </section>
+
+        <section class="saved-libraries-section" aria-labelledby="saved-libraries-heading">
+        <h3 id="saved-libraries-heading" class="media-source-heading">Saved Libraries</h3>
+        <div id="remote-cassettes" class="hidden"></div>
         <!-- [LIBRARY-REGISTRY] Populated by renderRecentLibraries() in
              main.js — one row per previously-chosen FSA folder, most
              recently opened first. Hidden (via the `hidden` class) when
              empty. -->
         <div id="fsa-recent-libraries" class="fsa-recent-libraries hidden"></div>
-        <p id="fsa-status-text" class="hint" role="status"></p>
+        </section>
 
         <hr />
 
@@ -321,6 +322,8 @@
             <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
             <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
           </div>
+          <p id="remote-status-text" class="hint source-status-text" role="status"></p>
+          <p id="fsa-status-text" class="hint source-status-text" role="status"></p>
 
           <!-- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
                WHAT: the mobile-only focused-loading composition — a primary

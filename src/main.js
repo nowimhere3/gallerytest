@@ -5328,7 +5328,7 @@ async function loadRemoteSession(text, { name } = {}) {
   fsaStatusText.textContent = "";
   resetMediaRenderOutcomes();
 
-  remoteStatusText.textContent = "Loading remote session…";
+  remoteStatusText.textContent = "Loading Floppy Disk…";
 
   try {
     const parseStartedAt = performance.now();
@@ -5349,7 +5349,7 @@ async function loadRemoteSession(text, { name } = {}) {
       remoteStatusText.textContent = "No valid media URLs found in this file.";
     } else {
       remoteStatusText.textContent =
-        `Remote session ready. ${result.items.length} items · ` +
+        `Floppy Disk ready. ${result.items.length} items · ` +
         `${result.diagnostics.images} images · ${result.diagnostics.videos} videos` +
         (skipped ? ` · ${skipped} links skipped` : "");
     }
@@ -5912,7 +5912,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
 
 fsaChooseFolderBtn.addEventListener("click", async () => {
   if (!isFsaSupported()) {
-    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    fsaStatusText.textContent = "This browser does not support remembered folders.";
     return;
   }
 
@@ -5956,7 +5956,7 @@ async function addRemoteCassette() {
     await openRemoteCassette(record);
   } catch (error) {
     if (error && error.name === "AbortError") return;
-    remoteStatusText.textContent = "That cassette could not be opened.";
+    remoteStatusText.textContent = "That Floppy Disk could not be opened.";
     console.warn("[REMOTE CASSETTE] Could not add the selected cassette.", {
       message: error instanceof Error ? error.message : "Unknown error",
     });
@@ -5990,6 +5990,7 @@ async function openRemoteCassette(record) {
   }
 
   await touchCassette(record.id);
+  await renderSavedLibraries();
   await loadRemoteSession(text, { name: record.name });
 }
 
@@ -5997,60 +5998,12 @@ async function renderRemoteCassettes() {
   if (!isCassettePickerSupported()) {
     cassetteAddBtn.classList.add("hidden");
     remoteCassettesEl.replaceChildren();
-    remoteCassettesEl.classList.add("hidden");
+    await renderSavedLibraries();
     return;
   }
 
   cassetteAddBtn.classList.remove("hidden");
-  let records;
-  try {
-    records = await listCassettes();
-  } catch (error) {
-    console.warn("[REMOTE CASSETTE] Could not read remembered cassettes.", {
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-    records = [];
-  }
-
-  remoteCassettesEl.replaceChildren();
-  remoteCassettesEl.classList.toggle("hidden", records.length === 0);
-
-  for (const record of records) {
-    const row = document.createElement("div");
-    row.className = "fsa-recent-library-row";
-
-    const openBtn = document.createElement("button");
-    openBtn.type = "button";
-    openBtn.className = "fsa-recent-library-btn";
-    openBtn.addEventListener("click", () => openRemoteCassette(record));
-
-    const nameEl = document.createElement("span");
-    nameEl.className = "fsa-recent-library-name";
-    nameEl.textContent = record.name;
-    openBtn.appendChild(nameEl);
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "fsa-recent-library-remove-btn";
-    removeBtn.title = `Remove "${record.name}" from Remote Cassettes`;
-    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Remote Cassettes`);
-    removeBtn.textContent = "✕";
-    removeBtn.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      try {
-        await removeCassette(record.id);
-      } catch (error) {
-        console.warn("[REMOTE CASSETTE] Could not remove this cassette.", {
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
-      }
-      await renderRemoteCassettes();
-    });
-
-    row.appendChild(openBtn);
-    row.appendChild(removeBtn);
-    remoteCassettesEl.appendChild(row);
-  }
+  await renderSavedLibraries();
 }
 
 cassetteAddBtn.addEventListener("click", addRemoteCassette);
@@ -6064,7 +6017,7 @@ async function resumeLibrary(record) {
 
   const dirHandle = record.handle;
   if (!dirHandle) {
-    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Choose Folder (FSA)".`;
+    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Remember This Folder".`;
     return;
   }
 
@@ -6085,7 +6038,7 @@ async function resumeLibrary(record) {
     // data cleared, etc.) — fail gracefully rather than throwing, and stop
     // offering a broken resume for it.
     console.error("[FSA] A saved folder is no longer accessible.", error);
-    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Media Folders.`;
+    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Saved Libraries.`;
     // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove, not removeLibrary() — a
     // permission failure doesn't mean the physical folder is gone for
     // good (it may just be a revoked permission on an otherwise-fine
@@ -6111,8 +6064,8 @@ async function resumeLibrary(record) {
 // fresh each render rather than caching a name, so a profile rename is
 // reflected here immediately without this module needing its own
 // invalidation logic.
-function formatLibraryMeta(record) {
-  const parts = [];
+function formatLibraryMeta(record, typeLabel) {
+  const parts = [typeLabel];
   if (typeof record.itemCount === "number") {
     parts.push(`${record.itemCount} item${record.itemCount === 1 ? "" : "s"}`);
   }
@@ -6136,31 +6089,57 @@ function formatRelativeTime(timestamp) {
   return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
+async function renderSavedLibraries() {
+  await renderRecentLibraries();
+}
+
 // [LIBRARY-REGISTRY] Re-renders the "Recent Libraries" list from IndexedDB.
 // Rebuilt from scratch each call (list is small — a handful of libraries
 // at most) rather than diffed, matching renderTagsGrid()'s existing
 // pattern elsewhere in this file. Does NOT touch permissions or load
 // anything on its own — purely a metadata read, safe to call at boot.
 async function renderRecentLibraries() {
-  let records;
+  let localRecords;
+  let floppyRecords;
   try {
-    records = await listLibraries();
+    [localRecords, floppyRecords] = await Promise.all([
+      listLibraries(),
+      isCassettePickerSupported() ? listCassettes() : Promise.resolve([]),
+    ]);
   } catch (error) {
-    console.warn("[LIBRARY-REGISTRY] Could not read saved libraries.", error);
-    records = [];
+    console.warn("[SAVED LIBRARIES] Could not read saved libraries.", error);
+    localRecords = [];
+    floppyRecords = [];
   }
 
-  fsaRecentLibrariesEl.innerHTML = "";
+  const records = [
+    ...localRecords.map((record) => ({ type: "local", record })),
+    ...floppyRecords.map((record) => ({ type: "floppy", record })),
+  ].sort((a, b) =>
+    (b.record.lastOpenedAt || 0) - (a.record.lastOpenedAt || 0) ||
+    a.record.name.localeCompare(b.record.name)
+  );
+
+  fsaRecentLibrariesEl.replaceChildren();
   fsaRecentLibrariesEl.classList.toggle("hidden", records.length === 0);
 
-  for (const record of records) {
+  for (const entry of records) {
+    const { record, type } = entry;
     const row = document.createElement("div");
     row.className = "fsa-recent-library-row";
 
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "fsa-recent-library-btn";
-    openBtn.addEventListener("click", () => resumeLibrary(record));
+    openBtn.addEventListener("click", () => type === "local" ? resumeLibrary(record) : openRemoteCassette(record));
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "saved-library-icon";
+    iconEl.setAttribute("aria-hidden", "true");
+    iconEl.textContent = type === "local" ? "\uD83D\uDCC1" : "\uD83D\uDCBE";
+
+    const copyEl = document.createElement("span");
+    copyEl.className = "saved-library-copy";
 
     const nameEl = document.createElement("span");
     nameEl.className = "fsa-recent-library-name";
@@ -6168,16 +6147,18 @@ async function renderRecentLibraries() {
 
     const metaEl = document.createElement("span");
     metaEl.className = "fsa-recent-library-meta";
-    metaEl.textContent = formatLibraryMeta(record);
+    metaEl.textContent = formatLibraryMeta(record, type === "local" ? "Local Folder" : "Floppy Disk");
 
-    openBtn.appendChild(nameEl);
-    openBtn.appendChild(metaEl);
+    copyEl.appendChild(nameEl);
+    copyEl.appendChild(metaEl);
+    openBtn.appendChild(iconEl);
+    openBtn.appendChild(copyEl);
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "fsa-recent-library-remove-btn";
-    removeBtn.title = `Remove "${record.name}" from Recent Media Folders`;
-    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Media Folders`);
+    removeBtn.title = `Forget "${record.name}" from Saved Libraries`;
+    removeBtn.setAttribute("aria-label", `Forget "${record.name}" from Saved Libraries`);
     removeBtn.textContent = "✕";
     removeBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -6187,7 +6168,8 @@ async function renderRecentLibraries() {
       // folder later still recognizes it and recovers the association.
       // See library-registry.js.
       try {
-        await removeFromRecents(record.id);
+        if (type === "local") await removeFromRecents(record.id);
+        else await removeCassette(record.id);
       } catch (error) {
         console.warn("[LIBRARY-REGISTRY] Could not remove this library from Recent Libraries.", error);
       }
@@ -12886,7 +12868,7 @@ async function attemptBootRestore() {
 (async function initFsaLibraries() {
   if (!isFsaSupported()) {
     fsaChooseFolderBtn.disabled = true;
-    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    fsaStatusText.textContent = "This browser does not support remembered folders.";
     return;
   }
 

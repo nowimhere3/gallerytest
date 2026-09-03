@@ -763,8 +763,38 @@ a:focus-visible,
 
 .media-picker-row {
   display: grid;
-  grid-template-columns: 1fr 3fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.media-rail-title {
+  margin-bottom: 18px;
+}
+
+.media-source-group,
+.saved-libraries-section {
+  margin-bottom: 18px;
+}
+
+.media-source-heading {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.local-media-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.media-picker-row .button-like {
+  min-width: 0;
+  padding-inline: 8px;
+  text-align: center;
 }
 
 /* [FSA] Its own row — now a single "Choose Folder (FSA)" button; resuming
@@ -772,7 +802,11 @@ a:focus-visible,
    instead of a second button here. */
 .fsa-picker-row {
   grid-template-columns: 1fr;
-  margin-top: 10px;
+}
+
+.fsa-picker-row .button-like {
+  min-height: 40px;
+  font-weight: 600;
 }
 
 /* [LIBRARY-REGISTRY] "Recent Libraries" list — one row per remembered FSA
@@ -861,7 +895,7 @@ a:focus-visible,
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
   gap: 2px;
   text-align: left;
@@ -870,6 +904,22 @@ a:focus-visible,
   border: 1px solid var(--border);
   border-radius: 10px;
   color: var(--text);
+}
+
+.saved-library-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.saved-library-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
 .fsa-recent-library-name {
@@ -883,6 +933,10 @@ a:focus-visible,
 .fsa-recent-library-meta {
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+.source-status-text:empty {
+  display: none;
 }
 
 .fsa-recent-library-remove-btn {
@@ -5046,6 +5100,8 @@ hr {
      retry controls live inside them. */
   .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-identity,
   .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-section-label,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .media-source-group,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .saved-libraries-section,
   .app-shell[data-mobile-load-state="loading"] .controls-panel > .legacy-picker-details,
   .app-shell[data-mobile-load-state="loading"] .controls-panel > .fsa-picker-row,
   .app-shell[data-mobile-load-state="loading"] .controls-panel > #fsa-recent-libraries,
