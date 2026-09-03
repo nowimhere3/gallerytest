@@ -29,6 +29,7 @@ import { orderShuffleFolderCandidates } from "./runtime/folder-shuffle.js";
 // for what each of the four guarded facts protects against.
 import { shouldCommitPreparedViewer } from "./runtime/viewer-commit.js";
 import { planReadyQueueWork } from "./runtime/ready-queue.js";
+import { canApplyWarmStartRelease, shouldReleaseWarmStart } from "./runtime/warm-start.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -440,6 +441,8 @@ const mobileLoadCountText = document.getElementById("mobile-load-count-text");
 // longer exists. Nothing outside this file's animation code ever referenced
 // it (verified: one capture, one CSS rule, one markup line).
 const mobileLoadCanvas = document.getElementById("mobile-load-canvas");
+const warmStartOverlay = document.getElementById("warm-start-overlay");
+const warmStartCanvas = document.getElementById("warm-start-canvas");
 const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
 // [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] #counter-text and
 // its capture (formerly `counterText`) are gone — the Player transport is
@@ -1055,6 +1058,7 @@ let galleryJumpConfirmedIndex = null;
 // clobber what the user is mid-typing.
 let galleryJumpIsEditing = false;
 let fillModeActive = false;
+let currentSessionIsUrlBacked = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
 let isLoadingFiles = false;
@@ -1501,6 +1505,15 @@ const preparedViewerImages = new Map();
 const warmingViewerImages = new Map();
 const failedWarmItems = new Set();
 let lastVisibleCommitAt = null;
+let lastViewerTerminalItem = null;
+
+const RELEASE_READY_COUNT = 3;
+const WARM_START_MAX_MS = 10000;
+let warmStartState = "inactive";
+let warmStartStartedAt = 0;
+let warmStartTimeoutId = null;
+let warmStartCurrentVisualSettled = false;
+let warmStartTimeoutReached = false;
 
 // t0 for a transition: the moment render() began. Deliberately NOT the button
 // press or the interval tick — MediaRuntime owns those and is protected, so its
@@ -1613,9 +1626,7 @@ function measureTransitionReady({ held, readyHit = false, renderEntryAt, srcAt, 
       readyHit,
       host: transitionHost(item),
     });
-    currentViewerPreparationInFlight = false;
-    runtime.notifyCurrentItemVisible();
-    refreshReadyQueue();
+    handleCurrentViewerTerminal(item);
   });
 }
 
@@ -4238,6 +4249,7 @@ const ARCADE_SCENES = [
 
 let arcadeRafId = null;
 let arcadeCtx = null;
+let arcadeCanvas = null;
 let arcadeState = null;
 let arcadeStartedAt = 0;
 let arcadeLastLoopT = -1;
@@ -4247,9 +4259,8 @@ let arcadeLastRender = 0;
 // Session-scoped selection. arcadeCurrentScene is whatever is running now;
 // arcadePreviousScene outlives the session purely so the next selection can
 // exclude it. Selection happens in exactly one place —
-// startArcadeAnimation(), itself only reachable from the not-loading ->
-// loading edge in syncMobileLoadState() — so no render, progress tick or
-// loop wrap can ever re-pick.
+// startArcadeAnimation(), reached only at an explicit host lifecycle edge, so
+// no render, progress tick or loop wrap can ever re-pick.
 let arcadeCurrentScene = null;
 let arcadePreviousScene = null;
 // Safe startup default while IndexedDB preferences load asynchronously.
@@ -4364,10 +4375,11 @@ function renderArcadeStill(scene) {
   paintArcadeFrame(scene, arcadeState, scene.stillAtMs, scene.stillAtMs, true);
 }
 
-function startArcadeAnimation() {
+function startArcadeAnimation(canvas) {
   if (arcadeRafId !== null) return;
-  if (!arcadeCtx) {
-    arcadeCtx = mobileLoadCanvas.getContext ? mobileLoadCanvas.getContext("2d") : null;
+  if (arcadeCanvas !== canvas || !arcadeCtx) {
+    arcadeCanvas = canvas;
+    arcadeCtx = canvas && canvas.getContext ? canvas.getContext("2d") : null;
     if (!arcadeCtx) return;
     arcadeCtx.imageSmoothingEnabled = false;
   }
@@ -4458,7 +4470,7 @@ function stopMobileTakeoverTextTicker() {
 // than tracking whether reduced-motion left a timer unset.
 function startMobileTakeoverAnimation() {
   startMobileTakeoverTextTicker();
-  startArcadeAnimation();
+  startArcadeAnimation(mobileLoadCanvas);
 }
 
 function stopMobileTakeoverAnimation() {
@@ -5285,6 +5297,7 @@ function finishLoadingItems(items) {
 async function loadRemoteSession(text, { name } = {}) {
   if (isLoadingFiles) return;
 
+  currentSessionIsUrlBacked = true;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
@@ -5375,6 +5388,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   const total = (fileList || []).length;
   if (!total || isLoadingFiles) return;
 
+  currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
@@ -5622,6 +5636,7 @@ function isCassettePickerSupported() {
 async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
+  currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
@@ -6979,12 +6994,14 @@ function handlePendingFilterReloadOnAdvance(state) {
 // never diverge — the shortcuts are a second way to trigger the existing
 // action, not a second implementation of it.
 function goToPreviousMedia() {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   flushPendingFilterReload();
   runtime.previous();
 }
 
 function goToNextMedia() {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   flushPendingFilterReload();
   runtime.next();
@@ -8016,6 +8033,8 @@ function enterFillMode() {
 function exitFillMode() {
   if (!fillModeActive) return;
 
+  cancelWarmStart();
+
   // [UI-REDESIGN / Stage 3] The unconditional `runtime.stop()` here is
   // retired. It previously treated leaving Presentation as an explicit end
   // to the playback session; exiting Fill now PRESERVES playback state, so a
@@ -8144,9 +8163,11 @@ function toggleGhostPopunder() {
 
 function togglePlay() {
   if (runtime.getState().isPlaying) {
+    cancelWarmStart();
     runtime.stop();
   } else {
     runtime.play();
+    maybeBeginWarmStart();
   }
 }
 
@@ -8291,6 +8312,7 @@ function refreshReadyQueue() {
 
   work.release.forEach(releasePreparedImage);
   work.start.forEach(warmPlannedImage);
+  if (warmStartState === "warming") evaluateWarmStart();
 }
 
 function takePreparedViewerImage(item) {
@@ -8327,6 +8349,116 @@ function releaseStaleReadyQueueEntries() {
       warmingViewerImages.delete(item);
     }
   }
+}
+
+// BREADCRUMBS - WAS
+// Phase 3B began Presentation with an empty or shallow ready reserve. A slow
+// image among the first few transitions could exhaust the runway before the
+// six-deep reserve accumulated; real URL-backed Presentation runs observed
+// this more than once as an approximately 15-20 second early stall.
+//
+// BREADCRUMBS - IS
+// When URL-backed image playback begins in Presentation with fewer than three
+// valid upcoming prepared images, one small curtain holds automatic advance
+// while the existing two-worker queue fills. The current image still commits
+// through the normal viewer path underneath it. Release occurs once three
+// valid planned images are ready or ten seconds of EXTRA queue-building time
+// has elapsed, but never before the current visual reaches a real terminal
+// outcome. Human navigation cancels immediately.
+//
+// BREADCRUMBS - WILL BE
+// This remains a fixed cold-start policy, not an adaptive buffer, another
+// preloader, or a source model. Future changes require evidence; the runtime's
+// six-item plan, two-worker limit, source neutrality and visible timer remain
+// authoritative.
+function countValidPreparedWarmStartItems() {
+  releaseStaleReadyQueueEntries();
+  const plannedItems = runtime.getPlannedItems(PLAN_LENGTH);
+  let count = 0;
+  for (const [item, entry] of preparedViewerImages) {
+    const valid =
+      entry.loadGeneration === libraryLoadGeneration &&
+      entry.galleryGeneration === galleryGeneration &&
+      plannedItems.includes(item);
+    if (valid) {
+      count += 1;
+    } else {
+      releasePreparedImage(item);
+    }
+  }
+  return count;
+}
+
+function finishWarmStart(reason, preparedCount) {
+  if (warmStartState !== "warming") return;
+  const elapsedMs = performance.now() - warmStartStartedAt;
+  warmStartState = "inactive";
+  warmStartTimeoutReached = false;
+  if (warmStartTimeoutId !== null) {
+    window.clearTimeout(warmStartTimeoutId);
+    warmStartTimeoutId = null;
+  }
+  warmStartOverlay.classList.add("hidden");
+  stopArcadeAnimation();
+  console.info("[PM WARM START] Release", {
+    reason,
+    elapsed_ms: Math.round(elapsedMs),
+    valid_prepared: preparedCount,
+  });
+  runtime.notifyCurrentItemVisible();
+}
+
+function evaluateWarmStart({ cancelled = false } = {}) {
+  if (warmStartState !== "warming") return;
+  const preparedCount = countValidPreparedWarmStartItems();
+  let decision = shouldReleaseWarmStart({
+    preparedCount,
+    readyThreshold: RELEASE_READY_COUNT,
+    elapsedMs: performance.now() - warmStartStartedAt,
+    maxMs: WARM_START_MAX_MS,
+    cancelled,
+  });
+  if (!cancelled && warmStartTimeoutReached) decision = { release: true, reason: "timeout" };
+  if (!canApplyWarmStartRelease({ decision, currentVisualSettled: warmStartCurrentVisualSettled })) return;
+  finishWarmStart(decision.reason, preparedCount);
+}
+
+function cancelWarmStart() {
+  evaluateWarmStart({ cancelled: true });
+}
+
+function maybeBeginWarmStart() {
+  if (warmStartState === "warming") return;
+  const item = runtime.getState().currentItem;
+  if (!fillModeActive || !currentSessionIsUrlBacked || item?.kind !== "image") return;
+  const preparedCount = countValidPreparedWarmStartItems();
+  if (preparedCount >= RELEASE_READY_COUNT) return;
+
+  warmStartState = "warming";
+  warmStartStartedAt = performance.now();
+  warmStartCurrentVisualSettled = lastViewerTerminalItem === item;
+  warmStartTimeoutReached = false;
+  warmStartOverlay.classList.remove("hidden");
+  startArcadeAnimation(warmStartCanvas);
+  runtime.holdAdvanceForPendingVisual();
+  warmStartTimeoutId = window.setTimeout(() => {
+    warmStartTimeoutId = null;
+    warmStartTimeoutReached = true;
+    evaluateWarmStart();
+  }, WARM_START_MAX_MS);
+}
+
+function handleCurrentViewerTerminal(item) {
+  lastViewerTerminalItem = item;
+  currentViewerPreparationInFlight = false;
+  if (warmStartState === "warming") {
+    warmStartCurrentVisualSettled = true;
+    refreshReadyQueue();
+    evaluateWarmStart();
+    return;
+  }
+  runtime.notifyCurrentItemVisible();
+  refreshReadyQueue();
 }
 
 // [PRESENTATION-PERF / PHASE 3A]
@@ -8433,8 +8565,7 @@ function prepareHeldFrameImage(item) {
       viewerEmpty.textContent = "This item could not be loaded.";
       viewerStage.classList.add("hidden");
       viewerEmpty.classList.remove("hidden");
-      currentViewerPreparationInFlight = false;
-      runtime.notifyCurrentItemVisible();
+      handleCurrentViewerTerminal(item);
       return;
     }
 
@@ -8494,8 +8625,7 @@ function buildViewer(state) {
     viewerStage.classList.add("hidden");
     viewerEmpty.classList.remove("hidden");
     viewerEmpty.textContent = "All media is hidden. Unhide items in the Gallery to continue.";
-    currentViewerPreparationInFlight = false;
-    runtime.notifyCurrentItemVisible();
+    handleCurrentViewerTerminal(item);
     return;
   }
 
@@ -8578,8 +8708,7 @@ function buildViewer(state) {
     viewerStage.classList.add("hidden");
     viewerEmpty.classList.remove("hidden");
     viewerEmpty.textContent = "Choose files or a folder to begin.";
-    currentViewerPreparationInFlight = false;
-    runtime.notifyCurrentItemVisible();
+    handleCurrentViewerTerminal(item);
     return;
   }
 
@@ -8620,8 +8749,7 @@ function buildViewer(state) {
       viewerEmpty.textContent = "This item could not be loaded.";
       viewerStage.classList.add("hidden");
       viewerEmpty.classList.remove("hidden");
-      currentViewerPreparationInFlight = false;
-      runtime.notifyCurrentItemVisible();
+      handleCurrentViewerTerminal(item);
     });
     img.alt = item.name;
     currentViewerNode = img;
@@ -8630,7 +8758,6 @@ function buildViewer(state) {
   }
 
   if (item.kind === "video") {
-    currentViewerPreparationInFlight = false;
     const video = document.createElement("video");
     video.controls = true;
     video.playsInline = true;
@@ -8638,7 +8765,7 @@ function buildViewer(state) {
     video.muted = true;
     currentViewerNode = video;
     viewerStage.appendChild(video);
-    runtime.notifyCurrentItemVisible();
+    handleCurrentViewerTerminal(item);
 
     if (isTsItem(item)) {
       // [TS-POC] Phase 5 diagnostic timing — counter-based ID only, never
@@ -10034,6 +10161,7 @@ nextBtn.addEventListener("click", (event) => {
 // begin.
 function startPlaybackFromTransport() {
   runtime.play();
+  if (fillModeActive) maybeBeginWarmStart();
 }
 
 // The ordinary Player's Play/Pause. Deliberately NOT togglePlay(), which
@@ -10053,6 +10181,7 @@ function startPlaybackFromTransport() {
 // paused/resumed flag here to make this read more like a player.
 function toggleTransportPlayback() {
   if (runtime.getState().isPlaying) {
+    cancelWarmStart();
     runtime.stop();
   } else {
     startPlaybackFromTransport();
@@ -10083,9 +10212,13 @@ function enterFillPanelDeliberately() {
 
   enterFillMode();
 
-  if (wasPlaying) return;
+  if (wasPlaying) {
+    maybeBeginWarmStart();
+    return;
+  }
   if (!autoplayOnFillInput.checked) return;
   runtime.play();
+  maybeBeginWarmStart();
 }
 
 // [UI-REDESIGN / Stage 6] The Play/Pause button and the Space shortcut are
@@ -10201,6 +10334,7 @@ nowPlayingReturnBtn.addEventListener("click", (event) => {
 // pause half, and #now-playing-stop-btn above.
 
 clearBtn.addEventListener("click", () => {
+  currentSessionIsUrlBacked = false;
   libraryLoadGeneration += 1;
   bumpGalleryGeneration();
   runtime.clear();
@@ -10277,10 +10411,12 @@ overlayFavoriteBtn.addEventListener("click", () => {
 });
 
 overlayPrevBtn.addEventListener("click", () => {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   runtime.previous();
 });
 overlayNextBtn.addEventListener("click", () => {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   runtime.next();
 });
@@ -10585,11 +10721,13 @@ function handlePresentationKeydown(event) {
   switch (event.key) {
     case "ArrowRight":
       event.preventDefault();
+      cancelWarmStart();
       handleManualNavigationLoopReset();
       runtime.next();
       break;
     case "ArrowLeft":
       event.preventDefault();
+      cancelWarmStart();
       handleManualNavigationLoopReset();
       runtime.previous();
       break;

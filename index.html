@@ -545,6 +545,11 @@
              the shortcut guards treat it as neutral ground. -->
         <div id="viewer-stage" class="viewer-stage hidden" tabindex="-1" aria-label="Player"></div>
 
+        <div id="warm-start-overlay" class="warm-start-overlay hidden" role="status">
+          <canvas id="warm-start-canvas" width="160" height="64" aria-hidden="true"></canvas>
+          <p class="warm-start-text">Loading a few photos ahead so your slideshow keeps playing smoothly.</p>
+        </div>
+
         <!-- [UI-REDESIGN / Stage 3]
              WHAT: The transport row, directly beneath the Player. Every
              control in it is an EXISTING element moved here — #favorite-btn
