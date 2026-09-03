@@ -28,6 +28,7 @@ import { orderShuffleFolderCandidates } from "./runtime/folder-shuffle.js";
 // the timing and the DOM commit all stay in this file. See that module's header
 // for what each of the four guarded facts protects against.
 import { shouldCommitPreparedViewer } from "./runtime/viewer-commit.js";
+import { planReadyQueueWork } from "./runtime/ready-queue.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -1491,6 +1492,15 @@ function recordMediaRenderOutcome(outcome) {
 // discipline as libraryLoadGeneration, galleryGeneration and the providers'
 // private #loadToken — stale-result rejection, never cancellation.
 let viewerPreparationCounter = 0;
+let currentViewerPreparationInFlight = false;
+
+const PLAN_LENGTH = 6;
+const MAX_PREPARED = 6;
+const MAX_CONCURRENT_WARMING = 2;
+const preparedViewerImages = new Map();
+const warmingViewerImages = new Map();
+const failedWarmItems = new Set();
+let lastVisibleCommitAt = null;
 
 // t0 for a transition: the moment render() began. Deliberately NOT the button
 // press or the interval tick — MediaRuntime owns those and is protected, so its
@@ -1545,6 +1555,8 @@ function recordPresentationTransition(sample) {
     decode_ms: sample.decodeMs === null ? null : Math.round(sample.decodeMs),
     blank_ms: Math.round(sample.blankMs),
     ready_ms: Math.round(sample.readyMs),
+    visible_ms: sample.visibleMs === null ? null : Math.round(sample.visibleMs),
+    ready_hit: sample.readyHit,
     host: sample.host,
   });
 
@@ -1556,6 +1568,8 @@ function recordPresentationTransition(sample) {
   const blank = window.map((entry) => entry.blankMs);
   const ready = window.map((entry) => entry.readyMs);
   const heldCount = window.filter((entry) => entry.held).length;
+  const visible = window.map((entry) => entry.visibleMs).filter((value) => value !== null);
+  const readyHitCount = window.filter((entry) => entry.readyHit).length;
 
   console.info("[PM TRANSITION] Summary", {
     count: window.length,
@@ -1563,6 +1577,8 @@ function recordPresentationTransition(sample) {
     src_wait_ms: { median: percentileMs(srcWait, 0.5), p90: percentileMs(srcWait, 0.9) },
     blank_ms: { median: percentileMs(blank, 0.5), p90: percentileMs(blank, 0.9) },
     ready_ms: { median: percentileMs(ready, 0.5), p90: percentileMs(ready, 0.9) },
+    visible_ms: { median: percentileMs(visible, 0.5), p90: percentileMs(visible, 0.9) },
+    ready_hit_rate: `${readyHitCount}/${window.length}`,
   });
 }
 
@@ -1572,9 +1588,15 @@ function recordPresentationTransition(sample) {
 // This is a PROXY for paint, not paint. rAF fires before the frame is
 // composited, so it is the closest honest observation available without
 // Element Timing — do not call it, or let any report call it, "painted".
-function measureTransitionReady({ held, renderEntryAt, srcAt, loadAt, decodeAt, teardownAt, item }) {
+function measureTransitionReady({ held, readyHit = false, renderEntryAt, srcAt, loadAt, decodeAt, teardownAt, item, node }) {
   requestAnimationFrame(() => {
+    // A rapid manual Next can replace an already-committed node before this
+    // frame callback runs. That obsolete callback must not release the newer
+    // transition's advance hold or restart its timer.
+    if (currentViewerNode !== node || currentViewerItem !== item) return;
     const readyAt = performance.now();
+    const visibleMs = lastVisibleCommitAt === null ? null : readyAt - lastVisibleCommitAt;
+    lastVisibleCommitAt = readyAt;
     recordPresentationTransition({
       held,
       dispatchToSrcMs: srcAt - renderEntryAt,
@@ -1587,8 +1609,13 @@ function measureTransitionReady({ held, renderEntryAt, srcAt, loadAt, decodeAt, 
       // the eager path it is the whole resource wait, which is the defect.
       blankMs: readyAt - teardownAt,
       readyMs: readyAt - renderEntryAt,
+      visibleMs,
+      readyHit,
       host: transitionHost(item),
     });
+    currentViewerPreparationInFlight = false;
+    runtime.notifyCurrentItemVisible();
+    refreshReadyQueue();
   });
 }
 
@@ -7980,6 +8007,10 @@ function enterFillMode() {
   layoutEl.classList.add("simulated-fullscreen-layout");
   viewerPanel.classList.add("simulated-fullscreen-viewer");
   presentationControls.classList.remove("hidden");
+  transitionSamples = [];
+  transitionCount = 0;
+  lastVisibleCommitAt = currentViewerNode?.tagName === "IMG" ? performance.now() : null;
+  refreshReadyQueue();
 }
 
 function exitFillMode() {
@@ -7998,6 +8029,8 @@ function exitFillMode() {
   // playing state — nothing presentation-specific is tracked here either
   // way; the difference is only that we no longer reach for its stop path.
   fillModeActive = false;
+  lastVisibleCommitAt = null;
+  releaseReadyQueue({ includeWarming: true });
   appShell.classList.remove("simulated-fullscreen");
   layoutEl.classList.remove("simulated-fullscreen-layout");
   viewerPanel.classList.remove("simulated-fullscreen-viewer");
@@ -8143,6 +8176,159 @@ function clearViewerNode() {
   currentViewerItem = null;
 }
 
+// BREADCRUMBS - WAS
+// Phase 3A prepared only the item already selected as current. It held the
+// outgoing image until that one resource became ready, so the black frame was
+// removed but the network wait still sat on the customer's critical path.
+//
+// BREADCRUMBS - IS
+// While Presentation Mode is active and the current image is visibly committed,
+// this bounded warmer reads MediaRuntime's actual six-item shuffle plan. It
+// prepares image nodes source-neutrally, never chooses an item, and releases
+// nodes that leave the plan. A ready node is advisory; every miss still takes
+// Phase 3A's held-frame path.
+//
+// BREADCRUMBS - WILL BE
+// The queue remains image-only and count-bounded. Video buffering, byte-based
+// memory policy, retries, failure classification and dead-item auto-skip need
+// separate evidence and architecture; none is implied by this seam.
+function releasePreparedImage(item) {
+  const entry = preparedViewerImages.get(item);
+  if (!entry) return;
+  entry.node.src = "";
+  preparedViewerImages.delete(item);
+}
+
+function releaseReadyQueue({ includeWarming = false } = {}) {
+  for (const item of [...preparedViewerImages.keys()]) releasePreparedImage(item);
+  if (includeWarming) {
+    for (const entry of warmingViewerImages.values()) entry.node.src = "";
+    warmingViewerImages.clear();
+    failedWarmItems.clear();
+  }
+}
+
+function warmPlannedImage(item) {
+  const entry = {
+    item,
+    node: new Image(),
+    loadGeneration: libraryLoadGeneration,
+    galleryGeneration,
+  };
+  const { node } = entry;
+  node.alt = item.name;
+  node.decoding = "async";
+  warmingViewerImages.set(item, entry);
+
+  const settled = new Promise((resolve, reject) => {
+    node.addEventListener("load", resolve, { once: true });
+    node.addEventListener("error", reject, { once: true });
+  });
+  node.src = item.url;
+
+  (async () => {
+    let loaded = false;
+    try {
+      await settled;
+      loaded = true;
+      if (typeof node.decode === "function") {
+        try {
+          await node.decode();
+        } catch {
+          // Native load remains authoritative; decode is best-effort only.
+        }
+      }
+    } catch {
+      // A warm failure changes no playback state and gets no retry loop.
+    }
+
+    if (warmingViewerImages.get(item) !== entry) {
+      node.src = "";
+      return;
+    }
+    warmingViewerImages.delete(item);
+
+    const plannedItems = fillModeActive ? runtime.getPlannedItems(PLAN_LENGTH) : [];
+    const remainsValid =
+      loaded &&
+      fillModeActive &&
+      entry.loadGeneration === libraryLoadGeneration &&
+      entry.galleryGeneration === galleryGeneration &&
+      plannedItems.includes(item);
+
+    if (remainsValid) {
+      preparedViewerImages.set(item, entry);
+    } else {
+      node.src = "";
+      if (!loaded && plannedItems.includes(item)) failedWarmItems.add(item);
+    }
+    refreshReadyQueue();
+  })();
+}
+
+function refreshReadyQueue() {
+  const state = runtime.getState();
+  const currentImageVisible =
+    state.currentItem?.kind === "image" &&
+    currentViewerItem === state.currentItem &&
+    currentViewerNode?.tagName === "IMG" &&
+    !viewerStage.classList.contains("hidden");
+
+  if (!fillModeActive || !currentImageVisible || currentViewerPreparationInFlight) return;
+
+  const plannedItems = runtime.getPlannedItems(PLAN_LENGTH);
+  for (const item of [...failedWarmItems]) {
+    if (!plannedItems.includes(item)) failedWarmItems.delete(item);
+  }
+  const warmablePlan = plannedItems.filter((item) => item.kind === "image" && !failedWarmItems.has(item));
+  const work = planReadyQueueWork({
+    plannedItems: warmablePlan,
+    preparedItems: [...preparedViewerImages.keys()],
+    warmingItems: [...warmingViewerImages.keys()],
+    maxPrepared: MAX_PREPARED,
+    maxConcurrent: MAX_CONCURRENT_WARMING,
+  });
+
+  work.release.forEach(releasePreparedImage);
+  work.start.forEach(warmPlannedImage);
+}
+
+function takePreparedViewerImage(item) {
+  const entry = preparedViewerImages.get(item);
+  if (!entry) return null;
+  preparedViewerImages.delete(item);
+  const token = ++viewerPreparationCounter;
+  const commit = shouldCommitPreparedViewer({
+    preparedToken: token,
+    currentToken: viewerPreparationCounter,
+    preparedLoadGeneration: entry.loadGeneration,
+    currentLoadGeneration: libraryLoadGeneration,
+    preparedGalleryGeneration: entry.galleryGeneration,
+    currentGalleryGeneration: galleryGeneration,
+    preparedItem: item,
+    currentViewerItem: runtime.getState().currentItem,
+  });
+  if (!commit) {
+    entry.node.src = "";
+    return null;
+  }
+  return entry;
+}
+
+function releaseStaleReadyQueueEntries() {
+  for (const [item, entry] of preparedViewerImages) {
+    if (entry.loadGeneration !== libraryLoadGeneration || entry.galleryGeneration !== galleryGeneration) {
+      releasePreparedImage(item);
+    }
+  }
+  for (const [item, entry] of warmingViewerImages) {
+    if (entry.loadGeneration !== libraryLoadGeneration || entry.galleryGeneration !== galleryGeneration) {
+      entry.node.src = "";
+      warmingViewerImages.delete(item);
+    }
+  }
+}
+
 // [PRESENTATION-PERF / PHASE 3A]
 // The held path. Starts the incoming image loading WITHOUT tearing down the
 // outgoing one, then swaps only once the incoming image is genuinely ready —
@@ -8157,6 +8343,8 @@ function prepareHeldFrameImage(item) {
   const token = ++viewerPreparationCounter;
   const preparedLoadGeneration = libraryLoadGeneration;
   const preparedGalleryGeneration = galleryGeneration;
+  currentViewerPreparationInFlight = true;
+  runtime.holdAdvanceForPendingVisual();
 
   // Claimed EAGERLY, before any await. This is what makes buildViewer()'s
   // same-item early return absorb every intervening re-emit — a profile change,
@@ -8245,6 +8433,8 @@ function prepareHeldFrameImage(item) {
       viewerEmpty.textContent = "This item could not be loaded.";
       viewerStage.classList.add("hidden");
       viewerEmpty.classList.remove("hidden");
+      currentViewerPreparationInFlight = false;
+      runtime.notifyCurrentItemVisible();
       return;
     }
 
@@ -8263,12 +8453,14 @@ function prepareHeldFrameImage(item) {
       decodeAt,
       teardownAt,
       item,
+      node: img,
     });
   })();
 }
 
 function buildViewer(state) {
   const { currentItem: item, isPlaying, hasItems, hasVisibleItems } = state;
+  releaseStaleReadyQueueEntries();
 
   // [UI-REDESIGN / Stage 6]
   // WHAT: One class on .app-shell recording whether the Player currently has
@@ -8302,6 +8494,8 @@ function buildViewer(state) {
     viewerStage.classList.add("hidden");
     viewerEmpty.classList.remove("hidden");
     viewerEmpty.textContent = "All media is hidden. Unhide items in the Gallery to continue.";
+    currentViewerPreparationInFlight = false;
+    runtime.notifyCurrentItemVisible();
     return;
   }
 
@@ -8318,6 +8512,7 @@ function buildViewer(state) {
         currentViewerNode.pause();
       }
     }
+    refreshReadyQueue();
     return;
   }
 
@@ -8342,6 +8537,33 @@ function buildViewer(state) {
     outgoingNode.tagName === "IMG" &&
     !viewerStage.classList.contains("hidden");
 
+  if (item?.kind === "image") {
+    const prepared = takePreparedViewerImage(item);
+    if (prepared) {
+      clearViewerNode();
+      const committedAt = performance.now();
+      currentViewerItem = item;
+      currentViewerNode = prepared.node;
+      viewerEmpty.classList.add("hidden");
+      viewerStage.classList.remove("hidden");
+      viewerStage.appendChild(prepared.node);
+      recordMediaRenderOutcome("mounted");
+      recordMediaRenderOutcome("loaded");
+      measureTransitionReady({
+        held: true,
+        readyHit: true,
+        renderEntryAt: lastRenderEntryAt,
+        srcAt: committedAt,
+        loadAt: committedAt,
+        decodeAt: committedAt,
+        teardownAt: committedAt,
+        item,
+        node: prepared.node,
+      });
+      return;
+    }
+  }
+
   if (canHoldOutgoingFrame) {
     prepareHeldFrameImage(item);
     return;
@@ -8356,6 +8578,8 @@ function buildViewer(state) {
     viewerStage.classList.add("hidden");
     viewerEmpty.classList.remove("hidden");
     viewerEmpty.textContent = "Choose files or a folder to begin.";
+    currentViewerPreparationInFlight = false;
+    runtime.notifyCurrentItemVisible();
     return;
   }
 
@@ -8364,6 +8588,8 @@ function buildViewer(state) {
   currentViewerItem = item;
 
   if (item.kind === "image") {
+    currentViewerPreparationInFlight = true;
+    runtime.holdAdvanceForPendingVisual();
     const img = document.createElement("img");
     const renderEntryAt = lastRenderEntryAt;
     const srcAt = performance.now();
@@ -8385,6 +8611,7 @@ function buildViewer(state) {
         decodeAt: null,
         teardownAt,
         item,
+        node: img,
       });
     });
     img.addEventListener("error", () => {
@@ -8393,6 +8620,8 @@ function buildViewer(state) {
       viewerEmpty.textContent = "This item could not be loaded.";
       viewerStage.classList.add("hidden");
       viewerEmpty.classList.remove("hidden");
+      currentViewerPreparationInFlight = false;
+      runtime.notifyCurrentItemVisible();
     });
     img.alt = item.name;
     currentViewerNode = img;
@@ -8401,6 +8630,7 @@ function buildViewer(state) {
   }
 
   if (item.kind === "video") {
+    currentViewerPreparationInFlight = false;
     const video = document.createElement("video");
     video.controls = true;
     video.playsInline = true;
@@ -8408,6 +8638,7 @@ function buildViewer(state) {
     video.muted = true;
     currentViewerNode = video;
     viewerStage.appendChild(video);
+    runtime.notifyCurrentItemVisible();
 
     if (isTsItem(item)) {
       // [TS-POC] Phase 5 diagnostic timing — counter-based ID only, never
