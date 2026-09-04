@@ -3,6 +3,10 @@ import {
   collectSelectionEvidence,
   combineQualifyingFloppyTexts,
 } from "../src/intake/collect-selection-evidence.js";
+import {
+  getRememberedCassetteOwner,
+  readRememberedFolder,
+} from "../src/intake/collect-folder-evidence.js";
 import { extractRemoteUrls } from "../src/providers/remote-url-parser.js";
 import { RemoteUrlProvider } from "../src/providers/remote-url-provider.js";
 
@@ -119,5 +123,94 @@ const proseFolderEvidence = await collectSelectionEvidence([
   fakeFile(".DS_Store", { path: "Notes/.DS_Store" }),
 ], { shape: "folder" });
 assertEqual(classifySelection(proseFolderEvidence), "unsupported", "ordinary prose and junk folder is unsupported");
+
+let folderEnumerations = 0;
+const folderFiles = new Map([
+  ["B.txt", { type: "text/plain", text: "https://cdn.example.com/shared.jpg\nhttps://cdn.example.com/b.jpg" }],
+  ["a.txt", { type: "text/plain", text: "https://cdn.example.com/a.jpg\nhttps://cdn.example.com/shared.jpg" }],
+]);
+const fileHandle = (name, source) => ({
+  kind: "file",
+  name,
+  async getFile() {
+    return { name, type: source.type, text: async () => source.text };
+  },
+});
+const nestedDirectory = {
+  kind: "directory",
+  name: "nested",
+  async *values() {
+    yield fileHandle("nested.txt", { type: "text/plain", text: "https://cdn.example.com/nested.jpg" });
+  },
+};
+const rememberedHandle = {
+  name: "My Floppies",
+  async *values() {
+    folderEnumerations += 1;
+    for (const [name, source] of folderFiles) yield fileHandle(name, source);
+    yield nestedDirectory;
+  },
+};
+
+let remembered = await readRememberedFolder(rememberedHandle);
+assertEqual(remembered.selectionKind, "floppy-folder", "remembered Floppy Folder selects remote owner");
+assertEqual(remembered.combinedText.startsWith("https://cdn.example.com/a.jpg"), true, "folder-handle ordering is deterministic");
+assertEqual(extractRemoteUrls(remembered.combinedText).urls.length, 3, "folder-handle combined text inherits parser dedupe");
+assertEqual(remembered.combinedText.includes("nested.jpg"), false, "nested Floppy text is excluded");
+
+folderFiles.set("C.txt", { type: "text/plain", text: "https://cdn.example.com/c.jpg" });
+remembered = await readRememberedFolder(rememberedHandle);
+assertEqual(remembered.combinedText.includes("c.jpg"), true, "added Floppy is visible on next reread");
+
+folderFiles.get("a.txt").text = "https://cdn.example.com/edited.png";
+remembered = await readRememberedFolder(rememberedHandle);
+assertEqual(remembered.combinedText.includes("edited.png"), true, "edited Floppy is visible on next reread");
+assertEqual(remembered.combinedText.includes("a.jpg"), false, "edited Floppy does not retain stale text");
+
+folderFiles.delete("B.txt");
+remembered = await readRememberedFolder(rememberedHandle);
+assertEqual(remembered.combinedText.includes("b.jpg"), false, "removed Floppy is absent on next reread");
+assertEqual(folderEnumerations, 4, "current folder contents are enumerated on every reopen");
+
+const localHandle = {
+  name: "Photos",
+  async *values() {
+    yield fileHandle("photo.jpg", { type: "image/jpeg", text: "" });
+  },
+};
+assertEqual((await readRememberedFolder(localHandle)).selectionKind, "local-folder", "remembered media folder selects existing local owner");
+
+const nestedLocalHandle = {
+  name: "Nested Photos",
+  async *values() {
+    yield {
+      kind: "directory",
+      name: "album",
+      async *values() {
+        yield fileHandle("nested.jpg", { type: "image/jpeg", text: "" });
+      },
+    };
+  },
+};
+assertEqual((await readRememberedFolder(nestedLocalHandle)).selectionKind, "local-folder", "nested media preserves recursive local-folder routing");
+
+const mixedHandle = {
+  name: "Mixed",
+  async *values() {
+    yield fileHandle("photo.jpg", { type: "image/jpeg", text: "" });
+    yield fileHandle("Master.txt", { type: "text/plain", text: "https://cdn.example.com/photo.jpg" });
+  },
+};
+assertEqual((await readRememberedFolder(mixedHandle)).selectionKind, "mixed", "mixed remembered folder rejects");
+
+const unsupportedHandle = {
+  name: "Documents",
+  async *values() {
+    yield fileHandle("notes.txt", { type: "text/plain", text: "ordinary prose" });
+  },
+};
+assertEqual((await readRememberedFolder(unsupportedHandle)).selectionKind, "unsupported", "unsupported remembered folder rejects");
+assertEqual(getRememberedCassetteOwner({ sourceKind: "cassette" }), "file", "ordinary cassette dispatch selects file owner");
+assertEqual(getRememberedCassetteOwner({ sourceKind: "cassette-folder" }), "folder", "cassette-folder dispatch selects folder owner");
 
 console.log(`selection classifier: ${assertions} assertions passed`);

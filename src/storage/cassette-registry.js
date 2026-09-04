@@ -1,30 +1,17 @@
 // [REMOTE-CASSETTE / PHASE 2A]
 // BREADCRUMBS - WAS
-// Remembered media sources were exclusively FSA directory handles in
-// library-registry.js. Those rows carry local-library concerns including
-// Curation association, shared SyncV3 identity, legacy signatures, and folder
-// isSameEntry() matching. profile-sync-store.js already established that a
-// separately remembered handle belongs in its own small database. Remote
-// sessions used an <input type="file">, yielded no reusable handle, and were
-// structurally incapable of being remembered.
+// Remembered remote sources were individual Floppy Disk FileHandles only.
+// DirectoryHandles were owned by the local-library path.
 //
 // BREADCRUMBS - IS
-// This module solely owns which remote cassette files this device remembers.
-// It stores only an id, source kind, display name, FileSystemFileHandle, and two
-// timestamps. It performs no permission call, file read, parse, load, or DOM
-// work. Its database is separate because existing listLibraries() consumers
-// (Recent Media Folders, resumeLibrary(), boot restore, eligible-folder UI, and
-// folder shuffle) otherwise treat every row as a resumable folder. Removal is
-// a hard delete because a cassette has no association for soft removal to save.
+// The cassette registry may also own a typed cassette-folder DirectoryHandle.
+// Reopening that record re-enumerates and rereads current top-level Floppy .txt
+// files, then hands combined raw text to the existing remote-session pipeline.
 //
 // BREADCRUMBS - WILL BE
-// profileId, libraryId, signature, and itemCount stay absent: curation and
-// shared identity require durable item identity, which remembering a cassette
-// does not provide, while a cached count becomes stale when the file is edited.
-// Remembering how to reopen a source must not quietly become knowing which item
-// is which. Startup selection belongs above this module in Phase 2B. A future
-// folder-of-cassettes source would be a new sourceKind here, never a directory
-// handle smuggled into the local-library registry.
+// Future source-neutral library features may treat remembered local folders,
+// Floppy Disks, and Floppy Folders uniformly at the UI/association layer while
+// their persistence owners remain separate.
 
 const DATABASE_NAME = "loop-browser-gallery-cassettes";
 const DATABASE_VERSION = 1;
@@ -78,7 +65,7 @@ export async function listCassettes() {
   }
 }
 
-export async function addOrUpdateCassette(handle) {
+export async function addOrUpdateCassette(handle, { sourceKind = "cassette" } = {}) {
   const database = await openDatabase();
   try {
     const readTransaction = database.transaction(STORE_NAME, "readonly");
@@ -101,7 +88,7 @@ export async function addOrUpdateCassette(handle) {
     const record = match
       ? {
           id: match.id,
-          sourceKind: "cassette",
+          sourceKind,
           name: handle.name,
           handle,
           lastOpenedAt: now,
@@ -109,7 +96,7 @@ export async function addOrUpdateCassette(handle) {
         }
       : {
           id: generateCassetteId(),
-          sourceKind: "cassette",
+          sourceKind,
           name: handle.name,
           handle,
           lastOpenedAt: now,
@@ -135,7 +122,7 @@ export async function touchCassette(id, { openedAt = Date.now() } = {}) {
 
     const updated = {
       id: record.id,
-      sourceKind: "cassette",
+      sourceKind: record.sourceKind,
       name: record.name,
       handle: record.handle,
       lastOpenedAt: openedAt,

@@ -8,6 +8,10 @@ import {
   combineQualifyingFloppyTexts,
 } from "./intake/collect-selection-evidence.js";
 import {
+  getRememberedCassetteOwner,
+  readRememberedFolder,
+} from "./intake/collect-folder-evidence.js";
+import {
   listLibraries,
   addOrUpdateLibrary,
   touchLibrary,
@@ -5931,6 +5935,35 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
     return;
   }
 
+  let folderIntake;
+  try {
+    folderIntake = await readRememberedFolder(dirHandle);
+  } catch (error) {
+    console.warn("[FOLDER INTAKE] Could not inspect the selected folder.", error);
+    fsaStatusText.textContent = `Could not inspect that folder: ${error.message}`;
+    return;
+  }
+
+  if (folderIntake.selectionKind === "mixed") {
+    fsaStatusText.textContent = "This folder contains both media and Floppy Disks. Choose a folder containing one type.";
+    return;
+  }
+  if (folderIntake.selectionKind === "unsupported") {
+    fsaStatusText.textContent = "This folder doesn't contain supported media or Floppy Disks.";
+    return;
+  }
+  if (folderIntake.selectionKind === "floppy-folder") {
+    try {
+      const record = await addOrUpdateCassette(dirHandle, { sourceKind: "cassette-folder" });
+      await renderSavedLibraries();
+      await openRememberedCassette(record);
+    } catch (error) {
+      remoteStatusText.textContent = "That Floppy Folder could not be opened.";
+      console.warn("[REMOTE CASSETTE] Could not remember the selected Floppy Folder.", error);
+    }
+    return;
+  }
+
   // [LIBRARY-REGISTRY] addOrUpdateLibrary() deduplicates via the real FSA
   // isSameEntry() identity check, so re-picking a folder that's already
   // registered updates that record instead of creating a duplicate entry.
@@ -5997,6 +6030,48 @@ async function openRemoteCassette(record) {
   await touchCassette(record.id);
   await renderSavedLibraries();
   await loadRemoteSession(text, { name: record.name });
+}
+
+async function openRemoteCassetteFolder(record) {
+  const handle = record && record.handle;
+  if (!handle) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available â€” it may have moved or been deleted.`;
+    return;
+  }
+
+  try {
+    let permission = await handle.queryPermission({ mode: "read" });
+    if (permission !== "granted") permission = await handle.requestPermission({ mode: "read" });
+    if (permission !== "granted") {
+      remoteStatusText.textContent = `Access to "${record.name}" was not granted.`;
+      return;
+    }
+
+    const folderIntake = await readRememberedFolder(handle);
+    if (folderIntake.selectionKind === "mixed") {
+      remoteStatusText.textContent = "This folder contains both media and Floppy Disks. Choose a folder containing one type.";
+      return;
+    }
+    if (folderIntake.selectionKind !== "floppy-folder") {
+      remoteStatusText.textContent = "This folder doesn't contain supported media or Floppy Disks.";
+      return;
+    }
+
+    await touchCassette(record.id);
+    await renderSavedLibraries();
+    await loadRemoteSession(folderIntake.combinedText, { name: record.name });
+  } catch (error) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available â€” it may have moved or been deleted.`;
+    console.warn("[REMOTE CASSETTE] A remembered Floppy Folder could not be opened.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+}
+
+function openRememberedCassette(record) {
+  return getRememberedCassetteOwner(record) === "folder"
+    ? openRemoteCassetteFolder(record)
+    : openRemoteCassette(record);
 }
 
 async function renderRemoteCassettes() {
@@ -6109,7 +6184,7 @@ async function renderRecentLibraries() {
   try {
     [localRecords, floppyRecords] = await Promise.all([
       listLibraries(),
-      isCassettePickerSupported() ? listCassettes() : Promise.resolve([]),
+      (isCassettePickerSupported() || isFsaSupported()) ? listCassettes() : Promise.resolve([]),
     ]);
   } catch (error) {
     console.warn("[SAVED LIBRARIES] Could not read saved libraries.", error);
@@ -6136,7 +6211,7 @@ async function renderRecentLibraries() {
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "fsa-recent-library-btn";
-    openBtn.addEventListener("click", () => type === "local" ? resumeLibrary(record) : openRemoteCassette(record));
+    openBtn.addEventListener("click", () => type === "local" ? resumeLibrary(record) : openRememberedCassette(record));
 
     const iconEl = document.createElement("span");
     iconEl.className = "saved-library-icon";
@@ -6152,7 +6227,10 @@ async function renderRecentLibraries() {
 
     const metaEl = document.createElement("span");
     metaEl.className = "fsa-recent-library-meta";
-    metaEl.textContent = formatLibraryMeta(record, type === "local" ? "Local Folder" : "Floppy Disk");
+    metaEl.textContent = formatLibraryMeta(
+      record,
+      type === "local" ? "Local Folder" : record.sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk"
+    );
 
     copyEl.appendChild(nameEl);
     copyEl.appendChild(metaEl);
