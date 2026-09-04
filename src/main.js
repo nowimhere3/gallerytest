@@ -323,6 +323,7 @@ const deviceAwareMediaQuestionYes = document.getElementById("device-aware-media-
 const deviceAwareMediaQuestionNo = document.getElementById("device-aware-media-question-no");
 const deviceAwareMediaQuestionResult = document.getElementById("device-aware-media-question-result");
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
+const profileMediaSource = document.getElementById("profile-media-source");
 const profileFolderLinkAdvancedSummary = document.getElementById("profile-folder-link-advanced-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
 const profileFolderActionHelp = document.getElementById("profile-folder-action-help");
@@ -655,7 +656,7 @@ profileSyncMediaSafety.textContent = glossaryExcerpt("sync", 2);
 function associationHelpKey(associationUi) {
   return [
     currentSourceKind,
-    activeLibraryRecord?.id || "session",
+    activeCassetteRecord?.id || activeLibraryRecord?.id || "session",
     associationUi.state,
     associationUi.associatedProfileId || "none",
   ].join(":");
@@ -1078,6 +1079,7 @@ let isLoadingFiles = false;
 // second source of truth for the association itself, which — for FSA —
 // always lives in IndexedDB via library-registry.js.
 let activeLibraryRecord = null;
+let activeCassetteRecord = null;
 // [SYNCV3 / STAGE-08 / LINK-STATE]
 // Permission is presentation state, never identity. Losing it must leave the
 // durable local row and its shared Library link untouched.
@@ -1093,7 +1095,7 @@ let activeLibraryDisplayName = null;
 // This — not "FSA vs legacy" scattered across call sites — is the one
 // thing association-button visibility is computed from. See
 // syncAssociateButtonVisibility() below.
-let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
+let currentSourceKind = "none"; // "none" | "legacy" | "fsa" | "cassette" | "cassette-folder"
 // [SYNCV3 / STAGE-09 / STALE-LOAD-GUARD]
 // [WHY: file loading is normally serialized by isLoadingFiles, but Clear Media
 // can supersede a load while its new decision-store await is suspended. This
@@ -1195,7 +1197,10 @@ function getProfileNameById(profileId) {
 // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
 // The only adapter from live app state into the pure S0-S5 mapper.
 function getCurrentAssociationUiState() {
-  const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded Media Folder";
+  const mediaName = activeCassetteRecord?.name
+    || activeLibraryRecord?.name
+    || activeLibraryDisplayName
+    || "Loaded Media Folder";
   const usesDurableRecord =
     currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
   const sharedCatalogEntry = activeLibraryRecord?.libraryId
@@ -1209,14 +1214,17 @@ function getCurrentAssociationUiState() {
   return mapAssociationCopy({
     sourceKind: currentSourceKind,
     legacyHasDurableIdentity,
-    folderName,
+    mediaName,
+    rememberedSourceId: activeCassetteRecord?.id ? `cassette:${activeCassetteRecord.id}` : null,
     associatedProfileId,
     associatedProfileName: getProfileNameById(associatedProfileId),
     activeProfileId: profile.getProfileId(),
     activeProfileName: profile.getProfileName(),
     legacySessionAssociated,
     canWriteAssociation:
-      currentSourceKind === "fsa"
+      currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+        ? false
+        : currentSourceKind === "fsa"
         ? Boolean(activeLibraryRecord && activeLibraryRecord.id)
         : Boolean(activeLibraryRecord && activeLibraryRecord.id) || Boolean(pendingLegacySignature),
   });
@@ -1238,6 +1246,8 @@ function updateAssociatedStatusRow() {
   // association computation; it never reads registry or Profile state itself.]
   profileLibraryAssociationText.textContent = associationUi.productLine;
   applyProductStatusTone(profileLibraryAssociationText, associationUi.tone);
+  profileMediaSource.textContent = associationUi.sourceLine;
+  applyProductStatusTone(profileMediaSource, associationUi.tone);
   return associationUi;
 }
 
@@ -5302,7 +5312,7 @@ function finishLoadingItems(items) {
   reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
 }
 
-async function loadRemoteSession(text, { name } = {}) {
+async function loadRemoteSession(text, { name, record = null, sourceKind = "cassette" } = {}) {
   if (isLoadingFiles) return;
 
   currentSessionIsUrlBacked = true;
@@ -5322,11 +5332,12 @@ async function loadRemoteSession(text, { name } = {}) {
   provider.dispose();
   fsaProvider.dispose();
   activeLibraryRecord = null;
+  activeCassetteRecord = record;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
-  activeLibraryDisplayName = null;
-  currentSourceKind = "none";
+  activeLibraryDisplayName = name || record?.name || (sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk");
+  currentSourceKind = sourceKind;
   currentFolderPermissionState = "granted";
   legacySessionAssociated = false;
   legacyHasDurableIdentity = false;
@@ -5336,7 +5347,8 @@ async function loadRemoteSession(text, { name } = {}) {
   fsaStatusText.textContent = "";
   resetMediaRenderOutcomes();
 
-  remoteStatusText.textContent = "Loading Floppy Disk…";
+  const remoteSourceLabel = sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk";
+  remoteStatusText.textContent = `Loading ${remoteSourceLabel}…`;
 
   try {
     const parseStartedAt = performance.now();
@@ -5357,7 +5369,7 @@ async function loadRemoteSession(text, { name } = {}) {
       remoteStatusText.textContent = "No valid media URLs found in this file.";
     } else {
       remoteStatusText.textContent =
-        `Floppy Disk ready. ${result.items.length} items · ` +
+        `${remoteSourceLabel} ready. ${result.items.length} items · ` +
         `${result.diagnostics.images} images · ${result.diagnostics.videos} videos` +
         (skipped ? ` · ${skipped} links skipped` : "");
     }
@@ -5432,6 +5444,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   remoteStatusText.textContent = "";
   resetMediaRenderOutcomes();
   activeLibraryRecord = null;
+  activeCassetteRecord = null;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
@@ -5680,6 +5693,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // at all requires either the FSA folder-picker round trip or a Recent
   // Libraries click, both far slower than one IndexedDB open.
   activeLibraryRecord = libraryRecord || null;
+  activeCassetteRecord = null;
   associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
   establishAmbientProfileContext(activeLibraryRecord);
   activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
@@ -6042,7 +6056,7 @@ async function openRemoteCassette(record) {
 
   await touchCassette(record.id);
   await renderSavedLibraries();
-  await loadRemoteSession(text, { name: record.name });
+  await loadRemoteSession(text, { name: record.name, record, sourceKind: "cassette" });
 }
 
 async function openRemoteCassetteFolder(record) {
@@ -6072,7 +6086,7 @@ async function openRemoteCassetteFolder(record) {
 
     await touchCassette(record.id);
     await renderSavedLibraries();
-    await loadRemoteSession(folderIntake.combinedText, { name: record.name });
+    await loadRemoteSession(folderIntake.combinedText, { name: record.name, record, sourceKind: "cassette-folder" });
   } catch (error) {
     remoteStatusText.textContent = `"${record.name}" is no longer available â€” it may have moved or been deleted.`;
     console.warn("[REMOTE CASSETTE] A remembered Floppy Folder could not be opened.", {
@@ -6545,8 +6559,11 @@ const NEW_SHARED_LIBRARY_VALUE = "__new_shared_library__";
 // shared catalog into the pure L0-L7 model. Library names remain presentation;
 // every selection and write is keyed by the catalog id.]
 function getCurrentFolderLinkUiState({ selectedLibraryId = null, selectedClaimant = null } = {}) {
+  const folderSourceKind = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+    ? "none"
+    : currentSourceKind;
   return mapLinkState({
-    sourceKind: currentSourceKind,
+    sourceKind: folderSourceKind,
     legacyHasDurableIdentity,
     folderName: activeLibraryRecord?.name || activeLibraryDisplayName || "Loaded Media Folder",
     localLibraryId: activeLibraryRecord?.id || null,
@@ -6567,7 +6584,8 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   const ordinarySurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "ordinary" });
   const advancedSurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "advanced" });
   profileFolderLinkSummary.textContent = ordinarySurface.statusText;
-  profileFolderLinkSummary.classList.toggle("hidden", !ordinarySurface.showStatus);
+  const hasFolderSource = currentSourceKind !== "cassette" && currentSourceKind !== "cassette-folder";
+  profileFolderLinkSummary.classList.toggle("hidden", !hasFolderSource || !ordinarySurface.showStatus);
   applyProductStatusTone(profileFolderLinkSummary, linkUi.tone);
   profileFolderLinkAdvancedSummary.textContent = advancedSurface.statusText;
   applyProductStatusTone(profileFolderLinkAdvancedSummary, linkUi.tone);
@@ -6577,8 +6595,8 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   // now has exactly one job left — L7 reconnect. `showAction` is true in that
   // state alone; every other durable state renders the selector instead.]
   profileFolderLinkBtn.textContent = linkUi.actionLabel || "Reconnect Media Folder";
-  profileFolderLinkBtn.classList.toggle("hidden", !ordinarySurface.showRecoveryAction);
-  profileFolderLinkBtn.disabled = !ordinarySurface.showRecoveryAction;
+  profileFolderLinkBtn.classList.toggle("hidden", !hasFolderSource || !ordinarySurface.showRecoveryAction);
+  profileFolderLinkBtn.disabled = !hasFolderSource || !ordinarySurface.showRecoveryAction;
 
   const showSelector = Boolean(advancedSurface.showSelector);
   const wasHidden = profileFolderLinkRow.classList.contains("hidden");
@@ -9842,10 +9860,10 @@ async function routeOpenSelection(fileList, { shape, rootName = null } = {}) {
       return loadFiles(fileList, { isFolderPick: true, rootName });
     case "floppy-file": {
       const floppy = evidence.entries.find((entry) => entry.qualifiesAsFloppy);
-      return loadRemoteSession(floppy.floppyText, { name: floppy.name });
+      return loadRemoteSession(floppy.floppyText, { name: floppy.name, sourceKind: "cassette" });
     }
     case "floppy-folder":
-      return loadRemoteSession(combineQualifyingFloppyTexts(evidence), { name: rootName });
+      return loadRemoteSession(combineQualifyingFloppyTexts(evidence), { name: rootName, sourceKind: "cassette-folder" });
     case "mixed":
       statusText.textContent = shape === "folder"
         ? "This folder contains both media and Floppy Disks. Choose a folder containing one type."
@@ -10462,6 +10480,7 @@ clearBtn.addEventListener("click", () => {
   // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
+  activeCassetteRecord = null;
   associationWriteSuppression.setLoadedLibrary(null);
   clearReverseCurationSuggestion();
   clearDeviceAwareMediaQuestion();

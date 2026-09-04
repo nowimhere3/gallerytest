@@ -29,18 +29,32 @@ for (const obsolete of ["Could not switch Profiles", "This Library now has No Pr
 }
 assert(mainSource.includes("ProfileStore") && mainSource.includes("activeProfileId") && mainSource.includes("profileId"), "internal Profile architecture remains intact");
 
-for (const phrase of ["This Media Folder", "Curation for This Folder", "This Device Is Using", "— No Curation —", "Create Curation", "Import Curation", "Delete Curation"]) {
+for (const phrase of ["This Media", "Curation for This Folder", "This Device Is Using", "— No Curation —", "Create Curation", "Import Curation", "Delete Curation"]) {
   assert(renderedHtml.includes(phrase) || executableMain.includes(phrase), `${phrase} is customer-facing`);
 }
 assert(renderedHtml.includes("Export Curation (.json)") && mainSource.includes("Export ${activeName} Curation (.json)"), "Export action names the current Curation");
+assert(renderedHtml.includes('id="profile-media-source"') && renderedHtml.includes("No media loaded."),
+  "Settings has one source-neutral current-media line");
+assert(mainSource.includes("let activeCassetteRecord = null;"), "controller tracks active remembered Floppy provenance");
+assert(mainSource.includes('rememberedSourceId: activeCassetteRecord?.id ? `cassette:${activeCassetteRecord.id}` : null'),
+  "remembered Floppy evidence is namespaced before entering the mapper");
+assert(mainSource.includes('record, sourceKind: "cassette"') && mainSource.includes('record, sourceKind: "cassette-folder"'),
+  "remembered Floppy reopen paths retain record and exact source kind");
+assert(mainSource.includes('name: floppy.name, sourceKind: "cassette"')
+  && mainSource.includes('name: rootName, sourceKind: "cassette-folder"'),
+  "one-shot Floppy paths retain exact source kind without a record");
+assert(mainSource.split("activeCassetteRecord = null;").length - 1 >= 4,
+  "local, FSA, clear, and declaration paths prevent stale cassette provenance");
+assert(mainSource.includes('currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"')
+  && mainSource.includes('? "none"'), "Floppy sources are adapted to none at the folder-link boundary");
 
 const unchosen = mapAssociationCopy({ sourceKind: "fsa", folderName: "Nature" });
 assert(unchosen.associatedText === "None chosen yet" && unchosen.productLine === "Nature — no Curation chosen yet",
   "an unchosen Media Library states an unmade choice, in Curation language");
-assert(unchosen.actionLabel === "Choose a Curation for this folder", "choose action names the customer relationship");
+assert(unchosen.actionLabel === "Choose a Curation for this media", "choose action names the customer relationship");
 const remembered = mapAssociationCopy({ sourceKind: "fsa", folderName: "Nature", associatedProfileId: "beast", associatedProfileName: "BEAST", activeProfileId: "beast" });
 assert(remembered.productLine === "Nature — remembered with BEAST Curation", "remembered status identifies Curation");
-assert(remembered.actionLabel === "Change Curation for this folder", "change action names the customer relationship");
+assert(remembered.actionLabel === "Change Curation for this media", "change action names the customer relationship");
 
 const linked = mapLinkState({ sourceKind: "fsa", localLibraryId: "local-a", sharedLibraryId: "library-a", folderName: "Nature folder", sharedLibraries: [{ id: "library-a", name: "Nature" }] });
 assert(linked.summary === "Nature folder uses the Nature Media Library.",
