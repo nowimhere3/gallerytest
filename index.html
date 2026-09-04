@@ -139,8 +139,8 @@
               role descriptor is structural at BOTH choosers so neither can be
               read as "your Google Drive folder"; the Sync Folder's own
               descriptor lives beside its chooser in Curations & Sync.] -->
-        <section class="media-source-group" aria-labelledby="local-media-heading">
-        <h3 id="local-media-heading" class="media-source-heading">Local Media</h3>
+        <section class="media-source-group" aria-labelledby="open-now-heading">
+        <h3 id="open-now-heading" class="media-source-heading">Open Now</h3>
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
              WHAT: Collapses the legacy Choose Files/Choose Folder controls
@@ -156,7 +156,7 @@
         <div class="media-picker-row media-picker-primary-row">
           <label class="button-like">
             <span>Open Files</span>
-            <input id="file-input" type="file" accept="image/*,video/*" multiple hidden />
+            <input id="file-input" type="file" accept="image/*,video/*,.txt,text/plain" multiple hidden />
           </label>
  
           <label class="button-like">
@@ -166,26 +166,16 @@
         </div>
  
         </div>
-
-        <!-- [FSA] File System Access folder access — an ADDITIONAL way to
-             load a folder, alongside Choose Files/Choose Folder above (not
-             a replacement). -->
-        <div class="media-picker-row fsa-picker-row">
-          <button id="fsa-choose-folder-btn" class="button-like secondary" type="button">
-            <span>Remember This Folder</span>
-          </button>
-        </div>
         </section>
 
-        <section class="media-source-group" aria-labelledby="floppy-disks-heading">
-        <h3 id="floppy-disks-heading" class="media-source-heading">Floppy Disks</h3>
-        <div class="media-picker-row">
-          <label class="button-like secondary">
-            <span>Open Floppy Disk</span>
-            <input id="remote-session-input" type="file" accept=".txt,text/plain" hidden />
-          </label>
+        <section class="media-source-group" aria-labelledby="remember-heading">
+        <h3 id="remember-heading" class="media-source-heading">Remember</h3>
+        <div class="media-picker-row media-picker-primary-row">
           <button id="cassette-add-btn" class="button-like secondary" type="button">
-            <span>Remember Floppy Disk</span>
+            <span>Remember File</span>
+          </button>
+          <button id="fsa-choose-folder-btn" class="button-like secondary" type="button">
+            <span>Remember Folder</span>
           </button>
         </div>
         </section>

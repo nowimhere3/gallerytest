@@ -101,6 +101,38 @@ const visibleText = renderedHtml
   .replace(/<[^>]+>/g, " ")
   .replace(/&amp;/g, "&")
   .replace(/\s+/g, " ");
+
+// [UNIFIED MEDIA INTAKE / STAGE D] The rail asks only for selection shape and
+// intent. Backend nouns may still appear after loading in Saved Libraries.
+for (const action of ["Open Files", "Open Folder", "Remember File", "Remember Folder"]) {
+  assert(visibleText.includes(action), `${action} is a visible intake action`);
+}
+for (const retired of ["Open Floppy Disk", "Remember Floppy Disk", "Open Floppy Folder",
+  "Remember Floppy Folder", "Remember This Folder", "Choose Folder (FSA)",
+  "Open Remote Session", "Add Remote Cassette", "Legacy Picker"]) {
+  assert(!visibleText.includes(retired), `${retired} is not a visible intake action`);
+}
+assert((visibleText.match(/Open Files/g) || []).length === 1, "Open Files appears once");
+assert((visibleText.match(/Open Folder/g) || []).length === 1, "Open Folder appears once");
+assert((visibleText.match(/Remember File/g) || []).length === 1, "Remember File appears once");
+assert((visibleText.match(/Remember Folder/g) || []).length === 1, "Remember Folder appears once");
+assert(/id="file-input"[^>]*accept="[^"]*image\/\*[^"]*video\/\*[^"]*\.txt[^"]*"/.test(renderedHtml),
+  "Open Files picker accepts ordinary media and .txt files");
+assert(!renderedHtml.includes('id="remote-session-input"'), "source-specific Floppy input is removed");
+assert(mainSource.includes('cassetteAddBtn.classList.remove("hidden");') && !mainSource.includes('cassetteAddBtn.classList.add("hidden");'),
+  "Remember File remains visible when file-handle persistence is unavailable");
+assert(mainSource.includes('routeOpenSelection(files, { shape: "files" })'), "Open Files uses unified routing");
+assert(mainSource.includes('routeOpenSelection(files, { shape: "folder", rootName: topFolderName })'),
+  "Open Folder uses unified routing");
+assert(mainSource.includes("const files = Array.from(event.target.files || []);"),
+  "picker FileLists are snapshotted before asynchronous routing");
+assert(mainSource.includes('const selectionKind = classifySelection(evidence);'),
+  "open and remember handlers reuse unified classification");
+assert(mainSource.includes("Browser Gallery can remember folders and Floppy Disks. Choose a folder to remember this media."),
+  "Remember File has truthful ordinary-media copy");
+for (const savedKind of ["Local Folder", "Floppy Disk", "Floppy Folder"]) {
+  assert(mainSource.includes(savedKind), `Saved Libraries still renders ${savedKind}`);
+}
 const ordinarySettings = renderedHtml.slice(
   renderedHtml.indexOf('<details class="profile-section"'),
   renderedHtml.indexOf('<details class="advanced-settings-section"'),

@@ -217,7 +217,6 @@ const legacyPickerDetails = document.getElementById("legacy-picker-details");
 const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
 const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
-const remoteSessionInput = document.getElementById("remote-session-input");
 const remoteStatusText = document.getElementById("remote-status-text");
 const cassetteAddBtn = document.getElementById("cassette-add-btn");
 const remoteCassettesEl = document.getElementById("remote-cassettes");
@@ -5983,12 +5982,26 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
 });
 
 async function addRemoteCassette() {
+  if (!isCassettePickerSupported()) {
+    statusText.textContent = "This browser does not support remembered files.";
+    return;
+  }
   try {
     const [handle] = await window.showOpenFilePicker({
       multiple: false,
-      types: [{ description: "Remote cassette", accept: { "text/plain": [".txt"] } }],
     });
     if (!handle) return;
+    const file = await handle.getFile();
+    const evidence = await collectSelectionEvidence([file], { shape: "files" });
+    const selectionKind = classifySelection(evidence);
+    if (selectionKind === "local-files") {
+      statusText.textContent = "Browser Gallery can remember folders and Floppy Disks. Choose a folder to remember this media.";
+      return;
+    }
+    if (selectionKind !== "floppy-file") {
+      statusText.textContent = "Browser Gallery can't open that file.";
+      return;
+    }
     const record = await addOrUpdateCassette(handle);
     await renderRemoteCassettes();
     await openRemoteCassette(record);
@@ -6076,13 +6089,15 @@ function openRememberedCassette(record) {
 
 async function renderRemoteCassettes() {
   if (!isCassettePickerSupported()) {
-    cassetteAddBtn.classList.add("hidden");
+    cassetteAddBtn.classList.remove("hidden");
+    cassetteAddBtn.disabled = true;
     remoteCassettesEl.replaceChildren();
     await renderSavedLibraries();
     return;
   }
 
   cassetteAddBtn.classList.remove("hidden");
+  cassetteAddBtn.disabled = false;
   await renderSavedLibraries();
 }
 
@@ -6097,7 +6112,7 @@ async function resumeLibrary(record) {
 
   const dirHandle = record.handle;
   if (!dirHandle) {
-    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Remember This Folder".`;
+    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Remember Folder".`;
     return;
   }
 
@@ -9797,6 +9812,17 @@ function render(state) {
 
 /*
 BREADCRUMBS - WAS
+Media intake exposed separate local and Floppy controls, requiring the customer to understand which backend or source type should process a selection.
+
+BREADCRUMBS - IS
+The customer chooses only selection shape and intent: Open Files, Open Folder, Remember File, or Remember Folder. Unified intake classification determines whether existing local or Floppy owners handle the selection.
+
+BREADCRUMBS - WILL BE
+Future source types should extend classification and routing behind these generic controls rather than adding new customer-facing picker buttons.
+*/
+
+/*
+BREADCRUMBS - WAS
 Picker handlers passed browser-owned live FileLists into asynchronous intake routing and then cleared the inputs. Clearing the control could empty the selection before evidence collection consumed it.
 
 BREADCRUMBS - IS
@@ -9836,25 +9862,6 @@ fileInput.addEventListener("change", async (event) => {
   const files = Array.from(event.target.files || []);
   fileInput.value = "";
   await routeOpenSelection(files, { shape: "files" });
-});
-
-remoteSessionInput.addEventListener("change", async (event) => {
-  const files = Array.from(event.target.files || []);
-  remoteSessionInput.value = "";
-  if (!files?.length) return;
-  const fileReadGeneration = libraryLoadGeneration;
-  try {
-    await routeOpenSelection(files, { shape: "files" });
-  } catch (error) {
-    if (fileReadGeneration !== libraryLoadGeneration) {
-      remoteStatusText.textContent = "";
-      return;
-    }
-    remoteStatusText.textContent = "That file could not be read.";
-    console.warn("[REMOTE SESSION] The selected file could not be read.", {
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
 });
 
 folderInput.addEventListener("change", async (event) => {
