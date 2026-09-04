@@ -28,6 +28,11 @@ import {
   touchCassette,
   removeCassette,
 } from "./storage/cassette-registry.js";
+import {
+  getSourceCuration,
+  setSourceCuration,
+  clearSourceCuration,
+} from "./storage/source-curation-registry.js";
 import { decideBootRestore, decideStartupMedia } from "./storage/boot-restore.js";
 // [PM-SHUFFLE-FOLDERS] Pure candidate ORDERING only — the switching itself
 // stays on this file's existing authoritative resumeLibrary() path. See that
@@ -1080,6 +1085,7 @@ let isLoadingFiles = false;
 // always lives in IndexedDB via library-registry.js.
 let activeLibraryRecord = null;
 let activeCassetteRecord = null;
+let activeCassetteCurationId = null;
 // [SYNCV3 / STAGE-08 / LINK-STATE]
 // Permission is presentation state, never identity. Losing it must leave the
 // durable local row and its shared Library link untouched.
@@ -1206,11 +1212,13 @@ function getCurrentAssociationUiState() {
   const sharedCatalogEntry = activeLibraryRecord?.libraryId
     ? profile.listLibraries().find((library) => library.id === activeLibraryRecord.libraryId)
     : null;
-  const associatedProfileId = usesDurableRecord && activeLibraryRecord
-    ? sharedCatalogEntry
-      ? sharedCatalogEntry.associatedProfileId
-      : activeLibraryRecord.profileId
-    : null;
+  const associatedProfileId = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+    ? activeCassetteCurationId
+    : usesDurableRecord && activeLibraryRecord
+      ? sharedCatalogEntry
+        ? sharedCatalogEntry.associatedProfileId
+        : activeLibraryRecord.profileId
+      : null;
   return mapAssociationCopy({
     sourceKind: currentSourceKind,
     legacyHasDurableIdentity,
@@ -1223,7 +1231,7 @@ function getCurrentAssociationUiState() {
     legacySessionAssociated,
     canWriteAssociation:
       currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
-        ? false
+        ? Boolean(activeCassetteRecord?.id)
         : currentSourceKind === "fsa"
         ? Boolean(activeLibraryRecord && activeLibraryRecord.id)
         : Boolean(activeLibraryRecord && activeLibraryRecord.id) || Boolean(pendingLegacySignature),
@@ -5312,7 +5320,7 @@ function finishLoadingItems(items) {
   reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
 }
 
-async function loadRemoteSession(text, { name, record = null, sourceKind = "cassette" } = {}) {
+async function loadRemoteSession(text, { name, record = null, sourceKind = "cassette", curationId = null } = {}) {
   if (isLoadingFiles) return;
 
   currentSessionIsUrlBacked = true;
@@ -5333,6 +5341,7 @@ async function loadRemoteSession(text, { name, record = null, sourceKind = "cass
   fsaProvider.dispose();
   activeLibraryRecord = null;
   activeCassetteRecord = record;
+  activeCassetteCurationId = record ? curationId : null;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
@@ -5445,6 +5454,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   resetMediaRenderOutcomes();
   activeLibraryRecord = null;
   activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
@@ -5694,6 +5704,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // Libraries click, both far slower than one IndexedDB open.
   activeLibraryRecord = libraryRecord || null;
   activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
   establishAmbientProfileContext(activeLibraryRecord);
   activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
@@ -6056,7 +6067,10 @@ async function openRemoteCassette(record) {
 
   await touchCassette(record.id);
   await renderSavedLibraries();
-  await loadRemoteSession(text, { name: record.name, record, sourceKind: "cassette" });
+  const association = await recallSourceCuration(record.id);
+  await loadRemoteSession(text, {
+    name: record.name, record, sourceKind: "cassette", curationId: association?.profileId || null,
+  });
 }
 
 async function openRemoteCassetteFolder(record) {
@@ -6086,12 +6100,24 @@ async function openRemoteCassetteFolder(record) {
 
     await touchCassette(record.id);
     await renderSavedLibraries();
-    await loadRemoteSession(folderIntake.combinedText, { name: record.name, record, sourceKind: "cassette-folder" });
+    const association = await recallSourceCuration(record.id);
+    await loadRemoteSession(folderIntake.combinedText, {
+      name: record.name, record, sourceKind: "cassette-folder", curationId: association?.profileId || null,
+    });
   } catch (error) {
     remoteStatusText.textContent = `"${record.name}" is no longer available â€” it may have moved or been deleted.`;
     console.warn("[REMOTE CASSETTE] A remembered Floppy Folder could not be opened.", {
       message: error instanceof Error ? error.message : "Unknown error",
     });
+  }
+}
+
+async function recallSourceCuration(cassetteId) {
+  try {
+    return await getSourceCuration(`cassette:${cassetteId}`);
+  } catch (error) {
+    console.warn("[SOURCE CURATION] Could not recall the remembered Floppy Curation.", error);
+    return null;
   }
 }
 
@@ -6281,7 +6307,10 @@ async function renderRecentLibraries() {
       // See library-registry.js.
       try {
         if (type === "local") await removeFromRecents(record.id);
-        else await removeCassette(record.id);
+        else {
+          await clearSourceCuration(`cassette:${record.id}`);
+          await removeCassette(record.id);
+        }
       } catch (error) {
         console.warn("[LIBRARY-REGISTRY] Could not remove this library from Recent Libraries.", error);
       }
@@ -6356,6 +6385,26 @@ async function associateThroughSyncV2(localLibraryId, targetProfileId) {
 // distinct without a truthy/falsy shortcut.
 async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
   if (targetProfileId !== null && !getProfileNameById(targetProfileId)) return false;
+
+  if (currentSourceKind === "cassette" || currentSourceKind === "cassette-folder") {
+    if (!activeCassetteRecord?.id) return false;
+    try {
+      await setSourceCuration(`cassette:${activeCassetteRecord.id}`, targetProfileId, {
+        sourceKind: currentSourceKind,
+      });
+      activeCassetteCurationId = targetProfileId;
+      syncAssociateButtonVisibility();
+      const targetProfileName = getProfileNameById(targetProfileId);
+      fsaStatusText.textContent = targetProfileName
+        ? `Now remembered with ${targetProfileName} on this device.`
+        : "This media now has No Curation on this device.";
+      return true;
+    } catch (error) {
+      console.warn("[SOURCE CURATION] Could not save the remembered Floppy Curation.", error);
+      fsaStatusText.textContent = "Could not save the Curation for this media. Try again.";
+      return false;
+    }
+  }
 
   if (currentSourceKind === "legacy") {
     if (legacyHasDurableIdentity) {
@@ -6525,9 +6574,14 @@ profileAssociationSaveBtn.addEventListener("click", async () => {
       profileAssociationResult.textContent = "Could not save. Try again.";
       return;
     }
-    profileAssociationResult.textContent = selectedProfileName
-      ? `Now remembered with ${selectedProfileName}.`
-      : "This folder now has No Curation.";
+    const isCassetteSource = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder";
+    profileAssociationResult.textContent = isCassetteSource
+      ? selectedProfileName
+        ? `Now remembered with ${selectedProfileName} on this device.`
+        : "This media now has No Curation on this device."
+      : selectedProfileName
+        ? `Now remembered with ${selectedProfileName}.`
+        : "This folder now has No Curation.";
     // [SYNCV3 / STAGE-10 / COMPLETED-EXPLAINER]
     // [WHY: the old action's benefit has finished its job. Scope dismissal to
     // this exact Library/association state so a new state or later interaction
@@ -10481,6 +10535,7 @@ clearBtn.addEventListener("click", () => {
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
   activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(null);
   clearReverseCurationSuggestion();
   clearDeviceAwareMediaQuestion();

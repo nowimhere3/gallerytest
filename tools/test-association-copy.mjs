@@ -104,9 +104,10 @@ assert(!/No Curation/.test(mapAssociationCopy({ sourceKind: "fsa", folderName: "
 
 verify("remembered Floppy Disk", {
   sourceKind: "cassette", mediaName: "pretty-leglock.txt", rememberedSourceId: "cassette:cas-1",
+  canWriteAssociation: true,
 }, {
   state: "S1", sourceLabel: "Floppy Disk", sourceLine: "pretty-leglock.txt · Floppy Disk",
-  associationScope: "device", scopeNote: "Remembered on this device.", showAction: false, allowPicker: false,
+  associationScope: "device", scopeNote: "Remembered on this device.", showAction: true, allowPicker: true,
 });
 verify("one-shot Floppy Disk", {
   sourceKind: "cassette", mediaName: "pretty-leglock.txt", activeProfileName: "My Gallery",
@@ -118,9 +119,10 @@ verify("one-shot Floppy Disk", {
 });
 verify("remembered Floppy Folder", {
   sourceKind: "cassette-folder", mediaName: "TEST_CASSETTE", rememberedSourceId: "cassette:cas-folder",
+  canWriteAssociation: true,
 }, {
   state: "S1", sourceLabel: "Floppy Folder", sourceLine: "TEST_CASSETTE · Floppy Folder",
-  associationScope: "device", scopeNote: "Remembered on this device.", showAction: false,
+  associationScope: "device", scopeNote: "Remembered on this device.", showAction: true, allowPicker: true,
 });
 verify("one-shot Floppy Folder", {
   sourceKind: "cassette-folder", mediaName: "TEST_CASSETTE", activeProfileName: "My Gallery",

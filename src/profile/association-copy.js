@@ -46,7 +46,7 @@ export function mapAssociationCopy({
         ? "Used for this session only."
         : "";
   const sourceLine = sourceKind === "none" ? "No media loaded." : `${displayName} · ${sourceLabel}`;
-  const writable = canWriteAssociation && !isCassette;
+  const writable = canWriteAssociation;
   const common = { sourceLabel, sourceLine, associationScope, scopeNote };
 
   if (sourceKind === "none") {
