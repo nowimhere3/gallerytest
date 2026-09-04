@@ -2,6 +2,11 @@ import { LocalFileInputProvider } from "./providers/local-file-input-provider.js
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
 import { extractRemoteUrls } from "./providers/remote-url-parser.js";
 import { RemoteUrlProvider } from "./providers/remote-url-provider.js";
+import { classifySelection } from "./intake/classify-selection.js";
+import {
+  collectSelectionEvidence,
+  combineQualifyingFloppyTexts,
+} from "./intake/collect-selection-evidence.js";
 import {
   listLibraries,
   addOrUpdateLibrary,
@@ -9712,19 +9717,56 @@ function render(state) {
 
 // ---- Event wiring ---------------------------------------------------------
 
-fileInput.addEventListener("change", (event) => {
-  loadFiles(event.target.files);
+/*
+BREADCRUMBS - WAS
+Picker handlers passed browser-owned live FileLists into asynchronous intake routing and then cleared the inputs. Clearing the control could empty the selection before evidence collection consumed it.
+
+BREADCRUMBS - IS
+Picker selections are snapshotted into stable arrays before asynchronous unified intake routing. Input controls may be cleared without mutating the selection being classified.
+
+BREADCRUMBS - WILL BE
+Any future picker path crossing an asynchronous boundary must snapshot browser-owned selection state before yielding, clearing, or reusing the control.
+*/
+async function routeOpenSelection(fileList, { shape, rootName = null } = {}) {
+  const evidence = await collectSelectionEvidence(fileList, { shape });
+  const selectionKind = classifySelection(evidence);
+
+  switch (selectionKind) {
+    case "local-files":
+      return loadFiles(fileList);
+    case "local-folder":
+      return loadFiles(fileList, { isFolderPick: true, rootName });
+    case "floppy-file": {
+      const floppy = evidence.entries.find((entry) => entry.qualifiesAsFloppy);
+      return loadRemoteSession(floppy.floppyText, { name: floppy.name });
+    }
+    case "floppy-folder":
+      return loadRemoteSession(combineQualifyingFloppyTexts(evidence), { name: rootName });
+    case "mixed":
+      statusText.textContent = shape === "folder"
+        ? "This folder contains both media and Floppy Disks. Choose a folder containing one type."
+        : "Choose either media files or a Floppy Disk, not both.";
+      return;
+    default:
+      statusText.textContent = shape === "folder"
+        ? "This folder doesn't contain supported media or Floppy Disks."
+        : "Browser Gallery can't open that file.";
+  }
+}
+
+fileInput.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
   fileInput.value = "";
+  await routeOpenSelection(files, { shape: "files" });
 });
 
 remoteSessionInput.addEventListener("change", async (event) => {
-  const file = event.target.files?.[0];
+  const files = Array.from(event.target.files || []);
   remoteSessionInput.value = "";
-  if (!file) return;
+  if (!files?.length) return;
   const fileReadGeneration = libraryLoadGeneration;
   try {
-    const text = await file.text();
-    await loadRemoteSession(text, { name: file.name });
+    await routeOpenSelection(files, { shape: "files" });
   } catch (error) {
     if (fileReadGeneration !== libraryLoadGeneration) {
       remoteStatusText.textContent = "";
@@ -9737,8 +9779,8 @@ remoteSessionInput.addEventListener("change", async (event) => {
   }
 });
 
-folderInput.addEventListener("change", (event) => {
-  const files = event.target.files;
+folderInput.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
 
   // [PHASE-6-SYNC-V2]
   // [STAGE-E-LIVE-INTEGRATION]
@@ -9761,8 +9803,8 @@ folderInput.addEventListener("change", (event) => {
   // identity in loadFiles() — the plain "Choose Files" input below never
   // sets this, since a set of individually-picked files has no folder
   // root to fingerprint against.
-  loadFiles(files, { isFolderPick: true, rootName: topFolderName });
   folderInput.value = "";
+  await routeOpenSelection(files, { shape: "folder", rootName: topFolderName });
 });
 
 intervalInput.addEventListener("change", () => {

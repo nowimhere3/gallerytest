@@ -1,5 +1,10 @@
 import { classifySelection } from "../src/intake/classify-selection.js";
+import {
+  collectSelectionEvidence,
+  combineQualifyingFloppyTexts,
+} from "../src/intake/collect-selection-evidence.js";
 import { extractRemoteUrls } from "../src/providers/remote-url-parser.js";
+import { RemoteUrlProvider } from "../src/providers/remote-url-provider.js";
 
 let assertions = 0;
 function assertEqual(actual, expected, label) {
@@ -52,5 +57,67 @@ const qualificationCases = [
 for (const [label, text, expected] of qualificationCases) {
   assertEqual(extractRemoteUrls(text).urls.length > 0, expected, label);
 }
+
+const fakeFile = (name, { type = "", text = "", path = "" } = {}) => ({
+  name,
+  type,
+  webkitRelativePath: path,
+  text: async () => text,
+});
+
+const mediaFilesEvidence = await collectSelectionEvidence([
+  fakeFile("a.jpg", { type: "image/jpeg" }),
+  fakeFile("b.mp4", { type: "video/mp4" }),
+], { shape: "files" });
+assertEqual(classifySelection(mediaFilesEvidence), "local-files", "adapter classifies ordinary media files");
+
+const livePickerFiles = [fakeFile("snapshot.jpg", { type: "image/jpeg" })];
+const pickerSnapshot = Array.from(livePickerFiles);
+livePickerFiles.length = 0;
+const snapshotEvidence = await collectSelectionEvidence(pickerSnapshot, { shape: "files" });
+assertEqual(classifySelection(snapshotEvidence), "local-files", "clearing picker after snapshot preserves async evidence");
+
+const floppyFileEvidence = await collectSelectionEvidence([
+  fakeFile("Master.txt", { text: "https://cdn.example.com/standalone.jpg" }),
+], { shape: "files" });
+assertEqual(classifySelection(floppyFileEvidence), "floppy-file", "adapter classifies a standalone Floppy file");
+
+const mediaFolderEvidence = await collectSelectionEvidence([
+  fakeFile("a.jpg", { type: "image/jpeg", path: "Photos/a.jpg" }),
+  fakeFile("Thumbs.db", { path: "Photos/Thumbs.db" }),
+], { shape: "folder" });
+assertEqual(classifySelection(mediaFolderEvidence), "local-folder", "adapter classifies media folder despite junk");
+
+const floppyFolderEvidence = await collectSelectionEvidence([
+  fakeFile("b.txt", { text: "https://cdn.example.com/shared.jpg\nhttps://cdn.example.com/b.mp4", path: "Floppies/b.txt" }),
+  fakeFile("A.txt", { text: "ordinary prose\nhttps://cdn.example.com/shared.jpg\nhttps://cdn.example.com/a.png", path: "Floppies/A.txt" }),
+  fakeFile("notes.docx", { path: "Floppies/notes.docx" }),
+  fakeFile("nested.txt", { text: "https://cdn.example.com/nested.jpg", path: "Floppies/sub/nested.txt" }),
+], { shape: "folder" });
+assertEqual(classifySelection(floppyFolderEvidence), "floppy-folder", "adapter classifies qualifying Floppy folder");
+assertEqual(
+  floppyFolderEvidence.entries.find((entry) => entry.name === "nested.txt").qualifiesAsFloppy,
+  false,
+  "nested text is excluded from top-level Floppy semantics"
+);
+const combinedText = combineQualifyingFloppyTexts(floppyFolderEvidence);
+assertEqual(combinedText.startsWith("ordinary prose"), true, "Floppy texts use case-insensitive filename order");
+const combinedUrls = extractRemoteUrls(combinedText).urls;
+assertEqual(combinedUrls.length, 3, "combined text inherits parser duplicate URL dedupe");
+const combinedItems = (await new RemoteUrlProvider().loadFromUrls(combinedUrls)).items;
+assertEqual(new Set(combinedItems.map((item) => item.id)).size, 3, "combined session provider ids are unique");
+assertEqual(new Set(combinedItems.map((item) => item.relativePath)).size, 3, "combined session remote paths are unique");
+
+const mixedFolderEvidence = await collectSelectionEvidence([
+  fakeFile("photo.jpg", { type: "image/jpeg", path: "Mixed/photo.jpg" }),
+  fakeFile("Master.txt", { text: "invalid prose\nhttps://cdn.example.com/photo.jpg", path: "Mixed/Master.txt" }),
+], { shape: "folder" });
+assertEqual(classifySelection(mixedFolderEvidence), "mixed", "adapter rejects media and Floppy folder");
+
+const proseFolderEvidence = await collectSelectionEvidence([
+  fakeFile("notes.txt", { text: "ordinary prose", path: "Notes/notes.txt" }),
+  fakeFile(".DS_Store", { path: "Notes/.DS_Store" }),
+], { shape: "folder" });
+assertEqual(classifySelection(proseFolderEvidence), "unsupported", "ordinary prose and junk folder is unsupported");
 
 console.log(`selection classifier: ${assertions} assertions passed`);
