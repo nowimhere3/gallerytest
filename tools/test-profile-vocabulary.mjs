@@ -29,18 +29,32 @@ for (const obsolete of ["Could not switch Profiles", "This Library now has No Pr
 }
 assert(mainSource.includes("ProfileStore") && mainSource.includes("activeProfileId") && mainSource.includes("profileId"), "internal Profile architecture remains intact");
 
-for (const phrase of ["This Media Folder", "Curation for This Folder", "This Device Is Using", "— No Curation —", "Create Curation", "Import Curation", "Delete Curation"]) {
+for (const phrase of ["This Media", "Curation for This Folder", "This Device Is Using", "— No Curation —", "Create Curation", "Import Curation", "Delete Curation"]) {
   assert(renderedHtml.includes(phrase) || executableMain.includes(phrase), `${phrase} is customer-facing`);
 }
 assert(renderedHtml.includes("Export Curation (.json)") && mainSource.includes("Export ${activeName} Curation (.json)"), "Export action names the current Curation");
+assert(renderedHtml.includes('id="profile-media-source"') && renderedHtml.includes("No media loaded."),
+  "Settings has one source-neutral current-media line");
+assert(mainSource.includes("let activeCassetteRecord = null;"), "controller tracks active remembered Floppy provenance");
+assert(mainSource.includes('rememberedSourceId: activeCassetteRecord?.id ? `cassette:${activeCassetteRecord.id}` : null'),
+  "remembered Floppy evidence is namespaced before entering the mapper");
+assert(mainSource.includes('record, sourceKind: "cassette"') && mainSource.includes('record, sourceKind: "cassette-folder"'),
+  "remembered Floppy reopen paths retain record and exact source kind");
+assert(mainSource.includes('name: floppy.name, sourceKind: "cassette"')
+  && mainSource.includes('name: rootName, sourceKind: "cassette-folder"'),
+  "one-shot Floppy paths retain exact source kind without a record");
+assert(mainSource.split("activeCassetteRecord = null;").length - 1 >= 4,
+  "local, FSA, clear, and declaration paths prevent stale cassette provenance");
+assert(mainSource.includes('currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"')
+  && mainSource.includes('? "none"'), "Floppy sources are adapted to none at the folder-link boundary");
 
 const unchosen = mapAssociationCopy({ sourceKind: "fsa", folderName: "Nature" });
 assert(unchosen.associatedText === "None chosen yet" && unchosen.productLine === "Nature — no Curation chosen yet",
   "an unchosen Media Library states an unmade choice, in Curation language");
-assert(unchosen.actionLabel === "Choose a Curation for this folder", "choose action names the customer relationship");
+assert(unchosen.actionLabel === "Choose a Curation for this media", "choose action names the customer relationship");
 const remembered = mapAssociationCopy({ sourceKind: "fsa", folderName: "Nature", associatedProfileId: "beast", associatedProfileName: "BEAST", activeProfileId: "beast" });
 assert(remembered.productLine === "Nature — remembered with BEAST Curation", "remembered status identifies Curation");
-assert(remembered.actionLabel === "Change Curation for this folder", "change action names the customer relationship");
+assert(remembered.actionLabel === "Change Curation for this media", "change action names the customer relationship");
 
 const linked = mapLinkState({ sourceKind: "fsa", localLibraryId: "local-a", sharedLibraryId: "library-a", folderName: "Nature folder", sharedLibraries: [{ id: "library-a", name: "Nature" }] });
 assert(linked.summary === "Nature folder uses the Nature Media Library.",
@@ -101,6 +115,38 @@ const visibleText = renderedHtml
   .replace(/<[^>]+>/g, " ")
   .replace(/&amp;/g, "&")
   .replace(/\s+/g, " ");
+
+// [UNIFIED MEDIA INTAKE / STAGE D] The rail asks only for selection shape and
+// intent. Backend nouns may still appear after loading in Saved Libraries.
+for (const action of ["Open Files", "Open Folder", "Remember File", "Remember Folder"]) {
+  assert(visibleText.includes(action), `${action} is a visible intake action`);
+}
+for (const retired of ["Open Floppy Disk", "Remember Floppy Disk", "Open Floppy Folder",
+  "Remember Floppy Folder", "Remember This Folder", "Choose Folder (FSA)",
+  "Open Remote Session", "Add Remote Cassette", "Legacy Picker"]) {
+  assert(!visibleText.includes(retired), `${retired} is not a visible intake action`);
+}
+assert((visibleText.match(/Open Files/g) || []).length === 1, "Open Files appears once");
+assert((visibleText.match(/Open Folder/g) || []).length === 1, "Open Folder appears once");
+assert((visibleText.match(/Remember File/g) || []).length === 1, "Remember File appears once");
+assert((visibleText.match(/Remember Folder/g) || []).length === 1, "Remember Folder appears once");
+assert(/id="file-input"[^>]*accept="[^"]*image\/\*[^"]*video\/\*[^"]*\.txt[^"]*"/.test(renderedHtml),
+  "Open Files picker accepts ordinary media and .txt files");
+assert(!renderedHtml.includes('id="remote-session-input"'), "source-specific Floppy input is removed");
+assert(mainSource.includes('cassetteAddBtn.classList.remove("hidden");') && !mainSource.includes('cassetteAddBtn.classList.add("hidden");'),
+  "Remember File remains visible when file-handle persistence is unavailable");
+assert(mainSource.includes('routeOpenSelection(files, { shape: "files" })'), "Open Files uses unified routing");
+assert(mainSource.includes('routeOpenSelection(files, { shape: "folder", rootName: topFolderName })'),
+  "Open Folder uses unified routing");
+assert(mainSource.includes("const files = Array.from(event.target.files || []);"),
+  "picker FileLists are snapshotted before asynchronous routing");
+assert(mainSource.includes('const selectionKind = classifySelection(evidence);'),
+  "open and remember handlers reuse unified classification");
+assert(mainSource.includes("Browser Gallery can remember folders and Floppy Disks. Choose a folder to remember this media."),
+  "Remember File has truthful ordinary-media copy");
+for (const savedKind of ["Local Folder", "Floppy Disk", "Floppy Folder"]) {
+  assert(mainSource.includes(savedKind), `Saved Libraries still renders ${savedKind}`);
+}
 const ordinarySettings = renderedHtml.slice(
   renderedHtml.indexOf('<details class="profile-section"'),
   renderedHtml.indexOf('<details class="advanced-settings-section"'),

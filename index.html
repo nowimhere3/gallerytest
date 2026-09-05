@@ -133,13 +133,14 @@
              heading structure is unchanged for assistive tech — this is a
              type treatment, not a demotion. The name matches the rail IA,
              which calls this section Libraries. -->
-        <h2 class="rail-section-label">Media Folders</h2>
+        <h2 class="rail-section-label media-rail-title">Your Media</h2>
         <!-- [SYNCV3 / STAGE-10 / DRIVE-ROLES]
              [WHY: Google Drive plays two different roles in this product. The
               role descriptor is structural at BOTH choosers so neither can be
               read as "your Google Drive folder"; the Sync Folder's own
               descriptor lives beside its chooser in Curations & Sync.] -->
-        <p class="role-descriptor">Your photos and videos</p>
+        <section class="media-source-group" aria-labelledby="open-now-heading">
+        <h3 id="open-now-heading" class="media-source-heading">Open Now</h3>
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
              WHAT: Collapses the legacy Choose Files/Choose Folder controls
@@ -151,40 +152,43 @@
              collapsed, may become a user Preference later (see Gallery
              Control Settings Preferences, not built yet) — this hardcoded
              default is a placeholder for that, not a permanent decision. -->
-        <details id="legacy-picker-details" class="legacy-picker-details" open>
-        <summary>Legacy Picker</summary>
-
-        <div class="media-picker-row">
-          <label class="button-like secondary">
-            <span>Choose Files</span>
-            <input id="file-input" type="file" accept="image/*,video/*" multiple hidden />
+        <div id="legacy-picker-details" class="local-media-actions">
+        <div class="media-picker-row media-picker-primary-row">
+          <label class="button-like">
+            <span>Open Files</span>
+            <input id="file-input" type="file" accept="image/*,video/*,.txt,text/plain" multiple hidden />
           </label>
  
           <label class="button-like">
-            <span>Choose Folder</span>
+            <span>Open Folder</span>
             <input id="folder-input" type="file" accept="image/*,video/*" multiple webkitdirectory hidden />
           </label>
         </div>
  
-        <p class="hint">
-          Files stay local in your browser. Nothing is uploaded.
-        </p>
-        </details>
+        </div>
+        </section>
 
-        <!-- [FSA] File System Access folder access — an ADDITIONAL way to
-             load a folder, alongside Choose Files/Choose Folder above (not
-             a replacement). -->
-        <div class="media-picker-row fsa-picker-row">
+        <section class="media-source-group" aria-labelledby="remember-heading">
+        <h3 id="remember-heading" class="media-source-heading">Remember</h3>
+        <div class="media-picker-row media-picker-primary-row">
+          <button id="cassette-add-btn" class="button-like secondary" type="button">
+            <span>Remember File</span>
+          </button>
           <button id="fsa-choose-folder-btn" class="button-like secondary" type="button">
-            <span>Choose Folder (FSA)</span>
+            <span>Remember Folder</span>
           </button>
         </div>
+        </section>
+
+        <section class="saved-libraries-section" aria-labelledby="saved-libraries-heading">
+        <h3 id="saved-libraries-heading" class="media-source-heading">Saved Libraries</h3>
+        <div id="remote-cassettes" class="hidden"></div>
         <!-- [LIBRARY-REGISTRY] Populated by renderRecentLibraries() in
              main.js — one row per previously-chosen FSA folder, most
              recently opened first. Hidden (via the `hidden` class) when
              empty. -->
         <div id="fsa-recent-libraries" class="fsa-recent-libraries hidden"></div>
-        <p id="fsa-status-text" class="hint" role="status"></p>
+        </section>
 
         <hr />
 
@@ -308,6 +312,8 @@
             <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
             <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
           </div>
+          <p id="remote-status-text" class="hint source-status-text" role="status"></p>
+          <p id="fsa-status-text" class="hint source-status-text" role="status"></p>
 
           <!-- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
                WHAT: the mobile-only focused-loading composition — a primary
@@ -531,6 +537,11 @@
              thousands of cards. It is not a button and carries no role, so
              the shortcut guards treat it as neutral ground. -->
         <div id="viewer-stage" class="viewer-stage hidden" tabindex="-1" aria-label="Player"></div>
+
+        <div id="warm-start-overlay" class="warm-start-overlay hidden" role="status">
+          <canvas id="warm-start-canvas" width="160" height="64" aria-hidden="true"></canvas>
+          <p class="warm-start-text">Loading a few photos ahead so your slideshow keeps playing smoothly.</p>
+        </div>
 
         <!-- [UI-REDESIGN / Stage 3]
              WHAT: The transport row, directly beneath the Player. Every
@@ -1351,7 +1362,8 @@
                catalog-independent. A device joining Sync cannot make identity
                plumbing appear here. -->
           <div id="profile-media-folder-controls">
-            <h3 class="profile-group-heading">This Media Folder</h3>
+            <h3 class="profile-group-heading">This Media</h3>
+            <p id="profile-media-source" class="product-status product-status-muted">No media loaded.</p>
             <p id="profile-folder-link-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
             <button
               id="profile-folder-link-btn"

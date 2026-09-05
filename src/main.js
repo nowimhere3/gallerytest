@@ -1,5 +1,16 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
+import { extractRemoteUrls } from "./providers/remote-url-parser.js";
+import { RemoteUrlProvider } from "./providers/remote-url-provider.js";
+import { classifySelection } from "./intake/classify-selection.js";
+import {
+  collectSelectionEvidence,
+  combineQualifyingFloppyTexts,
+} from "./intake/collect-selection-evidence.js";
+import {
+  getRememberedCassetteOwner,
+  readRememberedFolder,
+} from "./intake/collect-folder-evidence.js";
 import {
   listLibraries,
   addOrUpdateLibrary,
@@ -11,11 +22,28 @@ import {
   getLibraryById,
   getLibraryByLibraryId,
 } from "./storage/library-registry.js";
+import {
+  listCassettes,
+  addOrUpdateCassette,
+  touchCassette,
+  removeCassette,
+} from "./storage/cassette-registry.js";
+import {
+  getSourceCuration,
+  setSourceCuration,
+  clearSourceCuration,
+} from "./storage/source-curation-registry.js";
 import { decideBootRestore, decideStartupMedia } from "./storage/boot-restore.js";
 // [PM-SHUFFLE-FOLDERS] Pure candidate ORDERING only — the switching itself
 // stays on this file's existing authoritative resumeLibrary() path. See that
 // module's header for why the two halves are split this way.
 import { orderShuffleFolderCandidates } from "./runtime/folder-shuffle.js";
+// [PRESENTATION-PERF / PHASE 3A] Pure staleness decision only — the preparing,
+// the timing and the DOM commit all stay in this file. See that module's header
+// for what each of the four guarded facts protects against.
+import { shouldCommitPreparedViewer } from "./runtime/viewer-commit.js";
+import { planReadyQueueWork } from "./runtime/ready-queue.js";
+import { canApplyWarmStartRelease, shouldReleaseWarmStart } from "./runtime/warm-start.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -113,6 +141,7 @@ const provider = new LocalFileInputProvider();
 // (see loadFiles/loadFromFsaHandle below), since only one media set is
 // ever actually loaded into the app at once.
 const fsaProvider = new FsaFileProvider();
+const remoteProvider = new RemoteUrlProvider();
 const profile = new ProfileStore();
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
 // [WHY: constructed immediately beside `profile` and handed to MediaRuntime
@@ -193,6 +222,9 @@ const legacyPickerDetails = document.getElementById("legacy-picker-details");
 const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
 const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
+const remoteStatusText = document.getElementById("remote-status-text");
+const cassetteAddBtn = document.getElementById("cassette-add-btn");
+const remoteCassettesEl = document.getElementById("remote-cassettes");
 const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
 const fsaAssociateBtnLabel = document.getElementById("fsa-associate-btn-label");
 const fsaAssociateHelp = document.getElementById("fsa-associate-help");
@@ -296,6 +328,7 @@ const deviceAwareMediaQuestionYes = document.getElementById("device-aware-media-
 const deviceAwareMediaQuestionNo = document.getElementById("device-aware-media-question-no");
 const deviceAwareMediaQuestionResult = document.getElementById("device-aware-media-question-result");
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
+const profileMediaSource = document.getElementById("profile-media-source");
 const profileFolderLinkAdvancedSummary = document.getElementById("profile-folder-link-advanced-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
 const profileFolderActionHelp = document.getElementById("profile-folder-action-help");
@@ -422,6 +455,8 @@ const mobileLoadCountText = document.getElementById("mobile-load-count-text");
 // longer exists. Nothing outside this file's animation code ever referenced
 // it (verified: one capture, one CSS rule, one markup line).
 const mobileLoadCanvas = document.getElementById("mobile-load-canvas");
+const warmStartOverlay = document.getElementById("warm-start-overlay");
+const warmStartCanvas = document.getElementById("warm-start-canvas");
 const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
 // [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] #counter-text and
 // its capture (formerly `counterText`) are gone — the Player transport is
@@ -626,7 +661,7 @@ profileSyncMediaSafety.textContent = glossaryExcerpt("sync", 2);
 function associationHelpKey(associationUi) {
   return [
     currentSourceKind,
-    activeLibraryRecord?.id || "session",
+    activeCassetteRecord?.id || activeLibraryRecord?.id || "session",
     associationUi.state,
     associationUi.associatedProfileId || "none",
   ].join(":");
@@ -1037,6 +1072,7 @@ let galleryJumpConfirmedIndex = null;
 // clobber what the user is mid-typing.
 let galleryJumpIsEditing = false;
 let fillModeActive = false;
+let currentSessionIsUrlBacked = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
 let isLoadingFiles = false;
@@ -1048,6 +1084,8 @@ let isLoadingFiles = false;
 // second source of truth for the association itself, which — for FSA —
 // always lives in IndexedDB via library-registry.js.
 let activeLibraryRecord = null;
+let activeCassetteRecord = null;
+let activeCassetteCurationId = null;
 // [SYNCV3 / STAGE-08 / LINK-STATE]
 // Permission is presentation state, never identity. Losing it must leave the
 // durable local row and its shared Library link untouched.
@@ -1063,7 +1101,7 @@ let activeLibraryDisplayName = null;
 // This — not "FSA vs legacy" scattered across call sites — is the one
 // thing association-button visibility is computed from. See
 // syncAssociateButtonVisibility() below.
-let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
+let currentSourceKind = "none"; // "none" | "legacy" | "fsa" | "cassette" | "cassette-folder"
 // [SYNCV3 / STAGE-09 / STALE-LOAD-GUARD]
 // [WHY: file loading is normally serialized by isLoadingFiles, but Clear Media
 // can supersede a load while its new decision-store await is suspended. This
@@ -1165,28 +1203,36 @@ function getProfileNameById(profileId) {
 // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
 // The only adapter from live app state into the pure S0-S5 mapper.
 function getCurrentAssociationUiState() {
-  const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded Media Folder";
+  const mediaName = activeCassetteRecord?.name
+    || activeLibraryRecord?.name
+    || activeLibraryDisplayName
+    || "Loaded Media Folder";
   const usesDurableRecord =
     currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
   const sharedCatalogEntry = activeLibraryRecord?.libraryId
     ? profile.listLibraries().find((library) => library.id === activeLibraryRecord.libraryId)
     : null;
-  const associatedProfileId = usesDurableRecord && activeLibraryRecord
-    ? sharedCatalogEntry
-      ? sharedCatalogEntry.associatedProfileId
-      : activeLibraryRecord.profileId
-    : null;
+  const associatedProfileId = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+    ? activeCassetteCurationId
+    : usesDurableRecord && activeLibraryRecord
+      ? sharedCatalogEntry
+        ? sharedCatalogEntry.associatedProfileId
+        : activeLibraryRecord.profileId
+      : null;
   return mapAssociationCopy({
     sourceKind: currentSourceKind,
     legacyHasDurableIdentity,
-    folderName,
+    mediaName,
+    rememberedSourceId: activeCassetteRecord?.id ? `cassette:${activeCassetteRecord.id}` : null,
     associatedProfileId,
     associatedProfileName: getProfileNameById(associatedProfileId),
     activeProfileId: profile.getProfileId(),
     activeProfileName: profile.getProfileName(),
     legacySessionAssociated,
     canWriteAssociation:
-      currentSourceKind === "fsa"
+      currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+        ? Boolean(activeCassetteRecord?.id)
+        : currentSourceKind === "fsa"
         ? Boolean(activeLibraryRecord && activeLibraryRecord.id)
         : Boolean(activeLibraryRecord && activeLibraryRecord.id) || Boolean(pendingLegacySignature),
   });
@@ -1208,6 +1254,8 @@ function updateAssociatedStatusRow() {
   // association computation; it never reads registry or Profile state itself.]
   profileLibraryAssociationText.textContent = associationUi.productLine;
   applyProductStatusTone(profileLibraryAssociationText, associationUi.tone);
+  profileMediaSource.textContent = associationUi.sourceLine;
+  applyProductStatusTone(profileMediaSource, associationUi.tone);
   return associationUi;
 }
 
@@ -1390,6 +1438,223 @@ let galleryCardEls = [];
 let galleryThumbEls = [];
 let galleryObserver = null;
 let galleryJumpTargetIndex = null;
+
+// [REMOTE-CASSETTE / PHASE 1C]
+// BREADCRUMBS - WAS
+// Before remote media existed, mounted media came from local File-backed
+// sources and object URLs. buildViewer() and mountThumbMedia() assigned media
+// sources without observing load success or failure because failure was
+// effectively outside the normal local model.
+//
+// BREADCRUMBS - IS
+// Media addresses can now originate outside the machine, so mounting is an
+// attempt rather than a certainty. This shared rendering seam observes outcomes
+// source-neutrally and counts success/failure; it does not retry, substitute,
+// reorder, or remove. A failed current item receives one human sentence while
+// the overall session continues: one bad item must not destroy the session.
+//
+// BREADCRUMBS - WILL BE
+// Remote .ts remains excluded upstream, with that invariant frozen by provider
+// tests. ts-playback-adapter.js stays untouched because the remote TS path is
+// structurally unreachable. Outcome counts remain console-only until real
+// evidence justifies user-facing failure counts; no failure taxonomy is encoded
+// yet. No retry, proxy, header, or cookie solution exists yet because those
+// belong to later evidence-driven architecture. Load timings exist only to
+// inform a future optimization decision; this stage must not pre-optimize.
+let mediaRenderOutcomes = { mounted: 0, loaded: 0, failed: 0 };
+let mediaRenderOutcomeTimer = null;
+
+function resetMediaRenderOutcomes() {
+  if (mediaRenderOutcomeTimer !== null) clearTimeout(mediaRenderOutcomeTimer);
+  mediaRenderOutcomeTimer = null;
+  mediaRenderOutcomes = { mounted: 0, loaded: 0, failed: 0 };
+}
+
+function recordMediaRenderOutcome(outcome) {
+  mediaRenderOutcomes[outcome] += 1;
+  if (mediaRenderOutcomeTimer !== null) clearTimeout(mediaRenderOutcomeTimer);
+  mediaRenderOutcomeTimer = setTimeout(() => {
+    console.info("[MEDIA RENDER] Outcomes", { ...mediaRenderOutcomes });
+    mediaRenderOutcomeTimer = null;
+  }, 1000);
+}
+
+// [PRESENTATION-PERF / PHASE 3A]
+//
+// BREADCRUMBS - WAS
+// buildViewer() tore down the outgoing media unconditionally — clearViewerNode()
+// empties #viewer-stage — before creating the incoming element, so the stage was
+// empty for the whole of the resource wait. That was invisible while every
+// source was a local blob: URL, and became the dominant customer-visible defect
+// once media addresses started originating off-machine: 25 real manual-Next
+// transitions through a Remote Cassette measured a ~4.65 s MEDIAN blank gap
+// against a ~0.8 ms median application dispatch. The application was never slow;
+// it was showing black while it waited.
+//
+// BREADCRUMBS - IS
+// For an image following an image, the outgoing frame is HELD on screen while
+// the incoming image loads and (best-effort) decodes. Teardown and insertion
+// then happen in one synchronous block, so no empty stage is ever painted. A
+// prepared node may commit only if its token, load generation, gallery
+// generation and item identity ALL still match — otherwise it is discarded in
+// silence (see runtime/viewer-commit.js). The path is advisory: any failure
+// converges onto the pre-existing eager path and Phase 1C's "This item could not
+// be loaded." It is source-neutral — a blob: URL and an https: URL take the
+// identical route, and nothing here asks where an item came from.
+//
+// BREADCRUMBS - WILL BE
+// This stage deliberately does NOT predict what comes next: no lookahead, no
+// ready queue, no second RNG, and MediaRuntime remains untouched. Evidence shows
+// resource readiness dominates (~4.65 s median vs ~0.8 ms dispatch), so a
+// planned shuffle sequence feeding a small bounded preload queue is the
+// justified next step — and it must keep ONE shuffle authority inside
+// MediaRuntime, with next() consuming the plan rather than any external peek
+// drawing separately. The per-transition CPU costs found during the audit (the
+// O(n) passes in next(), the ~4,600 gallery DOM operations, the pool-key
+// stringify) are real but measured at ~0.8 ms in total: they are cleanup
+// candidates, not performance work, and must not be confused for this defect.
+// Video readiness is a different problem — buffering, codec init, seek state —
+// and is NOT covered by this mechanism, which is why the held path is restricted
+// to image-following-image.
+//
+// Incremented on every entry into the held path. A prepared node whose token no
+// longer matches has been superseded and may never commit. Same generation-token
+// discipline as libraryLoadGeneration, galleryGeneration and the providers'
+// private #loadToken — stale-result rejection, never cancellation.
+let viewerPreparationCounter = 0;
+let currentViewerPreparationInFlight = false;
+
+const PLAN_LENGTH = 6;
+const MAX_PREPARED = 6;
+const MAX_CONCURRENT_WARMING = 2;
+const preparedViewerImages = new Map();
+const warmingViewerImages = new Map();
+const failedWarmItems = new Set();
+let lastVisibleCommitAt = null;
+let lastViewerTerminalItem = null;
+
+const RELEASE_READY_COUNT = 3;
+const WARM_START_MAX_MS = 10000;
+let warmStartState = "inactive";
+let warmStartStartedAt = 0;
+let warmStartTimeoutId = null;
+let warmStartCurrentVisualSettled = false;
+let warmStartTimeoutReached = false;
+
+// t0 for a transition: the moment render() began. Deliberately NOT the button
+// press or the interval tick — MediaRuntime owns those and is protected, so its
+// own selection work is excluded from every number below. The human's profiler
+// already bounded that exclusion at ~0.8 ms median for the whole dispatch.
+let lastRenderEntryAt = 0;
+
+const PM_TRANSITION_SUMMARY_EVERY = 10;
+let transitionSamples = [];
+let transitionSampleGeneration = -1;
+let transitionCount = 0;
+
+function transitionHost(item) {
+  try {
+    return new URL(item.url).hostname;
+  } catch {
+    // blob: URLs have no hostname, and a malformed URL must never break a
+    // measurement. Either way there is nothing to report.
+    return "";
+  }
+}
+
+function percentileMs(values, fraction) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round(fraction * (sorted.length - 1))));
+  return Math.round(sorted[index]);
+}
+
+// One concise line per COMMITTED transition, plus a rolling summary. Discarded
+// preparations log nothing — they are not transitions, they are answers that
+// arrived too late.
+//
+// Counts, durations and hostname at most. Never a full remote URL and never a
+// query string: a signed URL can carry a token (Part 2 Section 52).
+function recordPresentationTransition(sample) {
+  if (transitionSampleGeneration !== libraryLoadGeneration) {
+    // Numbers from two different sources must never mix in one window.
+    transitionSampleGeneration = libraryLoadGeneration;
+    transitionSamples = [];
+    transitionCount = 0;
+  }
+
+  transitionCount += 1;
+  transitionSamples.push(sample);
+
+  console.info("[PM TRANSITION]", {
+    n: transitionCount,
+    held: sample.held,
+    dispatch_to_src_ms: Math.round(sample.dispatchToSrcMs),
+    src_wait_ms: Math.round(sample.srcWaitMs),
+    decode_ms: sample.decodeMs === null ? null : Math.round(sample.decodeMs),
+    blank_ms: Math.round(sample.blankMs),
+    ready_ms: Math.round(sample.readyMs),
+    visible_ms: sample.visibleMs === null ? null : Math.round(sample.visibleMs),
+    ready_hit: sample.readyHit,
+    host: sample.host,
+  });
+
+  if (transitionSamples.length < PM_TRANSITION_SUMMARY_EVERY) return;
+
+  const window = transitionSamples;
+  transitionSamples = [];
+  const srcWait = window.map((entry) => entry.srcWaitMs);
+  const blank = window.map((entry) => entry.blankMs);
+  const ready = window.map((entry) => entry.readyMs);
+  const heldCount = window.filter((entry) => entry.held).length;
+  const visible = window.map((entry) => entry.visibleMs).filter((value) => value !== null);
+  const readyHitCount = window.filter((entry) => entry.readyHit).length;
+
+  console.info("[PM TRANSITION] Summary", {
+    count: window.length,
+    held: `${heldCount}/${window.length}`,
+    src_wait_ms: { median: percentileMs(srcWait, 0.5), p90: percentileMs(srcWait, 0.9) },
+    blank_ms: { median: percentileMs(blank, 0.5), p90: percentileMs(blank, 0.9) },
+    ready_ms: { median: percentileMs(ready, 0.5), p90: percentileMs(ready, 0.9) },
+    visible_ms: { median: percentileMs(visible, 0.5), p90: percentileMs(visible, 0.9) },
+    ready_hit_rate: `${readyHitCount}/${window.length}`,
+  });
+}
+
+// Schedules the one honest readiness timestamp: the animation frame AFTER a
+// loaded image is in the stage.
+//
+// This is a PROXY for paint, not paint. rAF fires before the frame is
+// composited, so it is the closest honest observation available without
+// Element Timing — do not call it, or let any report call it, "painted".
+function measureTransitionReady({ held, readyHit = false, renderEntryAt, srcAt, loadAt, decodeAt, teardownAt, item, node }) {
+  requestAnimationFrame(() => {
+    // A rapid manual Next can replace an already-committed node before this
+    // frame callback runs. That obsolete callback must not release the newer
+    // transition's advance hold or restart its timer.
+    if (currentViewerNode !== node || currentViewerItem !== item) return;
+    const readyAt = performance.now();
+    const visibleMs = lastVisibleCommitAt === null ? null : readyAt - lastVisibleCommitAt;
+    lastVisibleCommitAt = readyAt;
+    recordPresentationTransition({
+      held,
+      dispatchToSrcMs: srcAt - renderEntryAt,
+      srcWaitMs: loadAt - srcAt,
+      decodeMs: decodeAt === null ? null : decodeAt - loadAt,
+      // The interval the customer actually spends looking at no image: from the
+      // moment the outgoing content was removed to the frame after a loaded
+      // image occupies the stage. On the held path teardown and insertion are
+      // one synchronous block, so this collapses to roughly a single frame. On
+      // the eager path it is the whole resource wait, which is the defect.
+      blankMs: readyAt - teardownAt,
+      readyMs: readyAt - renderEntryAt,
+      visibleMs,
+      readyHit,
+      host: transitionHost(item),
+    });
+    handleCurrentViewerTerminal(item);
+  });
+}
 
 // ---- Loop Automations (Phase 5 + Phase 5.1 refinement) ---------------------
 //
@@ -4010,6 +4275,7 @@ const ARCADE_SCENES = [
 
 let arcadeRafId = null;
 let arcadeCtx = null;
+let arcadeCanvas = null;
 let arcadeState = null;
 let arcadeStartedAt = 0;
 let arcadeLastLoopT = -1;
@@ -4019,9 +4285,8 @@ let arcadeLastRender = 0;
 // Session-scoped selection. arcadeCurrentScene is whatever is running now;
 // arcadePreviousScene outlives the session purely so the next selection can
 // exclude it. Selection happens in exactly one place —
-// startArcadeAnimation(), itself only reachable from the not-loading ->
-// loading edge in syncMobileLoadState() — so no render, progress tick or
-// loop wrap can ever re-pick.
+// startArcadeAnimation(), reached only at an explicit host lifecycle edge, so
+// no render, progress tick or loop wrap can ever re-pick.
 let arcadeCurrentScene = null;
 let arcadePreviousScene = null;
 // Safe startup default while IndexedDB preferences load asynchronously.
@@ -4136,10 +4401,11 @@ function renderArcadeStill(scene) {
   paintArcadeFrame(scene, arcadeState, scene.stillAtMs, scene.stillAtMs, true);
 }
 
-function startArcadeAnimation() {
+function startArcadeAnimation(canvas) {
   if (arcadeRafId !== null) return;
-  if (!arcadeCtx) {
-    arcadeCtx = mobileLoadCanvas.getContext ? mobileLoadCanvas.getContext("2d") : null;
+  if (arcadeCanvas !== canvas || !arcadeCtx) {
+    arcadeCanvas = canvas;
+    arcadeCtx = canvas && canvas.getContext ? canvas.getContext("2d") : null;
     if (!arcadeCtx) return;
     arcadeCtx.imageSmoothingEnabled = false;
   }
@@ -4230,7 +4496,7 @@ function stopMobileTakeoverTextTicker() {
 // than tracking whether reduced-motion left a timer unset.
 function startMobileTakeoverAnimation() {
   startMobileTakeoverTextTicker();
-  startArcadeAnimation();
+  startArcadeAnimation(mobileLoadCanvas);
 }
 
 function stopMobileTakeoverAnimation() {
@@ -5054,10 +5320,104 @@ function finishLoadingItems(items) {
   reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
 }
 
+async function loadRemoteSession(text, { name, record = null, sourceKind = "cassette", curationId = null } = {}) {
+  if (isLoadingFiles) return;
+
+  currentSessionIsUrlBacked = true;
+  isLoadingFiles = true;
+  const loadToken = ++libraryLoadGeneration;
+  clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
+  lastMobileLoadFailed = false;
+  syncMobileLoadState();
+  bumpGalleryGeneration();
+  runtime.clear();
+  clearViewerNode();
+  exitFillMode();
+  recentHideUndo = null;
+  syncUndoHideButton();
+
+  provider.dispose();
+  fsaProvider.dispose();
+  activeLibraryRecord = null;
+  activeCassetteRecord = record;
+  activeCassetteCurationId = record ? curationId : null;
+  associationWriteSuppression.setLoadedLibrary(null);
+  ambientProfileObserver.clearContext();
+  renderAmbientProfileOffer();
+  activeLibraryDisplayName = name || record?.name || (sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk");
+  currentSourceKind = sourceKind;
+  currentFolderPermissionState = "granted";
+  legacySessionAssociated = false;
+  legacyHasDurableIdentity = false;
+  pendingLegacySignature = null;
+  pendingLibraryAssociationIntent = false;
+  syncAssociateButtonVisibility();
+  fsaStatusText.textContent = "";
+  resetMediaRenderOutcomes();
+
+  const remoteSourceLabel = sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk";
+  remoteStatusText.textContent = `Loading ${remoteSourceLabel}…`;
+
+  try {
+    const parseStartedAt = performance.now();
+    const parsed = extractRemoteUrls(text);
+    const parseMs = performance.now() - parseStartedAt;
+    const providerStartedAt = performance.now();
+    const result = await remoteProvider.loadFromUrls(parsed.urls, {
+      batchSize: BATCH_SIZE,
+    });
+    const providerMs = performance.now() - providerStartedAt;
+    if (loadToken !== libraryLoadGeneration) {
+      remoteStatusText.textContent = "";
+      return;
+    }
+
+    const skipped = parsed.diagnostics.rejected + result.diagnostics.skipped;
+    if (!result.items.length) {
+      remoteStatusText.textContent = "No valid media URLs found in this file.";
+    } else {
+      remoteStatusText.textContent =
+        `${remoteSourceLabel} ready. ${result.items.length} items · ` +
+        `${result.diagnostics.images} images · ${result.diagnostics.videos} videos` +
+        (skipped ? ` · ${skipped} links skipped` : "");
+    }
+
+    console.info("[REMOTE SESSION] Load counts", {
+      parser: parsed.diagnostics,
+      provider: result.diagnostics,
+    });
+
+    const firstPaintStartedAt = performance.now();
+    finishLoadingItems(result.items);
+    const toFirstPaintMs = performance.now() - firstPaintStartedAt;
+    console.info("[REMOTE SESSION] Load phases", {
+      parse_ms: parseMs,
+      provider_ms: providerMs,
+      to_first_paint_ms: toFirstPaintMs,
+      parsed: parsed.urls.length,
+      items: result.items.length,
+    });
+  } catch (error) {
+    if (loadToken !== libraryLoadGeneration) {
+      remoteStatusText.textContent = "";
+      return;
+    }
+    remoteStatusText.textContent = "That file could not be read.";
+    console.warn("[REMOTE SESSION] The selected file could not be loaded.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  } finally {
+    isLoadingFiles = false;
+    syncMobileLoadState();
+  }
+}
+
 async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {}) {
   const total = (fileList || []).length;
   if (!total || isLoadingFiles) return;
 
+  currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
@@ -5089,7 +5449,12 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
+  remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
   activeLibraryRecord = null;
+  activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
@@ -5295,9 +5660,14 @@ function isFsaSupported() {
   return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 }
 
+function isCassettePickerSupported() {
+  return typeof window !== "undefined" && typeof window.showOpenFilePicker === "function";
+}
+
 async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
+  currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
@@ -5333,6 +5703,8 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // at all requires either the FSA folder-picker round trip or a Recent
   // Libraries click, both far slower than one IndexedDB open.
   activeLibraryRecord = libraryRecord || null;
+  activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
   establishAmbientProfileContext(activeLibraryRecord);
   activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
@@ -5397,6 +5769,9 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // [FSA] Switching TO the FSA path — release whatever the local <input>
   // picker had loaded.
   provider.dispose();
+  remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
 
   fsaStatusText.textContent = "";
 
@@ -5570,7 +5945,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
 
 fsaChooseFolderBtn.addEventListener("click", async () => {
   if (!isFsaSupported()) {
-    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    fsaStatusText.textContent = "This browser does not support remembered folders.";
     return;
   }
 
@@ -5581,6 +5956,35 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
     if (error && error.name === "AbortError") return; // user closed the picker — not an error
     console.error("[FSA] Folder picker failed.", error);
     fsaStatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    return;
+  }
+
+  let folderIntake;
+  try {
+    folderIntake = await readRememberedFolder(dirHandle);
+  } catch (error) {
+    console.warn("[FOLDER INTAKE] Could not inspect the selected folder.", error);
+    fsaStatusText.textContent = `Could not inspect that folder: ${error.message}`;
+    return;
+  }
+
+  if (folderIntake.selectionKind === "mixed") {
+    fsaStatusText.textContent = "This folder contains both media and Floppy Disks. Choose a folder containing one type.";
+    return;
+  }
+  if (folderIntake.selectionKind === "unsupported") {
+    fsaStatusText.textContent = "This folder doesn't contain supported media or Floppy Disks.";
+    return;
+  }
+  if (folderIntake.selectionKind === "floppy-folder") {
+    try {
+      const record = await addOrUpdateCassette(dirHandle, { sourceKind: "cassette-folder" });
+      await renderSavedLibraries();
+      await openRememberedCassette(record);
+    } catch (error) {
+      remoteStatusText.textContent = "That Floppy Folder could not be opened.";
+      console.warn("[REMOTE CASSETTE] Could not remember the selected Floppy Folder.", error);
+    }
     return;
   }
 
@@ -5602,6 +6006,143 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
   await loadFromFsaHandle(dirHandle, record);
 });
 
+async function addRemoteCassette() {
+  if (!isCassettePickerSupported()) {
+    statusText.textContent = "This browser does not support remembered files.";
+    return;
+  }
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      multiple: false,
+    });
+    if (!handle) return;
+    const file = await handle.getFile();
+    const evidence = await collectSelectionEvidence([file], { shape: "files" });
+    const selectionKind = classifySelection(evidence);
+    if (selectionKind === "local-files") {
+      statusText.textContent = "Browser Gallery can remember folders and Floppy Disks. Choose a folder to remember this media.";
+      return;
+    }
+    if (selectionKind !== "floppy-file") {
+      statusText.textContent = "Browser Gallery can't open that file.";
+      return;
+    }
+    const record = await addOrUpdateCassette(handle);
+    await renderRemoteCassettes();
+    await openRemoteCassette(record);
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    remoteStatusText.textContent = "That Floppy Disk could not be opened.";
+    console.warn("[REMOTE CASSETTE] Could not add the selected cassette.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+}
+
+async function openRemoteCassette(record) {
+  const handle = record && record.handle;
+  if (!handle) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted.`;
+    return;
+  }
+
+  let text;
+  try {
+    let permission = await handle.queryPermission({ mode: "read" });
+    if (permission !== "granted") permission = await handle.requestPermission({ mode: "read" });
+    if (permission !== "granted") {
+      remoteStatusText.textContent = `Access to "${record.name}" was not granted.`;
+      return;
+    }
+
+    const file = await handle.getFile();
+    text = await file.text();
+  } catch (error) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted.`;
+    console.warn("[REMOTE CASSETTE] A remembered cassette could not be opened.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return;
+  }
+
+  await touchCassette(record.id);
+  await renderSavedLibraries();
+  const association = await recallSourceCuration(record.id);
+  await loadRemoteSession(text, {
+    name: record.name, record, sourceKind: "cassette", curationId: association?.profileId || null,
+  });
+}
+
+async function openRemoteCassetteFolder(record) {
+  const handle = record && record.handle;
+  if (!handle) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available â€” it may have moved or been deleted.`;
+    return;
+  }
+
+  try {
+    let permission = await handle.queryPermission({ mode: "read" });
+    if (permission !== "granted") permission = await handle.requestPermission({ mode: "read" });
+    if (permission !== "granted") {
+      remoteStatusText.textContent = `Access to "${record.name}" was not granted.`;
+      return;
+    }
+
+    const folderIntake = await readRememberedFolder(handle);
+    if (folderIntake.selectionKind === "mixed") {
+      remoteStatusText.textContent = "This folder contains both media and Floppy Disks. Choose a folder containing one type.";
+      return;
+    }
+    if (folderIntake.selectionKind !== "floppy-folder") {
+      remoteStatusText.textContent = "This folder doesn't contain supported media or Floppy Disks.";
+      return;
+    }
+
+    await touchCassette(record.id);
+    await renderSavedLibraries();
+    const association = await recallSourceCuration(record.id);
+    await loadRemoteSession(folderIntake.combinedText, {
+      name: record.name, record, sourceKind: "cassette-folder", curationId: association?.profileId || null,
+    });
+  } catch (error) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available â€” it may have moved or been deleted.`;
+    console.warn("[REMOTE CASSETTE] A remembered Floppy Folder could not be opened.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+}
+
+async function recallSourceCuration(cassetteId) {
+  try {
+    return await getSourceCuration(`cassette:${cassetteId}`);
+  } catch (error) {
+    console.warn("[SOURCE CURATION] Could not recall the remembered Floppy Curation.", error);
+    return null;
+  }
+}
+
+function openRememberedCassette(record) {
+  return getRememberedCassetteOwner(record) === "folder"
+    ? openRemoteCassetteFolder(record)
+    : openRemoteCassette(record);
+}
+
+async function renderRemoteCassettes() {
+  if (!isCassettePickerSupported()) {
+    cassetteAddBtn.classList.remove("hidden");
+    cassetteAddBtn.disabled = true;
+    remoteCassettesEl.replaceChildren();
+    await renderSavedLibraries();
+    return;
+  }
+
+  cassetteAddBtn.classList.remove("hidden");
+  cassetteAddBtn.disabled = false;
+  await renderSavedLibraries();
+}
+
+cassetteAddBtn.addEventListener("click", addRemoteCassette);
+
 // [LIBRARY-REGISTRY] Resumes one specific remembered library (a click on a
 // "Recent Libraries" row) — checks/re-requests read permission for its
 // saved handle, same flow the old single-slot "Start Here" button used,
@@ -5611,7 +6152,7 @@ async function resumeLibrary(record) {
 
   const dirHandle = record.handle;
   if (!dirHandle) {
-    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Choose Folder (FSA)".`;
+    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Remember Folder".`;
     return;
   }
 
@@ -5632,7 +6173,7 @@ async function resumeLibrary(record) {
     // data cleared, etc.) — fail gracefully rather than throwing, and stop
     // offering a broken resume for it.
     console.error("[FSA] A saved folder is no longer accessible.", error);
-    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Media Folders.`;
+    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Saved Libraries.`;
     // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove, not removeLibrary() — a
     // permission failure doesn't mean the physical folder is gone for
     // good (it may just be a revoked permission on an otherwise-fine
@@ -5658,8 +6199,8 @@ async function resumeLibrary(record) {
 // fresh each render rather than caching a name, so a profile rename is
 // reflected here immediately without this module needing its own
 // invalidation logic.
-function formatLibraryMeta(record) {
-  const parts = [];
+function formatLibraryMeta(record, typeLabel) {
+  const parts = [typeLabel];
   if (typeof record.itemCount === "number") {
     parts.push(`${record.itemCount} item${record.itemCount === 1 ? "" : "s"}`);
   }
@@ -5683,31 +6224,57 @@ function formatRelativeTime(timestamp) {
   return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
+async function renderSavedLibraries() {
+  await renderRecentLibraries();
+}
+
 // [LIBRARY-REGISTRY] Re-renders the "Recent Libraries" list from IndexedDB.
 // Rebuilt from scratch each call (list is small — a handful of libraries
 // at most) rather than diffed, matching renderTagsGrid()'s existing
 // pattern elsewhere in this file. Does NOT touch permissions or load
 // anything on its own — purely a metadata read, safe to call at boot.
 async function renderRecentLibraries() {
-  let records;
+  let localRecords;
+  let floppyRecords;
   try {
-    records = await listLibraries();
+    [localRecords, floppyRecords] = await Promise.all([
+      listLibraries(),
+      (isCassettePickerSupported() || isFsaSupported()) ? listCassettes() : Promise.resolve([]),
+    ]);
   } catch (error) {
-    console.warn("[LIBRARY-REGISTRY] Could not read saved libraries.", error);
-    records = [];
+    console.warn("[SAVED LIBRARIES] Could not read saved libraries.", error);
+    localRecords = [];
+    floppyRecords = [];
   }
 
-  fsaRecentLibrariesEl.innerHTML = "";
+  const records = [
+    ...localRecords.map((record) => ({ type: "local", record })),
+    ...floppyRecords.map((record) => ({ type: "floppy", record })),
+  ].sort((a, b) =>
+    (b.record.lastOpenedAt || 0) - (a.record.lastOpenedAt || 0) ||
+    a.record.name.localeCompare(b.record.name)
+  );
+
+  fsaRecentLibrariesEl.replaceChildren();
   fsaRecentLibrariesEl.classList.toggle("hidden", records.length === 0);
 
-  for (const record of records) {
+  for (const entry of records) {
+    const { record, type } = entry;
     const row = document.createElement("div");
     row.className = "fsa-recent-library-row";
 
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "fsa-recent-library-btn";
-    openBtn.addEventListener("click", () => resumeLibrary(record));
+    openBtn.addEventListener("click", () => type === "local" ? resumeLibrary(record) : openRememberedCassette(record));
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "saved-library-icon";
+    iconEl.setAttribute("aria-hidden", "true");
+    iconEl.textContent = type === "local" ? "\uD83D\uDCC1" : "\uD83D\uDCBE";
+
+    const copyEl = document.createElement("span");
+    copyEl.className = "saved-library-copy";
 
     const nameEl = document.createElement("span");
     nameEl.className = "fsa-recent-library-name";
@@ -5715,16 +6282,21 @@ async function renderRecentLibraries() {
 
     const metaEl = document.createElement("span");
     metaEl.className = "fsa-recent-library-meta";
-    metaEl.textContent = formatLibraryMeta(record);
+    metaEl.textContent = formatLibraryMeta(
+      record,
+      type === "local" ? "Local Folder" : record.sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk"
+    );
 
-    openBtn.appendChild(nameEl);
-    openBtn.appendChild(metaEl);
+    copyEl.appendChild(nameEl);
+    copyEl.appendChild(metaEl);
+    openBtn.appendChild(iconEl);
+    openBtn.appendChild(copyEl);
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "fsa-recent-library-remove-btn";
-    removeBtn.title = `Remove "${record.name}" from Recent Media Folders`;
-    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Media Folders`);
+    removeBtn.title = `Forget "${record.name}" from Saved Libraries`;
+    removeBtn.setAttribute("aria-label", `Forget "${record.name}" from Saved Libraries`);
     removeBtn.textContent = "✕";
     removeBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -5734,7 +6306,11 @@ async function renderRecentLibraries() {
       // folder later still recognizes it and recovers the association.
       // See library-registry.js.
       try {
-        await removeFromRecents(record.id);
+        if (type === "local") await removeFromRecents(record.id);
+        else {
+          await clearSourceCuration(`cassette:${record.id}`);
+          await removeCassette(record.id);
+        }
       } catch (error) {
         console.warn("[LIBRARY-REGISTRY] Could not remove this library from Recent Libraries.", error);
       }
@@ -5809,6 +6385,26 @@ async function associateThroughSyncV2(localLibraryId, targetProfileId) {
 // distinct without a truthy/falsy shortcut.
 async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
   if (targetProfileId !== null && !getProfileNameById(targetProfileId)) return false;
+
+  if (currentSourceKind === "cassette" || currentSourceKind === "cassette-folder") {
+    if (!activeCassetteRecord?.id) return false;
+    try {
+      await setSourceCuration(`cassette:${activeCassetteRecord.id}`, targetProfileId, {
+        sourceKind: currentSourceKind,
+      });
+      activeCassetteCurationId = targetProfileId;
+      syncAssociateButtonVisibility();
+      const targetProfileName = getProfileNameById(targetProfileId);
+      fsaStatusText.textContent = targetProfileName
+        ? `Now remembered with ${targetProfileName} on this device.`
+        : "This media now has No Curation on this device.";
+      return true;
+    } catch (error) {
+      console.warn("[SOURCE CURATION] Could not save the remembered Floppy Curation.", error);
+      fsaStatusText.textContent = "Could not save the Curation for this media. Try again.";
+      return false;
+    }
+  }
 
   if (currentSourceKind === "legacy") {
     if (legacyHasDurableIdentity) {
@@ -5978,9 +6574,14 @@ profileAssociationSaveBtn.addEventListener("click", async () => {
       profileAssociationResult.textContent = "Could not save. Try again.";
       return;
     }
-    profileAssociationResult.textContent = selectedProfileName
-      ? `Now remembered with ${selectedProfileName}.`
-      : "This folder now has No Curation.";
+    const isCassetteSource = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder";
+    profileAssociationResult.textContent = isCassetteSource
+      ? selectedProfileName
+        ? `Now remembered with ${selectedProfileName} on this device.`
+        : "This media now has No Curation on this device."
+      : selectedProfileName
+        ? `Now remembered with ${selectedProfileName}.`
+        : "This folder now has No Curation.";
     // [SYNCV3 / STAGE-10 / COMPLETED-EXPLAINER]
     // [WHY: the old action's benefit has finished its job. Scope dismissal to
     // this exact Library/association state so a new state or later interaction
@@ -6012,8 +6613,11 @@ const NEW_SHARED_LIBRARY_VALUE = "__new_shared_library__";
 // shared catalog into the pure L0-L7 model. Library names remain presentation;
 // every selection and write is keyed by the catalog id.]
 function getCurrentFolderLinkUiState({ selectedLibraryId = null, selectedClaimant = null } = {}) {
+  const folderSourceKind = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+    ? "none"
+    : currentSourceKind;
   return mapLinkState({
-    sourceKind: currentSourceKind,
+    sourceKind: folderSourceKind,
     legacyHasDurableIdentity,
     folderName: activeLibraryRecord?.name || activeLibraryDisplayName || "Loaded Media Folder",
     localLibraryId: activeLibraryRecord?.id || null,
@@ -6034,7 +6638,8 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   const ordinarySurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "ordinary" });
   const advancedSurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "advanced" });
   profileFolderLinkSummary.textContent = ordinarySurface.statusText;
-  profileFolderLinkSummary.classList.toggle("hidden", !ordinarySurface.showStatus);
+  const hasFolderSource = currentSourceKind !== "cassette" && currentSourceKind !== "cassette-folder";
+  profileFolderLinkSummary.classList.toggle("hidden", !hasFolderSource || !ordinarySurface.showStatus);
   applyProductStatusTone(profileFolderLinkSummary, linkUi.tone);
   profileFolderLinkAdvancedSummary.textContent = advancedSurface.statusText;
   applyProductStatusTone(profileFolderLinkAdvancedSummary, linkUi.tone);
@@ -6044,8 +6649,8 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   // now has exactly one job left — L7 reconnect. `showAction` is true in that
   // state alone; every other durable state renders the selector instead.]
   profileFolderLinkBtn.textContent = linkUi.actionLabel || "Reconnect Media Folder";
-  profileFolderLinkBtn.classList.toggle("hidden", !ordinarySurface.showRecoveryAction);
-  profileFolderLinkBtn.disabled = !ordinarySurface.showRecoveryAction;
+  profileFolderLinkBtn.classList.toggle("hidden", !hasFolderSource || !ordinarySurface.showRecoveryAction);
+  profileFolderLinkBtn.disabled = !hasFolderSource || !ordinarySurface.showRecoveryAction;
 
   const showSelector = Boolean(advancedSurface.showSelector);
   const wasHidden = profileFolderLinkRow.classList.contains("hidden");
@@ -6541,12 +7146,14 @@ function handlePendingFilterReloadOnAdvance(state) {
 // never diverge — the shortcuts are a second way to trigger the existing
 // action, not a second implementation of it.
 function goToPreviousMedia() {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   flushPendingFilterReload();
   runtime.previous();
 }
 
 function goToNextMedia() {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   flushPendingFilterReload();
   runtime.next();
@@ -7569,10 +8176,16 @@ function enterFillMode() {
   layoutEl.classList.add("simulated-fullscreen-layout");
   viewerPanel.classList.add("simulated-fullscreen-viewer");
   presentationControls.classList.remove("hidden");
+  transitionSamples = [];
+  transitionCount = 0;
+  lastVisibleCommitAt = currentViewerNode?.tagName === "IMG" ? performance.now() : null;
+  refreshReadyQueue();
 }
 
 function exitFillMode() {
   if (!fillModeActive) return;
+
+  cancelWarmStart();
 
   // [UI-REDESIGN / Stage 3] The unconditional `runtime.stop()` here is
   // retired. It previously treated leaving Presentation as an explicit end
@@ -7587,6 +8200,8 @@ function exitFillMode() {
   // playing state — nothing presentation-specific is tracked here either
   // way; the difference is only that we no longer reach for its stop path.
   fillModeActive = false;
+  lastVisibleCommitAt = null;
+  releaseReadyQueue({ includeWarming: true });
   appShell.classList.remove("simulated-fullscreen");
   layoutEl.classList.remove("simulated-fullscreen-layout");
   viewerPanel.classList.remove("simulated-fullscreen-viewer");
@@ -7700,9 +8315,11 @@ function toggleGhostPopunder() {
 
 function togglePlay() {
   if (runtime.getState().isPlaying) {
+    cancelWarmStart();
     runtime.stop();
   } else {
     runtime.play();
+    maybeBeginWarmStart();
   }
 }
 
@@ -7732,8 +8349,401 @@ function clearViewerNode() {
   currentViewerItem = null;
 }
 
+// BREADCRUMBS - WAS
+// Phase 3A prepared only the item already selected as current. It held the
+// outgoing image until that one resource became ready, so the black frame was
+// removed but the network wait still sat on the customer's critical path.
+//
+// BREADCRUMBS - IS
+// While Presentation Mode is active and the current image is visibly committed,
+// this bounded warmer reads MediaRuntime's actual six-item shuffle plan. It
+// prepares image nodes source-neutrally, never chooses an item, and releases
+// nodes that leave the plan. A ready node is advisory; every miss still takes
+// Phase 3A's held-frame path.
+//
+// BREADCRUMBS - WILL BE
+// The queue remains image-only and count-bounded. Video buffering, byte-based
+// memory policy, retries, failure classification and dead-item auto-skip need
+// separate evidence and architecture; none is implied by this seam.
+function releasePreparedImage(item) {
+  const entry = preparedViewerImages.get(item);
+  if (!entry) return;
+  entry.node.src = "";
+  preparedViewerImages.delete(item);
+}
+
+function releaseReadyQueue({ includeWarming = false } = {}) {
+  for (const item of [...preparedViewerImages.keys()]) releasePreparedImage(item);
+  if (includeWarming) {
+    for (const entry of warmingViewerImages.values()) entry.node.src = "";
+    warmingViewerImages.clear();
+    failedWarmItems.clear();
+  }
+}
+
+function warmPlannedImage(item) {
+  const entry = {
+    item,
+    node: new Image(),
+    loadGeneration: libraryLoadGeneration,
+    galleryGeneration,
+  };
+  const { node } = entry;
+  node.alt = item.name;
+  node.decoding = "async";
+  warmingViewerImages.set(item, entry);
+
+  const settled = new Promise((resolve, reject) => {
+    node.addEventListener("load", resolve, { once: true });
+    node.addEventListener("error", reject, { once: true });
+  });
+  node.src = item.url;
+
+  (async () => {
+    let loaded = false;
+    try {
+      await settled;
+      loaded = true;
+      if (typeof node.decode === "function") {
+        try {
+          await node.decode();
+        } catch {
+          // Native load remains authoritative; decode is best-effort only.
+        }
+      }
+    } catch {
+      // A warm failure changes no playback state and gets no retry loop.
+    }
+
+    if (warmingViewerImages.get(item) !== entry) {
+      node.src = "";
+      return;
+    }
+    warmingViewerImages.delete(item);
+
+    const plannedItems = fillModeActive ? runtime.getPlannedItems(PLAN_LENGTH) : [];
+    const remainsValid =
+      loaded &&
+      fillModeActive &&
+      entry.loadGeneration === libraryLoadGeneration &&
+      entry.galleryGeneration === galleryGeneration &&
+      plannedItems.includes(item);
+
+    if (remainsValid) {
+      preparedViewerImages.set(item, entry);
+    } else {
+      node.src = "";
+      if (!loaded && plannedItems.includes(item)) failedWarmItems.add(item);
+    }
+    refreshReadyQueue();
+  })();
+}
+
+function refreshReadyQueue() {
+  const state = runtime.getState();
+  const currentImageVisible =
+    state.currentItem?.kind === "image" &&
+    currentViewerItem === state.currentItem &&
+    currentViewerNode?.tagName === "IMG" &&
+    !viewerStage.classList.contains("hidden");
+
+  if (!fillModeActive || !currentImageVisible || currentViewerPreparationInFlight) return;
+
+  const plannedItems = runtime.getPlannedItems(PLAN_LENGTH);
+  for (const item of [...failedWarmItems]) {
+    if (!plannedItems.includes(item)) failedWarmItems.delete(item);
+  }
+  const warmablePlan = plannedItems.filter((item) => item.kind === "image" && !failedWarmItems.has(item));
+  const work = planReadyQueueWork({
+    plannedItems: warmablePlan,
+    preparedItems: [...preparedViewerImages.keys()],
+    warmingItems: [...warmingViewerImages.keys()],
+    maxPrepared: MAX_PREPARED,
+    maxConcurrent: MAX_CONCURRENT_WARMING,
+  });
+
+  work.release.forEach(releasePreparedImage);
+  work.start.forEach(warmPlannedImage);
+  if (warmStartState === "warming") evaluateWarmStart();
+}
+
+function takePreparedViewerImage(item) {
+  const entry = preparedViewerImages.get(item);
+  if (!entry) return null;
+  preparedViewerImages.delete(item);
+  const token = ++viewerPreparationCounter;
+  const commit = shouldCommitPreparedViewer({
+    preparedToken: token,
+    currentToken: viewerPreparationCounter,
+    preparedLoadGeneration: entry.loadGeneration,
+    currentLoadGeneration: libraryLoadGeneration,
+    preparedGalleryGeneration: entry.galleryGeneration,
+    currentGalleryGeneration: galleryGeneration,
+    preparedItem: item,
+    currentViewerItem: runtime.getState().currentItem,
+  });
+  if (!commit) {
+    entry.node.src = "";
+    return null;
+  }
+  return entry;
+}
+
+function releaseStaleReadyQueueEntries() {
+  for (const [item, entry] of preparedViewerImages) {
+    if (entry.loadGeneration !== libraryLoadGeneration || entry.galleryGeneration !== galleryGeneration) {
+      releasePreparedImage(item);
+    }
+  }
+  for (const [item, entry] of warmingViewerImages) {
+    if (entry.loadGeneration !== libraryLoadGeneration || entry.galleryGeneration !== galleryGeneration) {
+      entry.node.src = "";
+      warmingViewerImages.delete(item);
+    }
+  }
+}
+
+// BREADCRUMBS - WAS
+// Phase 3B began Presentation with an empty or shallow ready reserve. A slow
+// image among the first few transitions could exhaust the runway before the
+// six-deep reserve accumulated; real URL-backed Presentation runs observed
+// this more than once as an approximately 15-20 second early stall.
+//
+// BREADCRUMBS - IS
+// When URL-backed image playback begins in Presentation with fewer than three
+// valid upcoming prepared images, one small curtain holds automatic advance
+// while the existing two-worker queue fills. The current image still commits
+// through the normal viewer path underneath it. Release occurs once three
+// valid planned images are ready or ten seconds of EXTRA queue-building time
+// has elapsed, but never before the current visual reaches a real terminal
+// outcome. Human navigation cancels immediately.
+//
+// BREADCRUMBS - WILL BE
+// This remains a fixed cold-start policy, not an adaptive buffer, another
+// preloader, or a source model. Future changes require evidence; the runtime's
+// six-item plan, two-worker limit, source neutrality and visible timer remain
+// authoritative.
+function countValidPreparedWarmStartItems() {
+  releaseStaleReadyQueueEntries();
+  const plannedItems = runtime.getPlannedItems(PLAN_LENGTH);
+  let count = 0;
+  for (const [item, entry] of preparedViewerImages) {
+    const valid =
+      entry.loadGeneration === libraryLoadGeneration &&
+      entry.galleryGeneration === galleryGeneration &&
+      plannedItems.includes(item);
+    if (valid) {
+      count += 1;
+    } else {
+      releasePreparedImage(item);
+    }
+  }
+  return count;
+}
+
+function finishWarmStart(reason, preparedCount) {
+  if (warmStartState !== "warming") return;
+  const elapsedMs = performance.now() - warmStartStartedAt;
+  warmStartState = "inactive";
+  warmStartTimeoutReached = false;
+  if (warmStartTimeoutId !== null) {
+    window.clearTimeout(warmStartTimeoutId);
+    warmStartTimeoutId = null;
+  }
+  warmStartOverlay.classList.add("hidden");
+  stopArcadeAnimation();
+  console.info("[PM WARM START] Release", {
+    reason,
+    elapsed_ms: Math.round(elapsedMs),
+    valid_prepared: preparedCount,
+  });
+  runtime.notifyCurrentItemVisible();
+}
+
+function evaluateWarmStart({ cancelled = false } = {}) {
+  if (warmStartState !== "warming") return;
+  const preparedCount = countValidPreparedWarmStartItems();
+  let decision = shouldReleaseWarmStart({
+    preparedCount,
+    readyThreshold: RELEASE_READY_COUNT,
+    elapsedMs: performance.now() - warmStartStartedAt,
+    maxMs: WARM_START_MAX_MS,
+    cancelled,
+  });
+  if (!cancelled && warmStartTimeoutReached) decision = { release: true, reason: "timeout" };
+  if (!canApplyWarmStartRelease({ decision, currentVisualSettled: warmStartCurrentVisualSettled })) return;
+  finishWarmStart(decision.reason, preparedCount);
+}
+
+function cancelWarmStart() {
+  evaluateWarmStart({ cancelled: true });
+}
+
+function maybeBeginWarmStart() {
+  if (warmStartState === "warming") return;
+  const item = runtime.getState().currentItem;
+  if (!fillModeActive || !currentSessionIsUrlBacked || item?.kind !== "image") return;
+  const preparedCount = countValidPreparedWarmStartItems();
+  if (preparedCount >= RELEASE_READY_COUNT) return;
+
+  warmStartState = "warming";
+  warmStartStartedAt = performance.now();
+  warmStartCurrentVisualSettled = lastViewerTerminalItem === item;
+  warmStartTimeoutReached = false;
+  warmStartOverlay.classList.remove("hidden");
+  startArcadeAnimation(warmStartCanvas);
+  runtime.holdAdvanceForPendingVisual();
+  warmStartTimeoutId = window.setTimeout(() => {
+    warmStartTimeoutId = null;
+    warmStartTimeoutReached = true;
+    evaluateWarmStart();
+  }, WARM_START_MAX_MS);
+}
+
+function handleCurrentViewerTerminal(item) {
+  lastViewerTerminalItem = item;
+  currentViewerPreparationInFlight = false;
+  if (warmStartState === "warming") {
+    warmStartCurrentVisualSettled = true;
+    refreshReadyQueue();
+    evaluateWarmStart();
+    return;
+  }
+  runtime.notifyCurrentItemVisible();
+  refreshReadyQueue();
+}
+
+// [PRESENTATION-PERF / PHASE 3A]
+// The held path. Starts the incoming image loading WITHOUT tearing down the
+// outgoing one, then swaps only once the incoming image is genuinely ready —
+// and only if it is still the image the viewer is waiting for.
+//
+// buildViewer() itself stays synchronous: this kicks off a detached promise
+// chain and returns immediately, exactly as the eager path returns immediately
+// after assigning src. The customer-visible difference is only WHEN the stage
+// changes, never what ends up on it.
+function prepareHeldFrameImage(item) {
+  const renderEntryAt = lastRenderEntryAt;
+  const token = ++viewerPreparationCounter;
+  const preparedLoadGeneration = libraryLoadGeneration;
+  const preparedGalleryGeneration = galleryGeneration;
+  currentViewerPreparationInFlight = true;
+  runtime.holdAdvanceForPendingVisual();
+
+  // Claimed EAGERLY, before any await. This is what makes buildViewer()'s
+  // same-item early return absorb every intervening re-emit — a profile change,
+  // a favourite toggle, a status refresh — instead of starting a duplicate
+  // preparation for the same item on each one. currentViewerItem therefore
+  // means "the item the viewer is showing OR preparing" from here on.
+  //
+  // currentViewerNode is deliberately NOT touched: it still points at the
+  // outgoing image, which is still on screen and still owns the stage. That is
+  // the held frame.
+  currentViewerItem = item;
+
+  const img = document.createElement("img");
+  img.alt = item.name;
+  img.decoding = "async";
+  const srcAt = performance.now();
+  img.src = item.url;
+  recordMediaRenderOutcome("mounted");
+
+  // The load/error events are the AUTHORITY on success or failure. Phase 1C's
+  // own listeners are deliberately not attached on this path: this promise is
+  // the single outcome source for a prepared node, and attaching both would
+  // double-count the tally.
+  const loaded = new Promise((resolve, reject) => {
+    img.addEventListener("load", resolve, { once: true });
+    img.addEventListener("error", reject, { once: true });
+  });
+
+  (async () => {
+    let loadAt = 0;
+    let decodeAt = null;
+    let failed = false;
+
+    try {
+      await loaded;
+      loadAt = performance.now();
+      if (typeof img.decode === "function") {
+        try {
+          await img.decode();
+        } catch {
+          // decode() is a refinement, never the verdict. It can reject for
+          // images that render perfectly well, and `load` has already told us
+          // the bytes arrived — so a rejection here must not become a failure.
+        }
+        decodeAt = performance.now();
+      }
+    } catch {
+      failed = true;
+    }
+
+    const commit = shouldCommitPreparedViewer({
+      preparedToken: token,
+      currentToken: viewerPreparationCounter,
+      preparedLoadGeneration,
+      currentLoadGeneration: libraryLoadGeneration,
+      preparedGalleryGeneration,
+      currentGalleryGeneration: galleryGeneration,
+      preparedItem: item,
+      currentViewerItem,
+    });
+
+    if (!commit) {
+      // Superseded, or the source/filter/viewer moved on. Release the decoded
+      // bitmap and the pending request and do nothing else — no DOM, no
+      // classes, no status text, and no outcome recorded, matching the eager
+      // path's own `currentViewerNode !== img` guard.
+      img.src = "";
+      return;
+    }
+
+    // Teardown and insertion in ONE synchronous block, with no await between
+    // them. This is the entire mechanism: the browser never gets a chance to
+    // paint an empty stage.
+    clearViewerNode();
+    const teardownAt = performance.now();
+    // clearViewerNode() nulls both refs; re-establish what this preparation
+    // already owns.
+    currentViewerItem = item;
+
+    if (failed) {
+      // Converge exactly onto Phase 1C's existing behaviour. The held frame is
+      // released here, which is correct: image A cannot be held forever on
+      // behalf of a dead image B. Nothing skips, retries, removes, reorders or
+      // classifies — that is Phase 1C's territory and it stays there.
+      recordMediaRenderOutcome("failed");
+      viewerEmpty.textContent = "This item could not be loaded.";
+      viewerStage.classList.add("hidden");
+      viewerEmpty.classList.remove("hidden");
+      handleCurrentViewerTerminal(item);
+      return;
+    }
+
+    currentViewerNode = img;
+    viewerStage.appendChild(img);
+    recordMediaRenderOutcome("loaded");
+
+    // #viewer-stage was already visible and #viewer-empty already hidden — the
+    // held path only runs when a real image was on screen — so neither class is
+    // touched here.
+    measureTransitionReady({
+      held: true,
+      renderEntryAt,
+      srcAt,
+      loadAt,
+      decodeAt,
+      teardownAt,
+      item,
+      node: img,
+    });
+  })();
+}
+
 function buildViewer(state) {
   const { currentItem: item, isPlaying, hasItems, hasVisibleItems } = state;
+  releaseStaleReadyQueueEntries();
 
   // [UI-REDESIGN / Stage 6]
   // WHAT: One class on .app-shell recording whether the Player currently has
@@ -7767,6 +8777,7 @@ function buildViewer(state) {
     viewerStage.classList.add("hidden");
     viewerEmpty.classList.remove("hidden");
     viewerEmpty.textContent = "All media is hidden. Unhide items in the Gallery to continue.";
+    handleCurrentViewerTerminal(item);
     return;
   }
 
@@ -7783,15 +8794,73 @@ function buildViewer(state) {
         currentViewerNode.pause();
       }
     }
+    refreshReadyQueue();
+    return;
+  }
+
+  // [PRESENTATION-PERF / PHASE 3A] Held-frame eligibility, decided BEFORE
+  // teardown — because holding the outgoing frame means not calling
+  // clearViewerNode() yet. Reaching this line is itself the fourth condition:
+  // the same-item early return above did not fire, so this is a genuine item
+  // change rather than a re-emit for the item already on screen.
+  //
+  // Restricted to image-following-image deliberately. Holding a PLAYING video
+  // while an image prepares would entangle armLoopRuleForCurrentVideo(),
+  // notifyVideoEnded() and the TS adapter, none of which are in scope. Every
+  // other combination — image -> video, video -> image, video -> video, the
+  // first item of a session, and recovery from the "could not be loaded" state
+  // (where #viewer-stage is hidden and there is no frame worth holding) — falls
+  // through to the eager path below, byte for byte unchanged.
+  const outgoingNode = currentViewerNode;
+  const canHoldOutgoingFrame =
+    Boolean(item) &&
+    item.kind === "image" &&
+    Boolean(outgoingNode) &&
+    outgoingNode.tagName === "IMG" &&
+    !viewerStage.classList.contains("hidden");
+
+  if (item?.kind === "image") {
+    const prepared = takePreparedViewerImage(item);
+    if (prepared) {
+      clearViewerNode();
+      const committedAt = performance.now();
+      currentViewerItem = item;
+      currentViewerNode = prepared.node;
+      viewerEmpty.classList.add("hidden");
+      viewerStage.classList.remove("hidden");
+      viewerStage.appendChild(prepared.node);
+      recordMediaRenderOutcome("mounted");
+      recordMediaRenderOutcome("loaded");
+      measureTransitionReady({
+        held: true,
+        readyHit: true,
+        renderEntryAt: lastRenderEntryAt,
+        srcAt: committedAt,
+        loadAt: committedAt,
+        decodeAt: committedAt,
+        teardownAt: committedAt,
+        item,
+        node: prepared.node,
+      });
+      return;
+    }
+  }
+
+  if (canHoldOutgoingFrame) {
+    prepareHeldFrameImage(item);
     return;
   }
 
   clearViewerNode();
+  // Captured at the call site rather than inside clearViewerNode(), which stays
+  // the single teardown owner and keeps doing exactly what it did before.
+  const teardownAt = performance.now();
 
   if (!item) {
     viewerStage.classList.add("hidden");
     viewerEmpty.classList.remove("hidden");
     viewerEmpty.textContent = "Choose files or a folder to begin.";
+    handleCurrentViewerTerminal(item);
     return;
   }
 
@@ -7800,8 +8869,40 @@ function buildViewer(state) {
   currentViewerItem = item;
 
   if (item.kind === "image") {
+    currentViewerPreparationInFlight = true;
+    runtime.holdAdvanceForPendingVisual();
     const img = document.createElement("img");
+    const renderEntryAt = lastRenderEntryAt;
+    const srcAt = performance.now();
     img.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    img.addEventListener("load", () => {
+      if (currentViewerNode !== img) return;
+      recordMediaRenderOutcome("loaded");
+      // [PRESENTATION-PERF / PHASE 3A] The eager path measures itself with the
+      // same definitions the held path uses, so before/after is one comparison
+      // rather than two. On this path the element was appended EMPTY and only
+      // becomes visible now — which is precisely why blank_ms here is the whole
+      // resource wait, and why it is the number this stage exists to collapse.
+      measureTransitionReady({
+        held: false,
+        renderEntryAt,
+        srcAt,
+        loadAt: performance.now(),
+        decodeAt: null,
+        teardownAt,
+        item,
+        node: img,
+      });
+    });
+    img.addEventListener("error", () => {
+      if (currentViewerNode !== img) return;
+      recordMediaRenderOutcome("failed");
+      viewerEmpty.textContent = "This item could not be loaded.";
+      viewerStage.classList.add("hidden");
+      viewerEmpty.classList.remove("hidden");
+      handleCurrentViewerTerminal(item);
+    });
     img.alt = item.name;
     currentViewerNode = img;
     viewerStage.appendChild(img);
@@ -7816,6 +8917,7 @@ function buildViewer(state) {
     video.muted = true;
     currentViewerNode = video;
     viewerStage.appendChild(video);
+    handleCurrentViewerTerminal(item);
 
     if (isTsItem(item)) {
       // [TS-POC] Phase 5 diagnostic timing — counter-based ID only, never
@@ -7828,6 +8930,18 @@ function buildViewer(state) {
       });
     } else {
       video.src = item.url;
+      recordMediaRenderOutcome("mounted");
+      video.addEventListener("loadedmetadata", () => {
+        if (currentViewerNode !== video) return;
+        recordMediaRenderOutcome("loaded");
+      });
+      video.addEventListener("error", () => {
+        if (currentViewerNode !== video) return;
+        recordMediaRenderOutcome("failed");
+        viewerEmpty.textContent = "This item could not be loaded.";
+        viewerStage.classList.add("hidden");
+        viewerEmpty.classList.remove("hidden");
+      });
     }
 
     // A fresh video is on screen — arm whatever the active Loop Rule
@@ -8080,14 +9194,33 @@ function mountThumbMedia(thumb) {
   if (!item || thumb.dataset.mounted === "true") return;
 
   let mediaEl;
+  const mountedGeneration = galleryGeneration;
 
   if (item.kind === "image") {
     mediaEl = document.createElement("img");
     mediaEl.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    mediaEl.addEventListener("load", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("loaded");
+    });
+    mediaEl.addEventListener("error", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("failed");
+    });
     mediaEl.alt = item.name;
   } else if (item.kind === "video") {
     mediaEl = document.createElement("video");
     mediaEl.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    mediaEl.addEventListener("loadedmetadata", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("loaded");
+    });
+    mediaEl.addEventListener("error", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("failed");
+    });
     mediaEl.muted = true;
     mediaEl.preload = "metadata";
   } else {
@@ -8712,8 +9845,33 @@ function syncControls(state) {
 }
 
 function render(state) {
-  renderGallery(state);
+  // [PRESENTATION-PERF / PHASE 3A] t0 for every transition measurement. This is
+  // the earliest point this file can honestly observe — MediaRuntime's own
+  // selection work happens before it and is protected, so every number derived
+  // from this excludes it. That exclusion is bounded and known: the pre-change
+  // profiler measured the whole dispatch at ~0.8 ms median.
+  lastRenderEntryAt = performance.now();
+
+  // [PRESENTATION-PERF / PHASE 3A] Player first, gallery second. buildViewer()
+  // is where the incoming image's src is assigned, so running it ahead of
+  // renderGallery() starts the request before the gallery's per-card
+  // bookkeeping rather than after it.
+  //
+  // Small, low-risk and regression-tested — NOT zero-risk, and not sold as one.
+  // Verified by inspection before the swap: renderGallery() writes only gallery
+  // state (renderedGalleryGeneration, galleryCardEls, galleryThumbEls,
+  // galleryObserver, galleryJumpTargetIndex and the grid DOM), none of which
+  // buildViewer() reads; both functions are called from here and nowhere else;
+  // and syncGalleryJumpTarget() reads only `state` and its own input, so it is
+  // unaffected by their relative order. The one comment in this file that
+  // reasons about buildViewer()'s timing (see syncMobileLoadState's
+  // .app-has-media note) depends on buildViewer() running inside this same
+  // synchronous render() call, which moving it earlier only strengthens.
+  //
+  // The measured benefit is sub-millisecond. This is an ordering-correctness
+  // change, not a performance fix — the blank frame was the defect.
   buildViewer(state);
+  renderGallery(state);
   syncControls(state);
   syncGalleryJumpTarget(state);
   // [UI-REDESIGN / Stage 4] Catches the playback half of the strip's
@@ -8724,13 +9882,62 @@ function render(state) {
 
 // ---- Event wiring ---------------------------------------------------------
 
-fileInput.addEventListener("change", (event) => {
-  loadFiles(event.target.files);
+/*
+BREADCRUMBS - WAS
+Media intake exposed separate local and Floppy controls, requiring the customer to understand which backend or source type should process a selection.
+
+BREADCRUMBS - IS
+The customer chooses only selection shape and intent: Open Files, Open Folder, Remember File, or Remember Folder. Unified intake classification determines whether existing local or Floppy owners handle the selection.
+
+BREADCRUMBS - WILL BE
+Future source types should extend classification and routing behind these generic controls rather than adding new customer-facing picker buttons.
+*/
+
+/*
+BREADCRUMBS - WAS
+Picker handlers passed browser-owned live FileLists into asynchronous intake routing and then cleared the inputs. Clearing the control could empty the selection before evidence collection consumed it.
+
+BREADCRUMBS - IS
+Picker selections are snapshotted into stable arrays before asynchronous unified intake routing. Input controls may be cleared without mutating the selection being classified.
+
+BREADCRUMBS - WILL BE
+Any future picker path crossing an asynchronous boundary must snapshot browser-owned selection state before yielding, clearing, or reusing the control.
+*/
+async function routeOpenSelection(fileList, { shape, rootName = null } = {}) {
+  const evidence = await collectSelectionEvidence(fileList, { shape });
+  const selectionKind = classifySelection(evidence);
+
+  switch (selectionKind) {
+    case "local-files":
+      return loadFiles(fileList);
+    case "local-folder":
+      return loadFiles(fileList, { isFolderPick: true, rootName });
+    case "floppy-file": {
+      const floppy = evidence.entries.find((entry) => entry.qualifiesAsFloppy);
+      return loadRemoteSession(floppy.floppyText, { name: floppy.name, sourceKind: "cassette" });
+    }
+    case "floppy-folder":
+      return loadRemoteSession(combineQualifyingFloppyTexts(evidence), { name: rootName, sourceKind: "cassette-folder" });
+    case "mixed":
+      statusText.textContent = shape === "folder"
+        ? "This folder contains both media and Floppy Disks. Choose a folder containing one type."
+        : "Choose either media files or a Floppy Disk, not both.";
+      return;
+    default:
+      statusText.textContent = shape === "folder"
+        ? "This folder doesn't contain supported media or Floppy Disks."
+        : "Browser Gallery can't open that file.";
+  }
+}
+
+fileInput.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
   fileInput.value = "";
+  await routeOpenSelection(files, { shape: "files" });
 });
 
-folderInput.addEventListener("change", (event) => {
-  const files = event.target.files;
+folderInput.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
 
   // [PHASE-6-SYNC-V2]
   // [STAGE-E-LIVE-INTEGRATION]
@@ -8753,8 +9960,8 @@ folderInput.addEventListener("change", (event) => {
   // identity in loadFiles() — the plain "Choose Files" input below never
   // sets this, since a set of individually-picked files has no folder
   // root to fingerprint against.
-  loadFiles(files, { isFolderPick: true, rootName: topFolderName });
   folderInput.value = "";
+  await routeOpenSelection(files, { shape: "folder", rootName: topFolderName });
 });
 
 intervalInput.addEventListener("change", () => {
@@ -9135,6 +10342,7 @@ nextBtn.addEventListener("click", (event) => {
 // begin.
 function startPlaybackFromTransport() {
   runtime.play();
+  if (fillModeActive) maybeBeginWarmStart();
 }
 
 // The ordinary Player's Play/Pause. Deliberately NOT togglePlay(), which
@@ -9154,6 +10362,7 @@ function startPlaybackFromTransport() {
 // paused/resumed flag here to make this read more like a player.
 function toggleTransportPlayback() {
   if (runtime.getState().isPlaying) {
+    cancelWarmStart();
     runtime.stop();
   } else {
     startPlaybackFromTransport();
@@ -9184,9 +10393,13 @@ function enterFillPanelDeliberately() {
 
   enterFillMode();
 
-  if (wasPlaying) return;
+  if (wasPlaying) {
+    maybeBeginWarmStart();
+    return;
+  }
   if (!autoplayOnFillInput.checked) return;
   runtime.play();
+  maybeBeginWarmStart();
 }
 
 // [UI-REDESIGN / Stage 6] The Play/Pause button and the Space shortcut are
@@ -9302,11 +10515,15 @@ nowPlayingReturnBtn.addEventListener("click", (event) => {
 // pause half, and #now-playing-stop-btn above.
 
 clearBtn.addEventListener("click", () => {
+  currentSessionIsUrlBacked = false;
   libraryLoadGeneration += 1;
   bumpGalleryGeneration();
   runtime.clear();
   provider.dispose();
   fsaProvider.dispose(); // [FSA] whichever source was active, release it
+  remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
   allItems = [];
   clearViewerNode();
   exitFillMode();
@@ -9317,6 +10534,8 @@ clearBtn.addEventListener("click", () => {
   // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
+  activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(null);
   clearReverseCurationSuggestion();
   clearDeviceAwareMediaQuestion();
@@ -9375,10 +10594,12 @@ overlayFavoriteBtn.addEventListener("click", () => {
 });
 
 overlayPrevBtn.addEventListener("click", () => {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   runtime.previous();
 });
 overlayNextBtn.addEventListener("click", () => {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   runtime.next();
 });
@@ -9683,11 +10904,13 @@ function handlePresentationKeydown(event) {
   switch (event.key) {
     case "ArrowRight":
       event.preventDefault();
+      cancelWarmStart();
       handleManualNavigationLoopReset();
       runtime.next();
       break;
     case "ArrowLeft":
       event.preventDefault();
+      cancelWarmStart();
       handleManualNavigationLoopReset();
       runtime.previous();
       break;
@@ -11679,6 +12902,7 @@ window.addEventListener("beforeunload", () => {
   runtime.stop();
   provider.dispose();
   fsaProvider.dispose(); // [FSA]
+  remoteProvider.dispose();
 });
 
 // [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-7]
@@ -11845,7 +13069,7 @@ async function attemptBootRestore() {
 (async function initFsaLibraries() {
   if (!isFsaSupported()) {
     fsaChooseFolderBtn.disabled = true;
-    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    fsaStatusText.textContent = "This browser does not support remembered folders.";
     return;
   }
 
@@ -11855,6 +13079,12 @@ async function attemptBootRestore() {
   // permission check should never block the rest of boot, and nothing here
   // depends on startup media restore having settled.
   attemptStartupMedia();
+})();
+
+// Cassette file picking is an independent capability from directory picking;
+// this boot path must still run when initFsaLibraries() returns early.
+(async function initRemoteCassettes() {
+  await renderRemoteCassettes();
 })();
 
 // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]

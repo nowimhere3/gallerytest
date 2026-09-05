@@ -16,40 +16,43 @@ function verify(name, input, expected) {
 }
 
 verify("S0", {}, {
-  state: "S0", tone: "muted", productLine: "No Media Folder loaded.", showAction: false, allowPicker: false,
+  state: "S0", tone: "muted", productLine: "No media loaded.", sourceLine: "No media loaded.",
+  associationScope: "none", showAction: false, allowPicker: false,
 });
-verify("S1", { sourceKind: "fsa", folderName: "Library A" }, {
+verify("S1", { sourceKind: "fsa", mediaName: "Library A" }, {
   state: "S1", tone: "muted", associatedText: "None chosen yet", productLine: "Library A — no Curation chosen yet",
-  actionLabel: "Choose a Curation for this folder", showAction: true, allowPicker: true,
+  actionLabel: "Choose a Curation for this media", associationScope: "shared", showAction: true, allowPicker: true,
 });
 verify("S2", {
   sourceKind: "fsa", folderName: "Library A", associatedProfileId: "beast",
   associatedProfileName: "BEAST", activeProfileId: "beast",
 }, {
   state: "S2", tone: "success", productLine: "Library A — remembered with BEAST Curation",
-  actionLabel: "Change Curation for this folder", showAction: true, allowPicker: true,
+  actionLabel: "Change Curation for this media", showAction: true, allowPicker: true,
 });
 verify("S3", {
   sourceKind: "legacy", legacyHasDurableIdentity: true, folderName: "Library A",
   associatedProfileId: "hardcore", associatedProfileName: "Hardcore", activeProfileId: "beast",
 }, {
   state: "S3", tone: "active", productLine: "Library A — remembered with Hardcore Curation (not used on this device)",
-  actionLabel: "Change Curation for this folder", showAction: true, allowPicker: true,
+  actionLabel: "Change Curation for this media", showAction: true, allowPicker: true,
 });
 verify("S4", {
   sourceKind: "fsa", folderName: "Library A", associatedProfileId: "deleted", activeProfileId: "beast",
 }, {
   state: "S4", tone: "warning", productLine: "Library A — remembers a Curation that no longer exists",
-  actionLabel: "Choose a Curation for this folder", showAction: true, allowPicker: true,
+  actionLabel: "Choose a Curation for this media", showAction: true, allowPicker: true,
 });
 verify("S5 unassociated", { sourceKind: "legacy", folderName: "Selected files" }, {
   state: "S5", tone: "muted", associatedText: "None chosen yet",
-  productLine: "Selected files — no Curation chosen yet", showAction: false, allowPicker: false,
+  productLine: "Selected files — used for this session only. Curation: None chosen yet",
+  associationScope: "session", showAction: false, allowPicker: false,
 });
 verify("S5 session", {
   sourceKind: "legacy", folderName: "Selected files", legacySessionAssociated: true, activeProfileName: "BEAST",
 }, {
-  state: "S5", tone: "muted", productLine: "Selected files — remembered with BEAST", showAction: false, allowPicker: false,
+  state: "S5", tone: "muted", productLine: "Selected files — used for this session only. Curation: BEAST",
+  showAction: false, allowPicker: false,
 });
 verify("current Library without a writable local identity", {
   sourceKind: "fsa", folderName: "Library A", canWriteAssociation: false,
@@ -76,7 +79,7 @@ assert(mapAssociationCopy({
 // [SYNCV3 / STAGE-10 / FINAL-CLOSEOUT-POLISH]
 // The rail card's locked scan path is concept -> current state -> action ->
 // benefit. The pure mapper owns the last two so they cannot drift apart.
-const BENEFIT = "Choose a Curation to remember the Favorites, Hidden items and Tags you want to use with this folder.";
+const BENEFIT = "Choose a Curation to remember the Favorites, Hidden items and Tags you want to use with this media.";
 for (const input of [
   { sourceKind: "fsa", folderName: "Library A" },
   { sourceKind: "fsa", folderName: "Library A", associatedProfileId: "gone" },
@@ -98,5 +101,38 @@ assert(mapAssociationCopy({ sourceKind: "fsa", folderName: "Library A" }).associ
   "the empty card reads as an unmade choice, not as a chosen nothing");
 assert(!/No Curation/.test(mapAssociationCopy({ sourceKind: "fsa", folderName: "Library A" }).associatedText),
   "the retired value is gone from the card");
+
+verify("remembered Floppy Disk", {
+  sourceKind: "cassette", mediaName: "pretty-leglock.txt", rememberedSourceId: "cassette:cas-1",
+  canWriteAssociation: true,
+}, {
+  state: "S1", sourceLabel: "Floppy Disk", sourceLine: "pretty-leglock.txt · Floppy Disk",
+  associationScope: "device", scopeNote: "Remembered on this device.", showAction: true, allowPicker: true,
+});
+verify("one-shot Floppy Disk", {
+  sourceKind: "cassette", mediaName: "pretty-leglock.txt", activeProfileName: "My Gallery",
+}, {
+  state: "S5", sourceLabel: "Floppy Disk", associationScope: "session",
+  scopeNote: "Used for this session only.",
+  productLine: "pretty-leglock.txt — used for this session only. Curation: My Gallery",
+  showAction: false, allowPicker: false,
+});
+verify("remembered Floppy Folder", {
+  sourceKind: "cassette-folder", mediaName: "TEST_CASSETTE", rememberedSourceId: "cassette:cas-folder",
+  canWriteAssociation: true,
+}, {
+  state: "S1", sourceLabel: "Floppy Folder", sourceLine: "TEST_CASSETTE · Floppy Folder",
+  associationScope: "device", scopeNote: "Remembered on this device.", showAction: true, allowPicker: true,
+});
+verify("one-shot Floppy Folder", {
+  sourceKind: "cassette-folder", mediaName: "TEST_CASSETTE", activeProfileName: "My Gallery",
+}, {
+  state: "S5", sourceLabel: "Floppy Folder", associationScope: "session", showAction: false,
+});
+verify("durable legacy folder", {
+  sourceKind: "legacy", mediaName: "Legacy Folder", legacyHasDurableIdentity: true,
+}, {
+  state: "S1", sourceLabel: "Local Folder", associationScope: "shared",
+});
 
 console.log(`association copy: ${assertions} assertions passed`);
