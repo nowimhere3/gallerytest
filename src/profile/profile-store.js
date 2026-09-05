@@ -1909,6 +1909,52 @@ export class ProfileStore {
     return takeSnapshot(results);
   }
 
+  // [CURATION-IMPORT / STAGE-B / READ-ONLY-INSPECTION-SEAM]
+  // [WHY: Curate Import must compare an incoming package against a DESTINATION
+  //  Curation's current data even when that Curation is not the one active
+  //  right now, without switching to it, changing #profileId, emitting, or
+  //  persisting anything — this device's visible/active Curation must not
+  //  flicker just because an import dialog is inspecting another one. This is
+  //  the exact per-profile read getFullCollection() already performs inside
+  //  its loop (live memory for the active profile, loadProfileData() for any
+  //  other), pulled out as its own read so a caller can ask for ONE Curation
+  //  without paying to enumerate every Curation. getFullCollection() is left
+  //  untouched rather than rewritten to call this, since it is Sync-critical
+  //  and duplicating four lines is cheaper than risking it.]
+  async getProfileSnapshot(profileId) {
+    await this.#ready;
+    if (!profileId) return null;
+
+    if (profileId === this.#profileId) {
+      return takeSnapshot({
+        id: this.#profileId,
+        name: this.#profileName,
+        masterFolder: this.#masterFolder,
+        items: this.#projectItems(),
+        tags: this.#tags.map((tag) => ({ ...tag })),
+      });
+    }
+
+    const entry = this.#profiles.find((candidate) => candidate.id === profileId);
+    if (!entry) return null;
+
+    let data;
+    try {
+      data = await loadProfileData(profileId);
+    } catch (error) {
+      console.warn(`Could not read profile "${profileId}" for inspection.`, error);
+      data = { items: {}, tags: [] };
+    }
+
+    return takeSnapshot({
+      id: entry.id,
+      name: entry.name || DEFAULT_PROFILE_NAME,
+      masterFolder: entry.masterFolder || null,
+      items: isPlainObject(data.items) ? data.items : {},
+      tags: Array.isArray(data.tags) ? data.tags : [],
+    });
+  }
+
   /**
    * Replaces the ENTIRE local Profile collection — registry identity AND
    * every profile's item/tag data — with `collection`, an array of the same

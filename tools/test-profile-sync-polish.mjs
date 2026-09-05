@@ -57,8 +57,8 @@ assert(/\.profile-current-row select \{\s*flex: 1 1 auto;/.test(css),
 // The word "Curation" is display text. Value, stored name and switching must
 // all keep reading the same identity they did before this polish.
 assert(mainSource.includes("option.value = entry.id;"), "each option's value stays the raw profile id");
-assert(mainSource.includes("option.textContent = `${entry.name} Curation`;"),
-  "each option displays {CurationName} Curation");
+assert(mainSource.includes("option.textContent = `${displayCurationLabel(entry, profiles)} Curation`;"),
+  "each option displays {CurationName} Curation, or {CurationName} — {shortId} Curation when the name collides");
 assert(!mainSource.includes("entry.name = "), "rendering the selector never rewrites a stored name");
 
 const changeHandler = mainSource.slice(mainSource.indexOf('profileSelect.addEventListener("change"'));

@@ -101,6 +101,13 @@ import {
 } from "./profile/contextual-first-use.js";
 import { createAssociationWriteSuppression } from "./profile/association-write-suppression.js";
 import { describeMediaLibraryOptions } from "./profile/media-library-options.js";
+import { displayCurationLabel } from "./profile/curation-display.js";
+import { parseCurationExport } from "./profile/curation-import-parse.js";
+import { classifyCurationImport } from "./profile/curation-import-identity.js";
+import { buildImportPlan, importPlanHasSelection } from "./profile/curation-import-plan.js";
+import { applyImportPlan } from "./profile/curation-import-commit.js";
+import { buildDuplicateTagRepairPlan, applyDuplicateTagRepairPlan } from "./profile/duplicate-tag-repair.js";
+import { findCurationNameCollisions, suggestNextCurationName } from "./profile/curation-name-guard.js";
 import { createAmbientProfileObserver } from "./profile/ambient-profile-observer.js";
 import { applyLoadTimeProfileRestoration } from "./profile/load-time-profile-restoration.js";
 import { resolveProvenParentCuration } from "./profile/parent-curation-inheritance.js";
@@ -355,18 +362,50 @@ const profileActiveContextHelp = document.getElementById("profile-active-context
 const profileSyncContextHelp = document.getElementById("profile-sync-context-help");
 const profileSyncMediaSafety = document.getElementById("profile-sync-media-safety");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
+const profileRenameBtn = document.getElementById("profile-rename-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
 const profileActiveStatusText = document.getElementById("profile-active-status-text");
 
 const profileExportBtn = document.getElementById("profile-export-btn");
-const profileImportMergeBtn = document.getElementById("profile-import-merge-btn");
-const profileImportReplaceBtn = document.getElementById("profile-import-replace-btn");
+const profileImportBtn = document.getElementById("profile-import-btn");
 const profileImportInput = document.getElementById("profile-import-input");
-const profileImportCopyBtn = document.getElementById("profile-import-copy-btn");
-const profileImportCopyInput = document.getElementById("profile-import-copy-input");
 const profileSkipMissingInput = document.getElementById("profile-skip-missing-input");
 const profileStatusText = document.getElementById("profile-status-text");
+
+// [CURATION-IMPORT / STAGE-C] The one reusable choice dialog — see its
+// [CURATION-IMPORT / STAGE-C / GENERIC CHOICE DIALOG] comment in index.html.
+const curationChoiceDialog = document.getElementById("curation-choice-dialog");
+const curationChoiceTitle = document.getElementById("curation-choice-title");
+const curationChoiceBody = document.getElementById("curation-choice-body");
+const curationChoiceActions = document.getElementById("curation-choice-actions");
+
+// [CURATION-IMPORT / STAGE-C] Curate Import staging dialog refs.
+const curateImportDialog = document.getElementById("curate-import-dialog");
+const curateImportSourceName = document.getElementById("curate-import-source-name");
+const curateImportDestinationName = document.getElementById("curate-import-destination-name");
+const curateImportSelectAll = document.getElementById("curate-import-select-all");
+const curateImportFavoritesRow = document.getElementById("curate-import-favorites-row");
+const curateImportFavoritesCheck = document.getElementById("curate-import-favorites-check");
+const curateImportFavoritesLabel = document.getElementById("curate-import-favorites-label");
+const curateImportHiddenRow = document.getElementById("curate-import-hidden-row");
+const curateImportHiddenCheck = document.getElementById("curate-import-hidden-check");
+const curateImportHiddenLabel = document.getElementById("curate-import-hidden-label");
+const curateImportTagsList = document.getElementById("curate-import-tags-list");
+const curateImportStatus = document.getElementById("curate-import-status");
+const curateImportCancelBtn = document.getElementById("curate-import-cancel-btn");
+const curateImportCommitBtn = document.getElementById("curate-import-commit-btn");
+
+// [CURATION-IMPORT / STAGE-E] Duplicate Tag Repair refs.
+const duplicateTagNotice = document.getElementById("duplicate-tag-notice");
+const duplicateTagNoticeText = document.getElementById("duplicate-tag-notice-text");
+const duplicateTagReviewBtn = document.getElementById("duplicate-tag-review-btn");
+const duplicateTagRepairDialog = document.getElementById("duplicate-tag-repair-dialog");
+const duplicateTagRepairSelectAll = document.getElementById("duplicate-tag-repair-select-all");
+const duplicateTagRepairList = document.getElementById("duplicate-tag-repair-list");
+const duplicateTagRepairStatus = document.getElementById("duplicate-tag-repair-status");
+const duplicateTagRepairCancelBtn = document.getElementById("duplicate-tag-repair-cancel-btn");
+const duplicateTagRepairCommitBtn = document.getElementById("duplicate-tag-repair-commit-btn");
 const profileSyncIntro = document.getElementById("profile-sync-intro");
 const profileSyncIntroProgress = document.getElementById("profile-sync-intro-progress");
 const profileSyncIntroTitle = document.getElementById("profile-sync-intro-title");
@@ -6520,7 +6559,7 @@ function populateAssociationPicker({ preservePending = false } = {}) {
   for (const entry of profiles) {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.textContent = entry.name;
+    option.textContent = displayCurationLabel(entry, profiles);
     profileAssociationSelect.appendChild(option);
   }
 
@@ -11524,6 +11563,10 @@ profile.subscribe(() => {
   }
   renderTagsGrid();
   renderTagActivityCenter();
+  // [CURATION-IMPORT / STAGE-E] Any Tag vocabulary change (an import
+  // arriving, or a plain manual create) may resolve or introduce a
+  // same-name duplicate group — cheap enough to recompute on every change.
+  renderDuplicateTagNotice();
   // A tag being renamed or deleted (label change, or a chip disappearing
   // entirely) needs to reach the Presentation Tags panel too, not just
   // Gallery Settings' own grid.
@@ -11574,7 +11617,7 @@ function renderProfileSelector() {
   profiles.forEach((entry) => {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.textContent = `${entry.name} Curation`;
+    option.textContent = `${displayCurationLabel(entry, profiles)} Curation`;
     profileSelect.appendChild(option);
   });
 
@@ -11971,9 +12014,47 @@ profileSelect.addEventListener("change", async () => {
   }
 });
 
+// [CURATION-IMPORT / STAGE-D / CREATE DUPLICATE-NAME GUARD]
+// [WHY: manual creation used to silently mint a second identically-named
+//  Curation with no warning at all — the exact ambiguity this whole
+//  amendment exists to prevent. This never merges/aliases anything: "Use
+//  Existing" simply switches to the Curation that already has this name,
+//  and "Create Another" still mints a genuinely new, independent id.]
 async function createProfileFromInput() {
   const name = profileCreateInput.value.trim();
   if (!name) return;
+
+  const existing = profile.listProfiles();
+  const collisions = findCurationNameCollisions(name, existing);
+
+  let finalName = name;
+  if (collisions.length > 0) {
+    const existingLabel = displayCurationLabel(collisions[0], existing);
+    const choice = await openCurationChoiceDialog({
+      title: `A Curation named "${name}" already exists`,
+      choices: [
+        { label: "Cancel", value: "cancel" },
+        { label: "Create Another", value: "create-another" },
+        { label: `Use Existing ${existingLabel}`, value: "use-existing", primary: true },
+      ],
+    });
+
+    if (!choice || choice === "cancel") return;
+
+    if (choice === "use-existing") {
+      await profile.switchProfile(collisions[0].id);
+      profileCreateInput.value = "";
+      profileActiveStatusText.textContent = `Switched to the existing "${collisions[0].name}" Curation.`;
+      return;
+    }
+
+    // Create Another — the familiar filesystem "(2)" convention, editable
+    // before it's final.
+    const suggested = suggestNextCurationName(name, existing.map((entry) => entry.name));
+    const typed = window.prompt("Name for the new Curation:", suggested);
+    if (typed === null) return; // cancelled
+    finalName = typed.trim() || suggested;
+  }
 
   profileCreateBtn.disabled = true;
   try {
@@ -11984,7 +12065,7 @@ async function createProfileFromInput() {
     // (persists activeProfileId, resets in-memory state, loads the new
     // profile's isolated items/tags). "Save" in the UI == these two calls
     // in sequence.
-    const created = await profile.createProfile(name);
+    const created = await profile.createProfile(finalName);
     await profile.switchProfile(created.id);
 
     profileCreateInput.value = "";
@@ -12002,6 +12083,45 @@ profileCreateInput.addEventListener("keydown", (event) => {
     event.preventDefault();
     createProfileFromInput();
   }
+});
+
+// [CURATION-IMPORT / STAGE-D / FRONT-FACING RENAME — Feature 6]
+// [WHY: setProfileName() (profile-store.js) already existed and was already
+//  Sync-safe — it changes the `name` field only, stamped as an ordinary
+//  fact, and never touches the Curation's id, Favorites, Hidden, Tags, or
+//  Media Library associations. It was simply never exposed here. Renaming
+//  to a name already in use is a warning, never an automatic merge — see
+//  the choice dialog below.]
+profileRenameBtn.addEventListener("click", async () => {
+  const activeId = profile.getProfileId();
+  if (!activeId) return;
+
+  let newName = null;
+  for (;;) {
+    const typed = window.prompt("Rename this Curation:", newName ?? profile.getProfileName());
+    if (typed === null) return; // cancelled
+    newName = typed.trim();
+    if (!newName || newName === profile.getProfileName()) return;
+
+    const collisions = findCurationNameCollisions(newName, profile.listProfiles(), activeId);
+    if (collisions.length === 0) break;
+
+    const choice = await openCurationChoiceDialog({
+      title: `A Curation named "${newName}" already exists`,
+      body: "Renaming does not merge or combine Curations — it only changes what this one is called.",
+      choices: [
+        { label: "Cancel", value: "cancel" },
+        { label: "Choose Another Name", value: "choose-another" },
+        { label: `Use "${newName}" Anyway`, value: "use-anyway", primary: true },
+      ],
+    });
+    if (!choice || choice === "cancel") return;
+    if (choice === "use-anyway") break;
+    // "Choose Another Name" loops back to the prompt above.
+  }
+
+  profile.setProfileName(newName);
+  profileActiveStatusText.textContent = `Renamed to "${newName}".`;
 });
 
 profileDeleteBtn.addEventListener("click", async () => {
@@ -12069,8 +12189,6 @@ profile.subscribe(() => {
 
 // ---- Profile Export / Import ----------------------------------------------
 
-let pendingImportMode = "merge";
-
 function downloadTextFile(filename, text, mimeType = "application/json") {
   const blob = new Blob([text], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -12098,79 +12216,487 @@ profileExportBtn.addEventListener("click", () => {
   profileStatusText.textContent = `Exported ${count} curated item${count === 1 ? "" : "s"}.`;
 });
 
-profileImportMergeBtn.addEventListener("click", () => {
-  pendingImportMode = "merge";
-  profileImportInput.click();
-});
-
-profileImportReplaceBtn.addEventListener("click", () => {
-  pendingImportMode = "replace";
-  profileImportInput.click();
-});
+// [CURATION-IMPORT / STAGE-C]
+// [WHY: this replaces the old raw "Merge" / "Replace" / "Import as New"
+//  three-button surface, which asked the customer to already know which
+//  plumbing mode was safe. Browser Gallery now inspects the file's own
+//  Curation identity (curation-import-identity.js) and asks only the
+//  genuinely human question the amendment brief describes. "The customer
+//  curates. Browser Gallery does the bookkeeping."]
+profileImportBtn.addEventListener("click", () => profileImportInput.click());
 
 profileImportInput.addEventListener("change", async (event) => {
   const file = event.target.files && event.target.files[0];
   profileImportInput.value = "";
   if (!file) return;
 
+  let imported;
   try {
     const text = await file.text();
-    const knownRelativePaths = allItems.map((item) => item.relativePath);
+    imported = parseCurationExport(text);
+  } catch (error) {
+    profileStatusText.textContent = `Import failed: ${error.message}`;
+    return;
+  }
 
-    const result = profile.importJSON(text, {
-      mode: pendingImportMode,
-      skipMissingFiles: profileSkipMissingInput.checked,
-      knownRelativePaths,
+  // Existing "only import entries for files currently loaded" behavior,
+  // carried over from the old importer — a pre-filter on the parsed
+  // package, applied before identity classification/plan-building ever see it.
+  if (profileSkipMissingInput.checked) {
+    const knownRelativePaths = new Set(allItems.map((item) => item.relativePath));
+    const filteredItems = {};
+    for (const [path, record] of Object.entries(imported.items)) {
+      if (knownRelativePaths.has(path)) filteredItems[path] = record;
+    }
+    imported = { ...imported, items: filteredItems };
+  }
+
+  await routeCurationImport(imported);
+});
+
+// [CURATION-IMPORT / STAGE-C / IDENTIFY]
+// Case A (SAME_ID) / B (SAME_NAME_DIFFERENT_ID) / C (DIFFERENT) — routes to
+// the right decision. Commits nothing itself; see commitCurationImport().
+async function routeCurationImport(imported) {
+  const curations = profile.listProfiles();
+  const classification = classifyCurationImport({
+    importedProfileId: imported.profileId,
+    importedProfileName: imported.profileName,
+    curations,
+  });
+
+  if (classification.kind === "SAME_ID") {
+    const destination = classification.destinations[0];
+    await presentImportChoice({
+      imported,
+      destinationId: destination.id,
+      destinationLabel: displayCurationLabel(destination, curations),
     });
+    return;
+  }
 
-    profileStatusText.textContent =
-      `Import (${result.mode}) complete: ${result.applied} applied` +
-      (result.skipped ? `, ${result.skipped} skipped` : "") +
-      ".";
+  if (classification.kind === "DIFFERENT") {
+    const newCurationName = (imported.profileName || "").trim() || "Imported Curation";
+    await presentImportChoice({ imported, destinationId: null, destinationLabel: newCurationName, newCurationName });
+    return;
+  }
+
+  // SAME_NAME_DIFFERENT_ID — a genuine human decision, never resolved
+  // automatically. Multiple existing same-name candidates each get their
+  // own "Bring Into" choice, disambiguated with the existing conditional
+  // short-id display labels.
+  const candidates = classification.destinations;
+  const sourceName = (imported.profileName || "").trim() || "this Curation";
+
+  const choices = candidates.map((candidate) => ({
+    label: `Bring Into ${candidates.length > 1 ? "" : "Existing "}${displayCurationLabel(candidate, curations)}`,
+    value: { type: "bring-into", id: candidate.id },
+    primary: candidates.length === 1,
+  }));
+  choices.push({ label: "Keep Separate", value: { type: "keep-separate" } });
+  choices.push({ label: "Cancel", value: null });
+
+  const choice = await openCurationChoiceDialog({
+    title: `Another Curation named "${sourceName}" already exists`,
+    body: "Would you like to bring this import into your existing Curation, or keep it as a separate Curation?",
+    choices,
+  });
+
+  if (!choice) {
+    profileStatusText.textContent = "Import cancelled.";
+    return;
+  }
+
+  if (choice.type === "bring-into") {
+    const destination = candidates.find((candidate) => candidate.id === choice.id);
+    await presentImportChoice({
+      imported,
+      destinationId: destination.id,
+      destinationLabel: displayCurationLabel(destination, curations),
+    });
+    return;
+  }
+
+  // Keep Separate — a brand-new, independent Curation (never an alias of
+  // the existing same-name one). It's about to knowingly share a display
+  // name, so offer to rename it up front — see the brief's "RENAME DURING
+  // IMPORT". Leaving the suggestion as-is is fine too: the existing
+  // conditional short-id display system disambiguates duplicate names
+  // wherever Curations are later listed.
+  const suggested = suggestNextCurationName(sourceName, curations.map((entry) => entry.name));
+  const typedName = window.prompt("Import separately as:", suggested);
+  if (typedName === null) {
+    profileStatusText.textContent = "Import cancelled.";
+    return;
+  }
+  const separateName = typedName.trim() || suggested;
+  await presentImportChoice({ imported, destinationId: null, destinationLabel: separateName, newCurationName: separateName });
+}
+
+// [CURATION-IMPORT / STAGE-C / FEATURE 2 — IMPORT ALL + CURATE IMPORT]
+// The second decision, common to every case above once a destination is
+// known: the fast deterministic path, or customer review before anything
+// is written.
+async function presentImportChoice({ imported, destinationId, destinationLabel, newCurationName }) {
+  const choice = await openCurationChoiceDialog({
+    title: destinationId ? `Import into ${destinationLabel}` : `Import "${destinationLabel}" as a new Curation`,
+    choices: [
+      { label: "Cancel", value: "cancel" },
+      { label: "Curate Import", value: "curate" },
+      { label: "Import All", value: "all", primary: true },
+    ],
+  });
+
+  if (!choice || choice === "cancel") {
+    profileStatusText.textContent = "Import cancelled.";
+    return;
+  }
+
+  if (choice === "all") {
+    await commitCurationImport({ imported, destinationId, newCurationName, plan: null });
+    return;
+  }
+
+  await openCurateImportDialog({ imported, destinationId, destinationLabel, newCurationName });
+}
+
+// [CURATION-IMPORT / STAGE-C / COMMIT]
+// Applies either "Import All" (plan = null, so the default — everything
+// selected — plan is built and used on the spot) or a customer-approved
+// Curate Import plan. Destination targeting reuses the existing, safe
+// switchProfile() pattern (see curation-import-identity.js's header) rather
+// than a second write path — a brand-new destination is created + switched
+// exactly like the old "Import as New Curation" flow already did.
+async function commitCurationImport({ imported, destinationId, newCurationName, plan }) {
+  try {
+    let targetId = destinationId;
+    let targetLabel = null;
+
+    if (!targetId) {
+      const created = await profile.createProfile((newCurationName || imported.profileName || "Imported Curation").trim());
+      targetId = created.id;
+      targetLabel = created.name;
+    }
+
+    if (targetId !== profile.getProfileId()) {
+      await profile.switchProfile(targetId);
+    }
+    targetLabel = targetLabel || profile.getProfileName();
+
+    const finalPlan = plan || buildImportPlan({ imported, destination: await profile.getProfileSnapshot(targetId) });
+    const result = applyImportPlan(profile, finalPlan, imported.items);
+
+    const message =
+      `Imported into "${targetLabel}": ${result.tagsMerged} Tag${result.tagsMerged === 1 ? "" : "s"} merged, ` +
+      `${result.tagsCreated} new Tag${result.tagsCreated === 1 ? "" : "s"} added.`;
+    profileStatusText.textContent = message;
+    profileActiveStatusText.textContent = message;
   } catch (error) {
     profileStatusText.textContent = `Import failed: ${error.message}`;
   }
-});
+}
 
-// [LIBRARY-PROFILE-UX / Phase 8.5]
-// WHAT: "Import as New Profile" — populates a brand-new Profile from an
-// exported .json instead of merging/replacing into whichever Profile is
-// currently active.
-// WHY: Section 9 — reusing another Profile as a starting point without
-// two libraries ending up silently sharing one mutable Profile. Built
-// entirely from EXISTING primitives already used elsewhere on this page
-// (createProfile, switchProfile, importJSON) — no new persistence.
-// FUTURE: This is a one-time copy — the new Profile diverges independently
-// from here on, there is no ongoing link back to the source file.
-profileImportCopyBtn.addEventListener("click", () => profileImportCopyInput.click());
+// [CURATION-IMPORT / STAGE-C / FEATURE 3 — CURATE IMPORT STAGING]
+// [WHY: no ProfileStore mutation happens while the customer is checking
+//  boxes — every checkbox here edits `plan` in place, a plain in-memory
+//  object from buildImportPlan(). Only IMPORT SELECTED calls
+//  commitCurationImport(), which is the sole path to applyImportPlan().]
+function openCurateImportDialog({ imported, destinationId, destinationLabel, newCurationName }) {
+  curateImportSourceName.textContent = (imported.profileName || "").trim() || "(unnamed)";
+  curateImportDestinationName.textContent = destinationLabel;
+  curateImportStatus.textContent = "";
 
-profileImportCopyInput.addEventListener("change", async (event) => {
-  const file = event.target.files && event.target.files[0];
-  profileImportCopyInput.value = "";
-  if (!file) return;
+  function fingerprintTags(tags) {
+    return JSON.stringify((tags || []).map((tag) => [tag.id, tag.name]).sort());
+  }
 
-  try {
-    const text = await file.text();
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error("Not a recognized Curation file (invalid JSON).");
+  return (async () => {
+    const destinationSnapshot = destinationId ? await profile.getProfileSnapshot(destinationId) : null;
+    let plan = buildImportPlan({ imported, destination: destinationSnapshot });
+    // [STALE PLAN PROTECTION] What the plan was built against, so a commit
+    // can detect the destination's Tag vocabulary changing under it (e.g. a
+    // second browser tab) and refuse to apply a stale MATCH/NEW
+    // classification — see onCommit below.
+    let planFingerprint = fingerprintTags(destinationSnapshot?.tags);
+
+    function updateSelectAllState() {
+      const rows = [
+        ...(plan.favorites.total ? [plan.favorites.selected] : []),
+        ...(plan.hidden.total ? [plan.hidden.selected] : []),
+        ...plan.tags.map((tagPlan) => tagPlan.selected),
+      ];
+      const allSelected = rows.length > 0 && rows.every(Boolean);
+      const noneSelected = rows.every((value) => !value);
+      curateImportSelectAll.checked = allSelected;
+      curateImportSelectAll.indeterminate = !allSelected && !noneSelected;
     }
 
-    const suggestedName = typeof parsed.profileName === "string" && parsed.profileName.trim() ? parsed.profileName.trim() : "Imported Curation";
-    const name = window.prompt("Name for the new Curation:", suggestedName);
-    if (!name || !name.trim()) return; // cancelled
+    function updateCommitEnabled() {
+      curateImportCommitBtn.disabled = !importPlanHasSelection(plan);
+    }
 
-    const created = await profile.createProfile(name.trim());
-    await profile.switchProfile(created.id);
-    const result = profile.importJSON(parsed, { mode: "replace" });
+    function renderRows() {
+      curateImportFavoritesRow.classList.toggle("hidden", plan.favorites.total === 0);
+      curateImportFavoritesCheck.checked = plan.favorites.selected;
+      curateImportFavoritesLabel.textContent = plan.favorites.total
+        ? `Favorites   ${plan.favorites.total} — ${plan.favorites.known} already known · ${plan.favorites.new} new`
+        : "Favorites";
 
-    profileActiveStatusText.textContent = `Created "${created.name}" from import (${result.applied} applied).`;
-  } catch (error) {
-    profileActiveStatusText.textContent = `Could not import as a new Curation: ${error.message}`;
+      curateImportHiddenRow.classList.toggle("hidden", plan.hidden.total === 0);
+      curateImportHiddenCheck.checked = plan.hidden.selected;
+      curateImportHiddenLabel.textContent = plan.hidden.total
+        ? `Hidden   ${plan.hidden.total} — ${plan.hidden.known} already known · ${plan.hidden.new} new`
+        : "Hidden";
+
+      curateImportTagsList.innerHTML = "";
+      plan.tags.forEach((tagPlan) => {
+        const row = document.createElement("label");
+        row.className = "compact-check curate-import-tag-row";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = tagPlan.selected;
+
+        const name = document.createElement("span");
+        name.className = "curate-import-tag-name";
+        name.textContent = tagPlan.importedTagName;
+
+        const badge = document.createElement("span");
+        badge.className = "curate-import-tag-badge";
+        badge.textContent = tagPlan.matchType;
+
+        const action = document.createElement("span");
+        action.className = "curate-import-tag-action";
+        const updateAction = () => {
+          action.textContent = tagPlan.selected ? (tagPlan.matchType === "MATCH" ? "Merge" : "Add") : "Skip";
+        };
+        updateAction();
+
+        checkbox.addEventListener("change", () => {
+          tagPlan.selected = checkbox.checked;
+          updateAction();
+          updateSelectAllState();
+          updateCommitEnabled();
+        });
+
+        row.append(checkbox, name, badge, action);
+        curateImportTagsList.appendChild(row);
+      });
+
+      updateSelectAllState();
+      updateCommitEnabled();
+    }
+
+    renderRows();
+
+    return new Promise((resolve) => {
+      const onFavoritesChange = () => {
+        plan.favorites.selected = curateImportFavoritesCheck.checked;
+        updateSelectAllState();
+        updateCommitEnabled();
+      };
+      const onHiddenChange = () => {
+        plan.hidden.selected = curateImportHiddenCheck.checked;
+        updateSelectAllState();
+        updateCommitEnabled();
+      };
+      // Note: checked/unchecked by hand-toggling every row, not a second
+      // "Clear All" affordance — see the brief's SELECT ALL section.
+      const onSelectAllChange = () => {
+        const value = curateImportSelectAll.checked;
+        plan.favorites.selected = value;
+        plan.hidden.selected = value;
+        plan.tags.forEach((tagPlan) => (tagPlan.selected = value));
+        renderRows();
+      };
+
+      const onCommit = async () => {
+        const freshSnapshot = destinationId ? await profile.getProfileSnapshot(destinationId) : null;
+        if (fingerprintTags(freshSnapshot?.tags) !== planFingerprint) {
+          plan = buildImportPlan({ imported, destination: freshSnapshot });
+          planFingerprint = fingerprintTags(freshSnapshot?.tags);
+          renderRows();
+          curateImportStatus.textContent =
+            "The destination changed since this opened — the plan was refreshed. Review it, then Import Selected again.";
+          return;
+        }
+
+        curateImportCommitBtn.disabled = true;
+        await commitCurationImport({ imported, destinationId, newCurationName, plan });
+        curateImportDialog.close();
+      };
+      const onCancel = () => curateImportDialog.close();
+
+      const onDialogClose = () => {
+        curateImportFavoritesCheck.removeEventListener("change", onFavoritesChange);
+        curateImportHiddenCheck.removeEventListener("change", onHiddenChange);
+        curateImportSelectAll.removeEventListener("change", onSelectAllChange);
+        curateImportCommitBtn.removeEventListener("click", onCommit);
+        curateImportCancelBtn.removeEventListener("click", onCancel);
+        curateImportDialog.removeEventListener("close", onDialogClose);
+        resolve();
+      };
+
+      curateImportFavoritesCheck.addEventListener("change", onFavoritesChange);
+      curateImportHiddenCheck.addEventListener("change", onHiddenChange);
+      curateImportSelectAll.addEventListener("change", onSelectAllChange);
+      curateImportCommitBtn.addEventListener("click", onCommit);
+      curateImportCancelBtn.addEventListener("click", onCancel);
+      curateImportDialog.addEventListener("close", onDialogClose);
+
+      curateImportDialog.showModal();
+    });
+  })();
+}
+
+// [CURATION-IMPORT / STAGE-C / GENERIC CHOICE DIALOG]
+// Reused for every simple identify-then-decide moment this amendment adds —
+// Import identity Case A/B/C's decisions, the Create-Curation name-collision
+// guard, and the Rename name-collision guard. Resolves to the `value` of
+// whichever choice was clicked, or null if the dialog was dismissed
+// (Escape / no choice made).
+function openCurationChoiceDialog({ title, body = "", choices }) {
+  return new Promise((resolve) => {
+    curationChoiceTitle.textContent = title;
+    if (body) {
+      curationChoiceBody.textContent = body;
+      curationChoiceBody.classList.remove("hidden");
+    } else {
+      curationChoiceBody.textContent = "";
+      curationChoiceBody.classList.add("hidden");
+    }
+    curationChoiceActions.innerHTML = "";
+
+    let resolvedValue = null;
+    const onClose = () => {
+      curationChoiceDialog.removeEventListener("close", onClose);
+      resolve(resolvedValue);
+    };
+    curationChoiceDialog.addEventListener("close", onClose);
+
+    choices.forEach((choice) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = choice.label;
+      button.className = choice.primary ? "app-dialog-primary" : "secondary";
+      button.addEventListener("click", () => {
+        resolvedValue = choice.value;
+        curationChoiceDialog.close();
+      });
+      curationChoiceActions.appendChild(button);
+    });
+
+    curationChoiceDialog.showModal();
+  });
+}
+
+// [CURATION-IMPORT / STAGE-E / FEATURE 4 — DUPLICATE TAG REPAIR]
+// Same non-mutating staging discipline as Curate Import above — nothing
+// changes until MERGE SELECTED. See duplicate-tag-repair.js for why this is
+// safe with today's V3/Sync tombstone semantics and needs no new alias
+// infrastructure.
+function renderDuplicateTagNotice() {
+  const plan = buildDuplicateTagRepairPlan(profile.getTags());
+  if (plan.length === 0) {
+    duplicateTagNotice.classList.add("hidden");
+    return;
   }
-});
+  duplicateTagNotice.classList.remove("hidden");
+  duplicateTagNoticeText.textContent =
+    `Duplicate Tags found: ${plan.map((group) => `${group.name} ×${group.tagIds.length}`).join(", ")}`;
+}
+
+duplicateTagReviewBtn.addEventListener("click", () => openDuplicateTagRepairDialog());
+
+function openDuplicateTagRepairDialog() {
+  let plan = buildDuplicateTagRepairPlan(profile.getTags());
+  if (plan.length === 0) return Promise.resolve();
+
+  duplicateTagRepairStatus.textContent = "";
+
+  function updateSelectAllState() {
+    const allSelected = plan.every((group) => group.selected);
+    const noneSelected = plan.every((group) => !group.selected);
+    duplicateTagRepairSelectAll.checked = allSelected;
+    duplicateTagRepairSelectAll.indeterminate = !allSelected && !noneSelected;
+  }
+
+  function updateCommitEnabled() {
+    duplicateTagRepairCommitBtn.disabled = !plan.some((group) => group.selected);
+  }
+
+  function renderRows() {
+    duplicateTagRepairList.innerHTML = "";
+    plan.forEach((group) => {
+      const row = document.createElement("label");
+      row.className = "compact-check curate-import-tag-row";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = group.selected;
+
+      const name = document.createElement("span");
+      name.className = "curate-import-tag-name";
+      name.textContent = group.name;
+
+      const detail = document.createElement("span");
+      detail.className = "curate-import-tag-badge";
+      detail.textContent = `${group.tagIds.length} tag records`;
+
+      const action = document.createElement("span");
+      action.className = "curate-import-tag-action";
+      const updateAction = () => {
+        action.textContent = group.selected ? `→ merge into one ${group.name}` : "leave unchanged";
+      };
+      updateAction();
+
+      checkbox.addEventListener("change", () => {
+        group.selected = checkbox.checked;
+        updateAction();
+        updateSelectAllState();
+        updateCommitEnabled();
+      });
+
+      row.append(checkbox, name, detail, action);
+      duplicateTagRepairList.appendChild(row);
+    });
+
+    updateSelectAllState();
+    updateCommitEnabled();
+  }
+
+  renderRows();
+
+  return new Promise((resolve) => {
+    const onSelectAllChange = () => {
+      const value = duplicateTagRepairSelectAll.checked;
+      plan.forEach((group) => (group.selected = value));
+      renderRows();
+    };
+    const onCommit = () => {
+      const result = applyDuplicateTagRepairPlan(profile, plan);
+      tagsStatusText.textContent =
+        `Merged duplicate Tags: ${result.tombstoned} removed, ${result.reassigned} assignment${result.reassigned === 1 ? "" : "s"} reassigned.`;
+      duplicateTagRepairDialog.close();
+    };
+    const onCancel = () => duplicateTagRepairDialog.close();
+
+    const onDialogClose = () => {
+      duplicateTagRepairSelectAll.removeEventListener("change", onSelectAllChange);
+      duplicateTagRepairCommitBtn.removeEventListener("click", onCommit);
+      duplicateTagRepairCancelBtn.removeEventListener("click", onCancel);
+      duplicateTagRepairDialog.removeEventListener("close", onDialogClose);
+      resolve();
+    };
+
+    duplicateTagRepairSelectAll.addEventListener("change", onSelectAllChange);
+    duplicateTagRepairCommitBtn.addEventListener("click", onCommit);
+    duplicateTagRepairCancelBtn.addEventListener("click", onCancel);
+    duplicateTagRepairDialog.addEventListener("close", onDialogClose);
+
+    duplicateTagRepairDialog.showModal();
+  });
+}
 
 // Centralized reaction to ANY profile change — a single toggle, a merge
 // import, or a replace import all funnel through here. allItems is kept in
@@ -12882,6 +13408,7 @@ syncVideoLoopControl();
 resetLoopRuleToDefault();
 syncUndoHideButton();
 renderTagsGrid();
+renderDuplicateTagNotice();
 renderTagsFilterGrid();
 renderProfileSelector();
 // [LIBRARY-PROFILE-UX / Phase 8.5] Redundant with the HTML default (both

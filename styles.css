@@ -1749,6 +1749,89 @@ button:not(:disabled):hover,
   border-color: transparent;
 }
 
+.app-dialog-primary:disabled {
+  opacity: 0.5;
+}
+
+/* [CURATION-IMPORT / STAGE-C] Curate Import / Duplicate Tag Repair need more
+   room than a plain confirmation dialog (a scrollable Tag list), so they
+   widen the shared .app-dialog shell rather than growing their own. */
+.curate-import-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+}
+
+.curate-import-dialog .app-dialog-inner {
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+
+.curate-import-tags-heading {
+  margin: 4px 0 0;
+  font-size: 0.95rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.curate-import-tags-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.curate-import-tag-row {
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.curate-import-tag-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.curate-import-tag-badge {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.curate-import-tag-action {
+  font-size: 0.82rem;
+  color: var(--text);
+  flex: 0 0 auto;
+  min-width: 48px;
+  text-align: right;
+}
+
+.duplicate-tag-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(9, 16, 29, 0.65);
+  margin-bottom: 10px;
+}
+
+.duplicate-tag-notice p {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.profile-current-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* [UI-REDESIGN / Stage 1B]
    WHAT: The two width-dependent Tags rules, re-tuned for the Tagging
    workspace. The grid was a hardcoded `1fr 1fr` and the create row was

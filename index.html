@@ -1490,6 +1490,7 @@
                 is still focused directly by the rail shortcut. -->
           <div class="profile-current-row">
             <select id="profile-select" class="field-control" aria-label="Curation this device is using" aria-describedby="profile-active-context-help"></select>
+            <button id="profile-rename-btn" class="secondary" type="button">Rename</button>
           </div>
           <div id="profile-active-context-help" class="contextual-help hidden" role="note">
             <p class="hint"></p>
@@ -1535,25 +1536,20 @@
         <details class="profile-import-export-section">
         <summary>Import / Export</summary>
 
+        <!-- [CURATION-IMPORT / STAGE-C]
+             WHAT: Replaces the old raw Merge/Replace/"Import as New"
+             three-button surface, which required the customer to already
+             know which mode was safe, with ONE entry point. Browser Gallery
+             now inspects the file's Curation identity itself (see
+             curation-import-identity.js) and asks only the genuinely human
+             question — bring this into an existing Curation, or keep it
+             separate — never "merge or replace?".
+             WHY: "The customer curates. Browser Gallery does the
+             bookkeeping." -->
         <div class="control-stack">
           <button id="profile-export-btn" class="secondary" type="button">Export Curation (.json)</button>
-          <button id="profile-import-merge-btn" class="secondary" type="button">Import Curation (Merge)</button>
-          <button id="profile-import-replace-btn" class="secondary" type="button">Import Curation (Replace)</button>
+          <button id="profile-import-btn" class="secondary" type="button">Import Curation…</button>
           <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
-          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
-               WHAT: Creates a brand-new, independent Profile pre-populated
-               from an exported .json, instead of merging/replacing into
-               whichever Profile is currently active.
-               WHY: Section 9 — "reuse another Profile as a starting point"
-               without two libraries ending up silently sharing one mutable
-               Profile. Built entirely from EXISTING primitives
-               (createProfile + switchProfile + importJSON(\"replace\")) —
-               no new Profile-storage mechanism.
-               FUTURE: The created Profile diverges independently from here
-               on — this is a one-time copy, not an ongoing link back to
-               the source file. -->
-          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Curation</button>
-          <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
         </div>
 
         <label class="compact-check wide-check">
@@ -1623,6 +1619,15 @@
         </div>
 
         <p id="tags-status-text" class="hint" role="status"></p>
+
+        <!-- [CURATION-IMPORT / STAGE-E / DUPLICATE-TAG-REPAIR]
+             Hidden unless buildDuplicateTagRepairPlan() actually finds a
+             same-name group in this Curation's own vocabulary — see
+             renderDuplicateTagNotice() in main.js. -->
+        <div id="duplicate-tag-notice" class="duplicate-tag-notice hidden" role="status">
+          <p id="duplicate-tag-notice-text" class="hint"></p>
+          <button id="duplicate-tag-review-btn" class="secondary" type="button">Review &amp; Merge</button>
+        </div>
 
         <div id="tags-empty" class="hint">No tags yet.</div>
         <div id="tags-grid" class="tags-grid hidden"></div>
@@ -2136,6 +2141,88 @@
         <button id="profile-sync-setup-copy-btn" class="secondary" type="button">Copy Folder Name</button>
         <button id="profile-sync-setup-cancel-btn" class="secondary" type="button">Cancel</button>
         <button id="profile-sync-setup-open-btn" class="app-dialog-primary" type="button" autofocus>Open Google Drive Picker</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- [CURATION-IMPORT / STAGE-C / GENERIC CHOICE DIALOG]
+       WHAT: One reusable 2-3 button decision dialog (openCurationChoiceDialog()
+       in main.js), used for every simple identify-then-decide moment this
+       amendment adds — Import identity Case A/B/C's first choice, the
+       Create-Curation name-collision guard, and the Rename name-collision
+       guard. A single small primitive rather than near-identical bespoke
+       dialogs at each call site.
+       WHY: reuses the existing .app-dialog shell (see profile-sync-setup-dialog
+       above), which was deliberately named generically for exactly this. -->
+  <dialog id="curation-choice-dialog" class="app-dialog" aria-labelledby="curation-choice-title">
+    <div class="app-dialog-inner">
+      <h2 id="curation-choice-title" class="app-dialog-title"></h2>
+      <p id="curation-choice-body" class="app-dialog-body hidden"></p>
+      <div id="curation-choice-actions" class="app-dialog-actions"></div>
+    </div>
+  </dialog>
+
+  <!-- [CURATION-IMPORT / STAGE-C / CURATE IMPORT]
+       WHAT: The staging review surface for Feature 3 — nothing here mutates
+       ProfileStore. Checkboxes edit an in-memory Import Plan
+       (curation-import-plan.js); only IMPORT SELECTED commits it
+       (curation-import-commit.js). -->
+  <dialog id="curate-import-dialog" class="app-dialog curate-import-dialog" aria-labelledby="curate-import-title">
+    <div class="app-dialog-inner">
+      <h2 id="curate-import-title" class="app-dialog-title">Curate Import</h2>
+      <p class="app-dialog-body">
+        Imported Curation: <strong id="curate-import-source-name"></strong><br />
+        Destination: <strong id="curate-import-destination-name"></strong>
+      </p>
+      <p class="hint" id="curate-import-question">What would you like to bring in?</p>
+
+      <label class="compact-check wide-check">
+        <input id="curate-import-select-all" type="checkbox" />
+        <span>Select All</span>
+      </label>
+
+      <label id="curate-import-favorites-row" class="compact-check wide-check">
+        <input id="curate-import-favorites-check" type="checkbox" />
+        <span id="curate-import-favorites-label"></span>
+      </label>
+
+      <label id="curate-import-hidden-row" class="compact-check wide-check">
+        <input id="curate-import-hidden-check" type="checkbox" />
+        <span id="curate-import-hidden-label"></span>
+      </label>
+
+      <h3 class="curate-import-tags-heading">Tags</h3>
+      <div id="curate-import-tags-list" class="curate-import-tags-list"></div>
+
+      <p id="curate-import-status" class="hint" role="status"></p>
+
+      <div class="app-dialog-actions">
+        <button id="curate-import-cancel-btn" class="secondary" type="button">Cancel</button>
+        <button id="curate-import-commit-btn" class="app-dialog-primary" type="button" disabled>Import Selected</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- [CURATION-IMPORT / STAGE-E / DUPLICATE-TAG-REPAIR]
+       WHAT: The staging review surface for Feature 4 — same non-mutating
+       staging discipline as Curate Import above; nothing changes until
+       MERGE SELECTED (duplicate-tag-repair.js). -->
+  <dialog id="duplicate-tag-repair-dialog" class="app-dialog curate-import-dialog" aria-labelledby="duplicate-tag-repair-title">
+    <div class="app-dialog-inner">
+      <h2 id="duplicate-tag-repair-title" class="app-dialog-title">Merge Duplicate Tags</h2>
+
+      <label class="compact-check wide-check">
+        <input id="duplicate-tag-repair-select-all" type="checkbox" />
+        <span>Select All</span>
+      </label>
+
+      <div id="duplicate-tag-repair-list" class="curate-import-tags-list"></div>
+
+      <p id="duplicate-tag-repair-status" class="hint" role="status"></p>
+
+      <div class="app-dialog-actions">
+        <button id="duplicate-tag-repair-cancel-btn" class="secondary" type="button">Cancel</button>
+        <button id="duplicate-tag-repair-commit-btn" class="app-dialog-primary" type="button" disabled>Merge Selected</button>
       </div>
     </div>
   </dialog>
