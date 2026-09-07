@@ -4,6 +4,8 @@ import {
   SHUFFLE_MODE_LOOP,
 } from "./shuffle-selector.js";
 
+const MAX_PLANNED_ITEMS = 6;
+
 export class MediaRuntime {
   #items = [];
   #currentIndex = -1;
@@ -12,6 +14,9 @@ export class MediaRuntime {
   #shuffle = true;
   #shuffleMode = SHUFFLE_MODE_LOOP;
   #shufflePoolKey = null;
+  #plan = [];
+  #planPoolKey = null;
+  #advanceHeld = false;
   #random = Math.random;
   #loop = true;
   #isPlaying = false;
@@ -125,6 +130,7 @@ export class MediaRuntime {
   }
 
   load(items) {
+    this.#advanceHeld = false;
     this.stop();
     this.#items = Array.isArray(items) ? [...items] : [];
     this.#items.forEach((item) => this.#stampProfileFields(item));
@@ -185,6 +191,7 @@ export class MediaRuntime {
 
   setShuffle(enabled) {
     this.#shuffle = Boolean(enabled);
+    this.#clearPlan();
     this.#emit();
   }
 
@@ -196,6 +203,7 @@ export class MediaRuntime {
     if (normalized === this.#shuffleMode) return;
     this.#shuffleMode = normalized;
     this.#shufflePoolKey = null;
+    this.#clearPlan();
     this.#visitedShuffleIndices = this.#currentIndex >= 0 ? new Set([this.#currentIndex]) : new Set();
     this.#emit();
   }
@@ -220,6 +228,7 @@ export class MediaRuntime {
     if (index < 0 || index >= this.#items.length) return;
 
     this.#currentIndex = index;
+    this.#clearPlan();
 
     if (keepHistory) {
       this.#history.splice(this.#historyCursor + 1);
@@ -265,6 +274,7 @@ export class MediaRuntime {
     if (removedIndex === -1) return false;
 
     const wasCurrent = this.#currentIndex === removedIndex;
+    this.#clearPlan();
     this.#items.splice(removedIndex, 1);
 
     const shift = (index) => (index > removedIndex ? index - 1 : index);
@@ -356,25 +366,32 @@ export class MediaRuntime {
       // [PLAYBACK / SHUFFLE-MODES / SHUFFLE-LOOP]
       // A membership change starts a fresh cycle. The key is transient and
       // derived from the runtime-owned eligible pool; nothing is persisted.
-      const poolKey = JSON.stringify(
-        eligibleIndices.map((index) => [index, this.#items[index]?.id ?? this.#items[index]?.relativePath ?? null])
-      );
+      const poolKey = this.#poolKey(eligibleIndices);
       if (poolKey !== this.#shufflePoolKey) {
         this.#shufflePoolKey = poolKey;
+        this.#clearPlan();
         this.#visitedShuffleIndices = eligibleIndices.includes(this.#currentIndex)
           ? new Set([this.#currentIndex])
           : new Set();
       }
 
-      const selection = selectNextShuffledIndex({
-        eligibleIndices,
-        currentIndex: this.#currentIndex,
-        mode: this.#shuffleMode,
-        visitedIndices: this.#visitedShuffleIndices,
-        random: this.#random,
-      });
-      const nextIndex = selection.nextIndex;
-      this.#visitedShuffleIndices = new Set(selection.visitedIndices);
+      let nextIndex;
+      if (this.#plan.length && this.#planPoolKey === poolKey) {
+        const entry = this.#plan.shift();
+        nextIndex = entry.index;
+        this.#visitedShuffleIndices = new Set(entry.visitedIndices);
+      } else {
+        this.#clearPlan();
+        const selection = selectNextShuffledIndex({
+          eligibleIndices,
+          currentIndex: this.#currentIndex,
+          mode: this.#shuffleMode,
+          visitedIndices: this.#visitedShuffleIndices,
+          random: this.#random,
+        });
+        nextIndex = selection.nextIndex;
+        this.#visitedShuffleIndices = new Set(selection.visitedIndices);
+      }
       if (nextIndex === null) return;
 
       this.#currentIndex = nextIndex;
@@ -440,7 +457,12 @@ export class MediaRuntime {
   }
 
   play() {
-    if (!this.#items.length || this.#isPlaying) return;
+    this.#advanceHeld = false;
+    if (!this.#items.length) return;
+    if (this.#isPlaying) {
+      this.#scheduleAdvance();
+      return;
+    }
 
     this.#isPlaying = true;
     this.#scheduleAdvance();
@@ -448,6 +470,7 @@ export class MediaRuntime {
   }
 
   stop() {
+    this.#advanceHeld = false;
     if (!this.#isPlaying && this.#timerId === null) return;
 
     this.#isPlaying = false;
@@ -464,6 +487,75 @@ export class MediaRuntime {
   notifyVideoEnded() {
     if (!this.#isPlaying) return;
     this.next();
+  }
+
+  holdAdvanceForPendingVisual() {
+    this.#advanceHeld = true;
+    this.#clearTimer();
+  }
+
+  notifyCurrentItemVisible() {
+    this.#advanceHeld = false;
+    this.#scheduleAdvance();
+  }
+
+  // BREADCRUMBS - WAS
+  // Shuffle decisions were made only inside next(); callers could not know the
+  // actual future sequence without creating a second random-selection path.
+  //
+  // BREADCRUMBS - IS
+  // MediaRuntime remains the one shuffle authority. getPlannedItems() records
+  // the existing selector's real future outputs without moving currentIndex,
+  // history or navigationStep, and next() consumes that same plan head. The
+  // existing eligible-pool key remains the validity boundary.
+  //
+  // BREADCRUMBS - WILL BE
+  // Planning intentionally remains a small in-memory window. Discarded plans
+  // also discard already-consumed RNG draws because eligibility changed; no
+  // persistence or alternative shuffle authority should be inferred from it.
+  getPlannedItems(count) {
+    const requested = Math.min(MAX_PLANNED_ITEMS, Math.max(0, Math.floor(Number(count) || 0)));
+    if (!requested || !this.#shuffle || this.#items.length < 2 || this.#historyCursor < this.#history.length - 1) {
+      return [];
+    }
+
+    const eligibleIndices = this.#visibleIndices();
+    if (eligibleIndices.length < 2) return [];
+    const poolKey = this.#poolKey(eligibleIndices);
+
+    if (poolKey !== this.#shufflePoolKey) {
+      this.#shufflePoolKey = poolKey;
+      this.#clearPlan();
+      this.#visitedShuffleIndices = eligibleIndices.includes(this.#currentIndex)
+        ? new Set([this.#currentIndex])
+        : new Set();
+    }
+
+    if (this.#planPoolKey !== poolKey) {
+      this.#clearPlan();
+      this.#planPoolKey = poolKey;
+    }
+
+    let plannedIndex = this.#plan.length ? this.#plan.at(-1).index : this.#currentIndex;
+    let plannedVisited = this.#plan.length
+      ? new Set(this.#plan.at(-1).visitedIndices)
+      : new Set(this.#visitedShuffleIndices);
+
+    while (this.#plan.length < requested) {
+      const selection = selectNextShuffledIndex({
+        eligibleIndices,
+        currentIndex: plannedIndex,
+        mode: this.#shuffleMode,
+        visitedIndices: plannedVisited,
+        random: this.#random,
+      });
+      if (selection.nextIndex === null) break;
+      this.#plan.push({ index: selection.nextIndex, visitedIndices: [...selection.visitedIndices] });
+      plannedIndex = selection.nextIndex;
+      plannedVisited = new Set(selection.visitedIndices);
+    }
+
+    return this.#plan.slice(0, requested).map((entry) => this.#items[entry.index]);
   }
 
   #isCurrentItemVideo() {
@@ -483,6 +575,17 @@ export class MediaRuntime {
       if (this.#isItemVisible(item)) indices.push(index);
     });
     return indices;
+  }
+
+  #poolKey(eligibleIndices) {
+    return JSON.stringify(
+      eligibleIndices.map((index) => [index, this.#items[index]?.id ?? this.#items[index]?.relativePath ?? null])
+    );
+  }
+
+  #clearPlan() {
+    this.#plan = [];
+    this.#planPoolKey = null;
   }
 
   // Sequential-mode forward search: tries fromIndex+1..end first, then
@@ -578,6 +681,7 @@ export class MediaRuntime {
 
   #scheduleAdvance() {
     this.#clearTimer();
+    if (this.#advanceHeld) return;
     if (!this.#isPlaying) return;
 
     // Videos advance on their own "ended" event (see notifyVideoEnded),
@@ -590,6 +694,7 @@ export class MediaRuntime {
   }
 
   clear() {
+    this.#advanceHeld = false;
     this.stop();
     this.#items = [];
     this.#currentIndex = -1;
@@ -602,6 +707,7 @@ export class MediaRuntime {
     this.#historyCursor = this.#history.length ? 0 : -1;
     this.#visitedShuffleIndices = this.#history.length ? new Set(this.#history) : new Set();
     this.#shufflePoolKey = null;
+    this.#clearPlan();
   }
 
   // Keeps the history stack from growing unbounded over a long-running

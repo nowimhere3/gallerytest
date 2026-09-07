@@ -1,0 +1,3 @@
+https://cdn.invalid/dead/one.jpg
+https://cdn.invalid/dead/two.png
+https://cdn.invalid/dead/three.mp4

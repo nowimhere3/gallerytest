@@ -1,5 +1,16 @@
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
+import { extractRemoteUrls } from "./providers/remote-url-parser.js";
+import { RemoteUrlProvider } from "./providers/remote-url-provider.js";
+import { classifySelection } from "./intake/classify-selection.js";
+import {
+  collectSelectionEvidence,
+  combineQualifyingFloppyTexts,
+} from "./intake/collect-selection-evidence.js";
+import {
+  getRememberedCassetteOwner,
+  readRememberedFolder,
+} from "./intake/collect-folder-evidence.js";
 import {
   listLibraries,
   addOrUpdateLibrary,
@@ -11,7 +22,28 @@ import {
   getLibraryById,
   getLibraryByLibraryId,
 } from "./storage/library-registry.js";
+import {
+  listCassettes,
+  addOrUpdateCassette,
+  touchCassette,
+  removeCassette,
+} from "./storage/cassette-registry.js";
+import {
+  getSourceCuration,
+  setSourceCuration,
+  clearSourceCuration,
+} from "./storage/source-curation-registry.js";
 import { decideBootRestore, decideStartupMedia } from "./storage/boot-restore.js";
+// [PM-SHUFFLE-FOLDERS] Pure candidate ORDERING only — the switching itself
+// stays on this file's existing authoritative resumeLibrary() path. See that
+// module's header for why the two halves are split this way.
+import { orderShuffleFolderCandidates } from "./runtime/folder-shuffle.js";
+// [PRESENTATION-PERF / PHASE 3A] Pure staleness decision only — the preparing,
+// the timing and the DOM commit all stay in this file. See that module's header
+// for what each of the four guarded facts protects against.
+import { shouldCommitPreparedViewer } from "./runtime/viewer-commit.js";
+import { planReadyQueueWork } from "./runtime/ready-queue.js";
+import { canApplyWarmStartRelease, shouldReleaseWarmStart } from "./runtime/warm-start.js";
 import { computeLegacySignature, matchLegacySignature } from "./storage/legacy-library-signature.js";
 // [MEDIA-ID / STAGE-01 / CAPTURE-NOW-SEEDING]
 // [WHY: MEDIA-ID is a WRITE-ONLY evidence pass in Stage 01 — it records what is
@@ -69,6 +101,13 @@ import {
 } from "./profile/contextual-first-use.js";
 import { createAssociationWriteSuppression } from "./profile/association-write-suppression.js";
 import { describeMediaLibraryOptions } from "./profile/media-library-options.js";
+import { displayCurationLabel } from "./profile/curation-display.js";
+import { parseCurationExport } from "./profile/curation-import-parse.js";
+import { classifyCurationImport } from "./profile/curation-import-identity.js";
+import { buildImportPlan, importPlanHasSelection } from "./profile/curation-import-plan.js";
+import { applyImportPlan } from "./profile/curation-import-commit.js";
+import { buildDuplicateTagRepairPlan, applyDuplicateTagRepairPlan } from "./profile/duplicate-tag-repair.js";
+import { findCurationNameCollisions, suggestNextCurationName } from "./profile/curation-name-guard.js";
 import { createAmbientProfileObserver } from "./profile/ambient-profile-observer.js";
 import { applyLoadTimeProfileRestoration } from "./profile/load-time-profile-restoration.js";
 import { resolveProvenParentCuration } from "./profile/parent-curation-inheritance.js";
@@ -109,6 +148,7 @@ const provider = new LocalFileInputProvider();
 // (see loadFiles/loadFromFsaHandle below), since only one media set is
 // ever actually loaded into the app at once.
 const fsaProvider = new FsaFileProvider();
+const remoteProvider = new RemoteUrlProvider();
 const profile = new ProfileStore();
 // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
 // [WHY: constructed immediately beside `profile` and handed to MediaRuntime
@@ -189,6 +229,9 @@ const legacyPickerDetails = document.getElementById("legacy-picker-details");
 const fsaChooseFolderBtn = document.getElementById("fsa-choose-folder-btn");
 const fsaRecentLibrariesEl = document.getElementById("fsa-recent-libraries");
 const fsaStatusText = document.getElementById("fsa-status-text");
+const remoteStatusText = document.getElementById("remote-status-text");
+const cassetteAddBtn = document.getElementById("cassette-add-btn");
+const remoteCassettesEl = document.getElementById("remote-cassettes");
 const fsaAssociateBtn = document.getElementById("fsa-associate-btn");
 const fsaAssociateBtnLabel = document.getElementById("fsa-associate-btn-label");
 const fsaAssociateHelp = document.getElementById("fsa-associate-help");
@@ -292,6 +335,7 @@ const deviceAwareMediaQuestionYes = document.getElementById("device-aware-media-
 const deviceAwareMediaQuestionNo = document.getElementById("device-aware-media-question-no");
 const deviceAwareMediaQuestionResult = document.getElementById("device-aware-media-question-result");
 const profileFolderLinkSummary = document.getElementById("profile-folder-link-summary");
+const profileMediaSource = document.getElementById("profile-media-source");
 const profileFolderLinkAdvancedSummary = document.getElementById("profile-folder-link-advanced-summary");
 const profileFolderLinkBtn = document.getElementById("profile-folder-link-btn");
 const profileFolderActionHelp = document.getElementById("profile-folder-action-help");
@@ -318,18 +362,50 @@ const profileActiveContextHelp = document.getElementById("profile-active-context
 const profileSyncContextHelp = document.getElementById("profile-sync-context-help");
 const profileSyncMediaSafety = document.getElementById("profile-sync-media-safety");
 const profileDeleteBtn = document.getElementById("profile-delete-btn");
+const profileRenameBtn = document.getElementById("profile-rename-btn");
 const profileCreateInput = document.getElementById("profile-create-input");
 const profileCreateBtn = document.getElementById("profile-create-btn");
 const profileActiveStatusText = document.getElementById("profile-active-status-text");
 
 const profileExportBtn = document.getElementById("profile-export-btn");
-const profileImportMergeBtn = document.getElementById("profile-import-merge-btn");
-const profileImportReplaceBtn = document.getElementById("profile-import-replace-btn");
+const profileImportBtn = document.getElementById("profile-import-btn");
 const profileImportInput = document.getElementById("profile-import-input");
-const profileImportCopyBtn = document.getElementById("profile-import-copy-btn");
-const profileImportCopyInput = document.getElementById("profile-import-copy-input");
 const profileSkipMissingInput = document.getElementById("profile-skip-missing-input");
 const profileStatusText = document.getElementById("profile-status-text");
+
+// [CURATION-IMPORT / STAGE-C] The one reusable choice dialog — see its
+// [CURATION-IMPORT / STAGE-C / GENERIC CHOICE DIALOG] comment in index.html.
+const curationChoiceDialog = document.getElementById("curation-choice-dialog");
+const curationChoiceTitle = document.getElementById("curation-choice-title");
+const curationChoiceBody = document.getElementById("curation-choice-body");
+const curationChoiceActions = document.getElementById("curation-choice-actions");
+
+// [CURATION-IMPORT / STAGE-C] Curate Import staging dialog refs.
+const curateImportDialog = document.getElementById("curate-import-dialog");
+const curateImportSourceName = document.getElementById("curate-import-source-name");
+const curateImportDestinationName = document.getElementById("curate-import-destination-name");
+const curateImportSelectAll = document.getElementById("curate-import-select-all");
+const curateImportFavoritesRow = document.getElementById("curate-import-favorites-row");
+const curateImportFavoritesCheck = document.getElementById("curate-import-favorites-check");
+const curateImportFavoritesLabel = document.getElementById("curate-import-favorites-label");
+const curateImportHiddenRow = document.getElementById("curate-import-hidden-row");
+const curateImportHiddenCheck = document.getElementById("curate-import-hidden-check");
+const curateImportHiddenLabel = document.getElementById("curate-import-hidden-label");
+const curateImportTagsList = document.getElementById("curate-import-tags-list");
+const curateImportStatus = document.getElementById("curate-import-status");
+const curateImportCancelBtn = document.getElementById("curate-import-cancel-btn");
+const curateImportCommitBtn = document.getElementById("curate-import-commit-btn");
+
+// [CURATION-IMPORT / STAGE-E] Duplicate Tag Repair refs.
+const duplicateTagNotice = document.getElementById("duplicate-tag-notice");
+const duplicateTagNoticeText = document.getElementById("duplicate-tag-notice-text");
+const duplicateTagReviewBtn = document.getElementById("duplicate-tag-review-btn");
+const duplicateTagRepairDialog = document.getElementById("duplicate-tag-repair-dialog");
+const duplicateTagRepairSelectAll = document.getElementById("duplicate-tag-repair-select-all");
+const duplicateTagRepairList = document.getElementById("duplicate-tag-repair-list");
+const duplicateTagRepairStatus = document.getElementById("duplicate-tag-repair-status");
+const duplicateTagRepairCancelBtn = document.getElementById("duplicate-tag-repair-cancel-btn");
+const duplicateTagRepairCommitBtn = document.getElementById("duplicate-tag-repair-commit-btn");
 const profileSyncIntro = document.getElementById("profile-sync-intro");
 const profileSyncIntroProgress = document.getElementById("profile-sync-intro-progress");
 const profileSyncIntroTitle = document.getElementById("profile-sync-intro-title");
@@ -418,6 +494,8 @@ const mobileLoadCountText = document.getElementById("mobile-load-count-text");
 // longer exists. Nothing outside this file's animation code ever referenced
 // it (verified: one capture, one CSS rule, one markup line).
 const mobileLoadCanvas = document.getElementById("mobile-load-canvas");
+const warmStartOverlay = document.getElementById("warm-start-overlay");
+const warmStartCanvas = document.getElementById("warm-start-canvas");
 const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
 // [UI-REDESIGN / STAGE 6] [PLAYER-TRANSPORT-COUNTER-RETIRE] #counter-text and
 // its capture (formerly `counterText`) are gone — the Player transport is
@@ -522,6 +600,11 @@ const overlayAutomationsMenuBtn = document.getElementById("overlay-automations-m
 const pmAutomationsGroup = document.getElementById("pm-automations-group");
 // [UI-REDESIGN / STAGE 6] [PM-AUTOMATIONS-MEDIA-SUPPORT]
 const pmAutomationsPhotoEmpty = document.getElementById("pm-automations-photo-empty");
+// [PM-SHUFFLE-FOLDERS] The one-shot 🎲 action inside that same tray — see
+// shuffleToAnotherRememberedFolder() below for why it is an ACTION and not
+// an automation, and index.html's comment on this element for why it is not
+// media-gated the way Loop/🤖 are.
+const overlayShuffleFoldersBtn = document.getElementById("overlay-shuffle-folders-btn");
 
 const automationPanel = document.getElementById("automation-panel");
 const automationStepChoose = document.getElementById("automation-step-choose");
@@ -617,7 +700,7 @@ profileSyncMediaSafety.textContent = glossaryExcerpt("sync", 2);
 function associationHelpKey(associationUi) {
   return [
     currentSourceKind,
-    activeLibraryRecord?.id || "session",
+    activeCassetteRecord?.id || activeLibraryRecord?.id || "session",
     associationUi.state,
     associationUi.associatedProfileId || "none",
   ].join(":");
@@ -1028,6 +1111,7 @@ let galleryJumpConfirmedIndex = null;
 // clobber what the user is mid-typing.
 let galleryJumpIsEditing = false;
 let fillModeActive = false;
+let currentSessionIsUrlBacked = false;
 let currentViewerNode = null;
 let currentViewerItem = null;
 let isLoadingFiles = false;
@@ -1039,6 +1123,8 @@ let isLoadingFiles = false;
 // second source of truth for the association itself, which — for FSA —
 // always lives in IndexedDB via library-registry.js.
 let activeLibraryRecord = null;
+let activeCassetteRecord = null;
+let activeCassetteCurationId = null;
 // [SYNCV3 / STAGE-08 / LINK-STATE]
 // Permission is presentation state, never identity. Losing it must leave the
 // durable local row and its shared Library link untouched.
@@ -1054,7 +1140,7 @@ let activeLibraryDisplayName = null;
 // This — not "FSA vs legacy" scattered across call sites — is the one
 // thing association-button visibility is computed from. See
 // syncAssociateButtonVisibility() below.
-let currentSourceKind = "none"; // "fsa" | "legacy" | "none"
+let currentSourceKind = "none"; // "none" | "legacy" | "fsa" | "cassette" | "cassette-folder"
 // [SYNCV3 / STAGE-09 / STALE-LOAD-GUARD]
 // [WHY: file loading is normally serialized by isLoadingFiles, but Clear Media
 // can supersede a load while its new decision-store await is suspended. This
@@ -1156,28 +1242,36 @@ function getProfileNameById(profileId) {
 // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
 // The only adapter from live app state into the pure S0-S5 mapper.
 function getCurrentAssociationUiState() {
-  const folderName = (activeLibraryRecord && activeLibraryRecord.name) || activeLibraryDisplayName || "Loaded Media Folder";
+  const mediaName = activeCassetteRecord?.name
+    || activeLibraryRecord?.name
+    || activeLibraryDisplayName
+    || "Loaded Media Folder";
   const usesDurableRecord =
     currentSourceKind === "fsa" || (currentSourceKind === "legacy" && legacyHasDurableIdentity);
   const sharedCatalogEntry = activeLibraryRecord?.libraryId
     ? profile.listLibraries().find((library) => library.id === activeLibraryRecord.libraryId)
     : null;
-  const associatedProfileId = usesDurableRecord && activeLibraryRecord
-    ? sharedCatalogEntry
-      ? sharedCatalogEntry.associatedProfileId
-      : activeLibraryRecord.profileId
-    : null;
+  const associatedProfileId = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+    ? activeCassetteCurationId
+    : usesDurableRecord && activeLibraryRecord
+      ? sharedCatalogEntry
+        ? sharedCatalogEntry.associatedProfileId
+        : activeLibraryRecord.profileId
+      : null;
   return mapAssociationCopy({
     sourceKind: currentSourceKind,
     legacyHasDurableIdentity,
-    folderName,
+    mediaName,
+    rememberedSourceId: activeCassetteRecord?.id ? `cassette:${activeCassetteRecord.id}` : null,
     associatedProfileId,
     associatedProfileName: getProfileNameById(associatedProfileId),
     activeProfileId: profile.getProfileId(),
     activeProfileName: profile.getProfileName(),
     legacySessionAssociated,
     canWriteAssociation:
-      currentSourceKind === "fsa"
+      currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+        ? Boolean(activeCassetteRecord?.id)
+        : currentSourceKind === "fsa"
         ? Boolean(activeLibraryRecord && activeLibraryRecord.id)
         : Boolean(activeLibraryRecord && activeLibraryRecord.id) || Boolean(pendingLegacySignature),
   });
@@ -1199,6 +1293,8 @@ function updateAssociatedStatusRow() {
   // association computation; it never reads registry or Profile state itself.]
   profileLibraryAssociationText.textContent = associationUi.productLine;
   applyProductStatusTone(profileLibraryAssociationText, associationUi.tone);
+  profileMediaSource.textContent = associationUi.sourceLine;
+  applyProductStatusTone(profileMediaSource, associationUi.tone);
   return associationUi;
 }
 
@@ -1381,6 +1477,223 @@ let galleryCardEls = [];
 let galleryThumbEls = [];
 let galleryObserver = null;
 let galleryJumpTargetIndex = null;
+
+// [REMOTE-CASSETTE / PHASE 1C]
+// BREADCRUMBS - WAS
+// Before remote media existed, mounted media came from local File-backed
+// sources and object URLs. buildViewer() and mountThumbMedia() assigned media
+// sources without observing load success or failure because failure was
+// effectively outside the normal local model.
+//
+// BREADCRUMBS - IS
+// Media addresses can now originate outside the machine, so mounting is an
+// attempt rather than a certainty. This shared rendering seam observes outcomes
+// source-neutrally and counts success/failure; it does not retry, substitute,
+// reorder, or remove. A failed current item receives one human sentence while
+// the overall session continues: one bad item must not destroy the session.
+//
+// BREADCRUMBS - WILL BE
+// Remote .ts remains excluded upstream, with that invariant frozen by provider
+// tests. ts-playback-adapter.js stays untouched because the remote TS path is
+// structurally unreachable. Outcome counts remain console-only until real
+// evidence justifies user-facing failure counts; no failure taxonomy is encoded
+// yet. No retry, proxy, header, or cookie solution exists yet because those
+// belong to later evidence-driven architecture. Load timings exist only to
+// inform a future optimization decision; this stage must not pre-optimize.
+let mediaRenderOutcomes = { mounted: 0, loaded: 0, failed: 0 };
+let mediaRenderOutcomeTimer = null;
+
+function resetMediaRenderOutcomes() {
+  if (mediaRenderOutcomeTimer !== null) clearTimeout(mediaRenderOutcomeTimer);
+  mediaRenderOutcomeTimer = null;
+  mediaRenderOutcomes = { mounted: 0, loaded: 0, failed: 0 };
+}
+
+function recordMediaRenderOutcome(outcome) {
+  mediaRenderOutcomes[outcome] += 1;
+  if (mediaRenderOutcomeTimer !== null) clearTimeout(mediaRenderOutcomeTimer);
+  mediaRenderOutcomeTimer = setTimeout(() => {
+    console.info("[MEDIA RENDER] Outcomes", { ...mediaRenderOutcomes });
+    mediaRenderOutcomeTimer = null;
+  }, 1000);
+}
+
+// [PRESENTATION-PERF / PHASE 3A]
+//
+// BREADCRUMBS - WAS
+// buildViewer() tore down the outgoing media unconditionally — clearViewerNode()
+// empties #viewer-stage — before creating the incoming element, so the stage was
+// empty for the whole of the resource wait. That was invisible while every
+// source was a local blob: URL, and became the dominant customer-visible defect
+// once media addresses started originating off-machine: 25 real manual-Next
+// transitions through a Remote Cassette measured a ~4.65 s MEDIAN blank gap
+// against a ~0.8 ms median application dispatch. The application was never slow;
+// it was showing black while it waited.
+//
+// BREADCRUMBS - IS
+// For an image following an image, the outgoing frame is HELD on screen while
+// the incoming image loads and (best-effort) decodes. Teardown and insertion
+// then happen in one synchronous block, so no empty stage is ever painted. A
+// prepared node may commit only if its token, load generation, gallery
+// generation and item identity ALL still match — otherwise it is discarded in
+// silence (see runtime/viewer-commit.js). The path is advisory: any failure
+// converges onto the pre-existing eager path and Phase 1C's "This item could not
+// be loaded." It is source-neutral — a blob: URL and an https: URL take the
+// identical route, and nothing here asks where an item came from.
+//
+// BREADCRUMBS - WILL BE
+// This stage deliberately does NOT predict what comes next: no lookahead, no
+// ready queue, no second RNG, and MediaRuntime remains untouched. Evidence shows
+// resource readiness dominates (~4.65 s median vs ~0.8 ms dispatch), so a
+// planned shuffle sequence feeding a small bounded preload queue is the
+// justified next step — and it must keep ONE shuffle authority inside
+// MediaRuntime, with next() consuming the plan rather than any external peek
+// drawing separately. The per-transition CPU costs found during the audit (the
+// O(n) passes in next(), the ~4,600 gallery DOM operations, the pool-key
+// stringify) are real but measured at ~0.8 ms in total: they are cleanup
+// candidates, not performance work, and must not be confused for this defect.
+// Video readiness is a different problem — buffering, codec init, seek state —
+// and is NOT covered by this mechanism, which is why the held path is restricted
+// to image-following-image.
+//
+// Incremented on every entry into the held path. A prepared node whose token no
+// longer matches has been superseded and may never commit. Same generation-token
+// discipline as libraryLoadGeneration, galleryGeneration and the providers'
+// private #loadToken — stale-result rejection, never cancellation.
+let viewerPreparationCounter = 0;
+let currentViewerPreparationInFlight = false;
+
+const PLAN_LENGTH = 6;
+const MAX_PREPARED = 6;
+const MAX_CONCURRENT_WARMING = 2;
+const preparedViewerImages = new Map();
+const warmingViewerImages = new Map();
+const failedWarmItems = new Set();
+let lastVisibleCommitAt = null;
+let lastViewerTerminalItem = null;
+
+const RELEASE_READY_COUNT = 3;
+const WARM_START_MAX_MS = 10000;
+let warmStartState = "inactive";
+let warmStartStartedAt = 0;
+let warmStartTimeoutId = null;
+let warmStartCurrentVisualSettled = false;
+let warmStartTimeoutReached = false;
+
+// t0 for a transition: the moment render() began. Deliberately NOT the button
+// press or the interval tick — MediaRuntime owns those and is protected, so its
+// own selection work is excluded from every number below. The human's profiler
+// already bounded that exclusion at ~0.8 ms median for the whole dispatch.
+let lastRenderEntryAt = 0;
+
+const PM_TRANSITION_SUMMARY_EVERY = 10;
+let transitionSamples = [];
+let transitionSampleGeneration = -1;
+let transitionCount = 0;
+
+function transitionHost(item) {
+  try {
+    return new URL(item.url).hostname;
+  } catch {
+    // blob: URLs have no hostname, and a malformed URL must never break a
+    // measurement. Either way there is nothing to report.
+    return "";
+  }
+}
+
+function percentileMs(values, fraction) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round(fraction * (sorted.length - 1))));
+  return Math.round(sorted[index]);
+}
+
+// One concise line per COMMITTED transition, plus a rolling summary. Discarded
+// preparations log nothing — they are not transitions, they are answers that
+// arrived too late.
+//
+// Counts, durations and hostname at most. Never a full remote URL and never a
+// query string: a signed URL can carry a token (Part 2 Section 52).
+function recordPresentationTransition(sample) {
+  if (transitionSampleGeneration !== libraryLoadGeneration) {
+    // Numbers from two different sources must never mix in one window.
+    transitionSampleGeneration = libraryLoadGeneration;
+    transitionSamples = [];
+    transitionCount = 0;
+  }
+
+  transitionCount += 1;
+  transitionSamples.push(sample);
+
+  console.info("[PM TRANSITION]", {
+    n: transitionCount,
+    held: sample.held,
+    dispatch_to_src_ms: Math.round(sample.dispatchToSrcMs),
+    src_wait_ms: Math.round(sample.srcWaitMs),
+    decode_ms: sample.decodeMs === null ? null : Math.round(sample.decodeMs),
+    blank_ms: Math.round(sample.blankMs),
+    ready_ms: Math.round(sample.readyMs),
+    visible_ms: sample.visibleMs === null ? null : Math.round(sample.visibleMs),
+    ready_hit: sample.readyHit,
+    host: sample.host,
+  });
+
+  if (transitionSamples.length < PM_TRANSITION_SUMMARY_EVERY) return;
+
+  const window = transitionSamples;
+  transitionSamples = [];
+  const srcWait = window.map((entry) => entry.srcWaitMs);
+  const blank = window.map((entry) => entry.blankMs);
+  const ready = window.map((entry) => entry.readyMs);
+  const heldCount = window.filter((entry) => entry.held).length;
+  const visible = window.map((entry) => entry.visibleMs).filter((value) => value !== null);
+  const readyHitCount = window.filter((entry) => entry.readyHit).length;
+
+  console.info("[PM TRANSITION] Summary", {
+    count: window.length,
+    held: `${heldCount}/${window.length}`,
+    src_wait_ms: { median: percentileMs(srcWait, 0.5), p90: percentileMs(srcWait, 0.9) },
+    blank_ms: { median: percentileMs(blank, 0.5), p90: percentileMs(blank, 0.9) },
+    ready_ms: { median: percentileMs(ready, 0.5), p90: percentileMs(ready, 0.9) },
+    visible_ms: { median: percentileMs(visible, 0.5), p90: percentileMs(visible, 0.9) },
+    ready_hit_rate: `${readyHitCount}/${window.length}`,
+  });
+}
+
+// Schedules the one honest readiness timestamp: the animation frame AFTER a
+// loaded image is in the stage.
+//
+// This is a PROXY for paint, not paint. rAF fires before the frame is
+// composited, so it is the closest honest observation available without
+// Element Timing — do not call it, or let any report call it, "painted".
+function measureTransitionReady({ held, readyHit = false, renderEntryAt, srcAt, loadAt, decodeAt, teardownAt, item, node }) {
+  requestAnimationFrame(() => {
+    // A rapid manual Next can replace an already-committed node before this
+    // frame callback runs. That obsolete callback must not release the newer
+    // transition's advance hold or restart its timer.
+    if (currentViewerNode !== node || currentViewerItem !== item) return;
+    const readyAt = performance.now();
+    const visibleMs = lastVisibleCommitAt === null ? null : readyAt - lastVisibleCommitAt;
+    lastVisibleCommitAt = readyAt;
+    recordPresentationTransition({
+      held,
+      dispatchToSrcMs: srcAt - renderEntryAt,
+      srcWaitMs: loadAt - srcAt,
+      decodeMs: decodeAt === null ? null : decodeAt - loadAt,
+      // The interval the customer actually spends looking at no image: from the
+      // moment the outgoing content was removed to the frame after a loaded
+      // image occupies the stage. On the held path teardown and insertion are
+      // one synchronous block, so this collapses to roughly a single frame. On
+      // the eager path it is the whole resource wait, which is the defect.
+      blankMs: readyAt - teardownAt,
+      readyMs: readyAt - renderEntryAt,
+      visibleMs,
+      readyHit,
+      host: transitionHost(item),
+    });
+    handleCurrentViewerTerminal(item);
+  });
+}
 
 // ---- Loop Automations (Phase 5 + Phase 5.1 refinement) ---------------------
 //
@@ -4001,6 +4314,7 @@ const ARCADE_SCENES = [
 
 let arcadeRafId = null;
 let arcadeCtx = null;
+let arcadeCanvas = null;
 let arcadeState = null;
 let arcadeStartedAt = 0;
 let arcadeLastLoopT = -1;
@@ -4010,9 +4324,8 @@ let arcadeLastRender = 0;
 // Session-scoped selection. arcadeCurrentScene is whatever is running now;
 // arcadePreviousScene outlives the session purely so the next selection can
 // exclude it. Selection happens in exactly one place —
-// startArcadeAnimation(), itself only reachable from the not-loading ->
-// loading edge in syncMobileLoadState() — so no render, progress tick or
-// loop wrap can ever re-pick.
+// startArcadeAnimation(), reached only at an explicit host lifecycle edge, so
+// no render, progress tick or loop wrap can ever re-pick.
 let arcadeCurrentScene = null;
 let arcadePreviousScene = null;
 // Safe startup default while IndexedDB preferences load asynchronously.
@@ -4127,10 +4440,11 @@ function renderArcadeStill(scene) {
   paintArcadeFrame(scene, arcadeState, scene.stillAtMs, scene.stillAtMs, true);
 }
 
-function startArcadeAnimation() {
+function startArcadeAnimation(canvas) {
   if (arcadeRafId !== null) return;
-  if (!arcadeCtx) {
-    arcadeCtx = mobileLoadCanvas.getContext ? mobileLoadCanvas.getContext("2d") : null;
+  if (arcadeCanvas !== canvas || !arcadeCtx) {
+    arcadeCanvas = canvas;
+    arcadeCtx = canvas && canvas.getContext ? canvas.getContext("2d") : null;
     if (!arcadeCtx) return;
     arcadeCtx.imageSmoothingEnabled = false;
   }
@@ -4221,7 +4535,7 @@ function stopMobileTakeoverTextTicker() {
 // than tracking whether reduced-motion left a timer unset.
 function startMobileTakeoverAnimation() {
   startMobileTakeoverTextTicker();
-  startArcadeAnimation();
+  startArcadeAnimation(mobileLoadCanvas);
 }
 
 function stopMobileTakeoverAnimation() {
@@ -5045,10 +5359,104 @@ function finishLoadingItems(items) {
   reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
 }
 
+async function loadRemoteSession(text, { name, record = null, sourceKind = "cassette", curationId = null } = {}) {
+  if (isLoadingFiles) return;
+
+  currentSessionIsUrlBacked = true;
+  isLoadingFiles = true;
+  const loadToken = ++libraryLoadGeneration;
+  clearReverseCurationSuggestion();
+  clearDeviceAwareMediaQuestion();
+  lastMobileLoadFailed = false;
+  syncMobileLoadState();
+  bumpGalleryGeneration();
+  runtime.clear();
+  clearViewerNode();
+  exitFillMode();
+  recentHideUndo = null;
+  syncUndoHideButton();
+
+  provider.dispose();
+  fsaProvider.dispose();
+  activeLibraryRecord = null;
+  activeCassetteRecord = record;
+  activeCassetteCurationId = record ? curationId : null;
+  associationWriteSuppression.setLoadedLibrary(null);
+  ambientProfileObserver.clearContext();
+  renderAmbientProfileOffer();
+  activeLibraryDisplayName = name || record?.name || (sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk");
+  currentSourceKind = sourceKind;
+  currentFolderPermissionState = "granted";
+  legacySessionAssociated = false;
+  legacyHasDurableIdentity = false;
+  pendingLegacySignature = null;
+  pendingLibraryAssociationIntent = false;
+  syncAssociateButtonVisibility();
+  fsaStatusText.textContent = "";
+  resetMediaRenderOutcomes();
+
+  const remoteSourceLabel = sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk";
+  remoteStatusText.textContent = `Loading ${remoteSourceLabel}…`;
+
+  try {
+    const parseStartedAt = performance.now();
+    const parsed = extractRemoteUrls(text);
+    const parseMs = performance.now() - parseStartedAt;
+    const providerStartedAt = performance.now();
+    const result = await remoteProvider.loadFromUrls(parsed.urls, {
+      batchSize: BATCH_SIZE,
+    });
+    const providerMs = performance.now() - providerStartedAt;
+    if (loadToken !== libraryLoadGeneration) {
+      remoteStatusText.textContent = "";
+      return;
+    }
+
+    const skipped = parsed.diagnostics.rejected + result.diagnostics.skipped;
+    if (!result.items.length) {
+      remoteStatusText.textContent = "No valid media URLs found in this file.";
+    } else {
+      remoteStatusText.textContent =
+        `${remoteSourceLabel} ready. ${result.items.length} items · ` +
+        `${result.diagnostics.images} images · ${result.diagnostics.videos} videos` +
+        (skipped ? ` · ${skipped} links skipped` : "");
+    }
+
+    console.info("[REMOTE SESSION] Load counts", {
+      parser: parsed.diagnostics,
+      provider: result.diagnostics,
+    });
+
+    const firstPaintStartedAt = performance.now();
+    finishLoadingItems(result.items);
+    const toFirstPaintMs = performance.now() - firstPaintStartedAt;
+    console.info("[REMOTE SESSION] Load phases", {
+      parse_ms: parseMs,
+      provider_ms: providerMs,
+      to_first_paint_ms: toFirstPaintMs,
+      parsed: parsed.urls.length,
+      items: result.items.length,
+    });
+  } catch (error) {
+    if (loadToken !== libraryLoadGeneration) {
+      remoteStatusText.textContent = "";
+      return;
+    }
+    remoteStatusText.textContent = "That file could not be read.";
+    console.warn("[REMOTE SESSION] The selected file could not be loaded.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  } finally {
+    isLoadingFiles = false;
+    syncMobileLoadState();
+  }
+}
+
 async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {}) {
   const total = (fileList || []).length;
   if (!total || isLoadingFiles) return;
 
+  currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
@@ -5080,7 +5488,12 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   // [FSA] Switching TO the local-picker path — release whatever the FSA
   // path had loaded, since only one media set is ever active at once.
   fsaProvider.dispose();
+  remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
   activeLibraryRecord = null;
+  activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
@@ -5286,9 +5699,14 @@ function isFsaSupported() {
   return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 }
 
+function isCassettePickerSupported() {
+  return typeof window !== "undefined" && typeof window.showOpenFilePicker === "function";
+}
+
 async function loadFromFsaHandle(dirHandle, libraryRecord) {
   if (isLoadingFiles) return;
 
+  currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
   clearReverseCurationSuggestion();
@@ -5324,6 +5742,8 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // at all requires either the FSA folder-picker round trip or a Recent
   // Libraries click, both far slower than one IndexedDB open.
   activeLibraryRecord = libraryRecord || null;
+  activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
   establishAmbientProfileContext(activeLibraryRecord);
   activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
@@ -5388,6 +5808,9 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   // [FSA] Switching TO the FSA path — release whatever the local <input>
   // picker had loaded.
   provider.dispose();
+  remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
 
   fsaStatusText.textContent = "";
 
@@ -5561,7 +5984,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
 
 fsaChooseFolderBtn.addEventListener("click", async () => {
   if (!isFsaSupported()) {
-    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    fsaStatusText.textContent = "This browser does not support remembered folders.";
     return;
   }
 
@@ -5572,6 +5995,35 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
     if (error && error.name === "AbortError") return; // user closed the picker — not an error
     console.error("[FSA] Folder picker failed.", error);
     fsaStatusText.textContent = `Could not open the folder picker: ${error.message}`;
+    return;
+  }
+
+  let folderIntake;
+  try {
+    folderIntake = await readRememberedFolder(dirHandle);
+  } catch (error) {
+    console.warn("[FOLDER INTAKE] Could not inspect the selected folder.", error);
+    fsaStatusText.textContent = `Could not inspect that folder: ${error.message}`;
+    return;
+  }
+
+  if (folderIntake.selectionKind === "mixed") {
+    fsaStatusText.textContent = "This folder contains both media and Floppy Disks. Choose a folder containing one type.";
+    return;
+  }
+  if (folderIntake.selectionKind === "unsupported") {
+    fsaStatusText.textContent = "This folder doesn't contain supported media or Floppy Disks.";
+    return;
+  }
+  if (folderIntake.selectionKind === "floppy-folder") {
+    try {
+      const record = await addOrUpdateCassette(dirHandle, { sourceKind: "cassette-folder" });
+      await renderSavedLibraries();
+      await openRememberedCassette(record);
+    } catch (error) {
+      remoteStatusText.textContent = "That Floppy Folder could not be opened.";
+      console.warn("[REMOTE CASSETTE] Could not remember the selected Floppy Folder.", error);
+    }
     return;
   }
 
@@ -5593,6 +6045,143 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
   await loadFromFsaHandle(dirHandle, record);
 });
 
+async function addRemoteCassette() {
+  if (!isCassettePickerSupported()) {
+    statusText.textContent = "This browser does not support remembered files.";
+    return;
+  }
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      multiple: false,
+    });
+    if (!handle) return;
+    const file = await handle.getFile();
+    const evidence = await collectSelectionEvidence([file], { shape: "files" });
+    const selectionKind = classifySelection(evidence);
+    if (selectionKind === "local-files") {
+      statusText.textContent = "Browser Gallery can remember folders and Floppy Disks. Choose a folder to remember this media.";
+      return;
+    }
+    if (selectionKind !== "floppy-file") {
+      statusText.textContent = "Browser Gallery can't open that file.";
+      return;
+    }
+    const record = await addOrUpdateCassette(handle);
+    await renderRemoteCassettes();
+    await openRemoteCassette(record);
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    remoteStatusText.textContent = "That Floppy Disk could not be opened.";
+    console.warn("[REMOTE CASSETTE] Could not add the selected cassette.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+}
+
+async function openRemoteCassette(record) {
+  const handle = record && record.handle;
+  if (!handle) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted.`;
+    return;
+  }
+
+  let text;
+  try {
+    let permission = await handle.queryPermission({ mode: "read" });
+    if (permission !== "granted") permission = await handle.requestPermission({ mode: "read" });
+    if (permission !== "granted") {
+      remoteStatusText.textContent = `Access to "${record.name}" was not granted.`;
+      return;
+    }
+
+    const file = await handle.getFile();
+    text = await file.text();
+  } catch (error) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted.`;
+    console.warn("[REMOTE CASSETTE] A remembered cassette could not be opened.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return;
+  }
+
+  await touchCassette(record.id);
+  await renderSavedLibraries();
+  const association = await recallSourceCuration(record.id);
+  await loadRemoteSession(text, {
+    name: record.name, record, sourceKind: "cassette", curationId: association?.profileId || null,
+  });
+}
+
+async function openRemoteCassetteFolder(record) {
+  const handle = record && record.handle;
+  if (!handle) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available â€” it may have moved or been deleted.`;
+    return;
+  }
+
+  try {
+    let permission = await handle.queryPermission({ mode: "read" });
+    if (permission !== "granted") permission = await handle.requestPermission({ mode: "read" });
+    if (permission !== "granted") {
+      remoteStatusText.textContent = `Access to "${record.name}" was not granted.`;
+      return;
+    }
+
+    const folderIntake = await readRememberedFolder(handle);
+    if (folderIntake.selectionKind === "mixed") {
+      remoteStatusText.textContent = "This folder contains both media and Floppy Disks. Choose a folder containing one type.";
+      return;
+    }
+    if (folderIntake.selectionKind !== "floppy-folder") {
+      remoteStatusText.textContent = "This folder doesn't contain supported media or Floppy Disks.";
+      return;
+    }
+
+    await touchCassette(record.id);
+    await renderSavedLibraries();
+    const association = await recallSourceCuration(record.id);
+    await loadRemoteSession(folderIntake.combinedText, {
+      name: record.name, record, sourceKind: "cassette-folder", curationId: association?.profileId || null,
+    });
+  } catch (error) {
+    remoteStatusText.textContent = `"${record.name}" is no longer available â€” it may have moved or been deleted.`;
+    console.warn("[REMOTE CASSETTE] A remembered Floppy Folder could not be opened.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+}
+
+async function recallSourceCuration(cassetteId) {
+  try {
+    return await getSourceCuration(`cassette:${cassetteId}`);
+  } catch (error) {
+    console.warn("[SOURCE CURATION] Could not recall the remembered Floppy Curation.", error);
+    return null;
+  }
+}
+
+function openRememberedCassette(record) {
+  return getRememberedCassetteOwner(record) === "folder"
+    ? openRemoteCassetteFolder(record)
+    : openRemoteCassette(record);
+}
+
+async function renderRemoteCassettes() {
+  if (!isCassettePickerSupported()) {
+    cassetteAddBtn.classList.remove("hidden");
+    cassetteAddBtn.disabled = true;
+    remoteCassettesEl.replaceChildren();
+    await renderSavedLibraries();
+    return;
+  }
+
+  cassetteAddBtn.classList.remove("hidden");
+  cassetteAddBtn.disabled = false;
+  await renderSavedLibraries();
+}
+
+cassetteAddBtn.addEventListener("click", addRemoteCassette);
+
 // [LIBRARY-REGISTRY] Resumes one specific remembered library (a click on a
 // "Recent Libraries" row) — checks/re-requests read permission for its
 // saved handle, same flow the old single-slot "Start Here" button used,
@@ -5602,7 +6191,7 @@ async function resumeLibrary(record) {
 
   const dirHandle = record.handle;
   if (!dirHandle) {
-    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Choose Folder (FSA)".`;
+    fsaStatusText.textContent = `"${record.name}" has no saved folder access. Choose it again with "Remember Folder".`;
     return;
   }
 
@@ -5623,7 +6212,7 @@ async function resumeLibrary(record) {
     // data cleared, etc.) — fail gracefully rather than throwing, and stop
     // offering a broken resume for it.
     console.error("[FSA] A saved folder is no longer accessible.", error);
-    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Recent Media Folders.`;
+    fsaStatusText.textContent = `"${record.name}" is no longer available — it may have moved or been deleted. Removing it from Saved Libraries.`;
     // [LIBRARY-PROFILE-ASSOCIATION] Soft-remove, not removeLibrary() — a
     // permission failure doesn't mean the physical folder is gone for
     // good (it may just be a revoked permission on an otherwise-fine
@@ -5649,8 +6238,8 @@ async function resumeLibrary(record) {
 // fresh each render rather than caching a name, so a profile rename is
 // reflected here immediately without this module needing its own
 // invalidation logic.
-function formatLibraryMeta(record) {
-  const parts = [];
+function formatLibraryMeta(record, typeLabel) {
+  const parts = [typeLabel];
   if (typeof record.itemCount === "number") {
     parts.push(`${record.itemCount} item${record.itemCount === 1 ? "" : "s"}`);
   }
@@ -5674,31 +6263,57 @@ function formatRelativeTime(timestamp) {
   return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
+async function renderSavedLibraries() {
+  await renderRecentLibraries();
+}
+
 // [LIBRARY-REGISTRY] Re-renders the "Recent Libraries" list from IndexedDB.
 // Rebuilt from scratch each call (list is small — a handful of libraries
 // at most) rather than diffed, matching renderTagsGrid()'s existing
 // pattern elsewhere in this file. Does NOT touch permissions or load
 // anything on its own — purely a metadata read, safe to call at boot.
 async function renderRecentLibraries() {
-  let records;
+  let localRecords;
+  let floppyRecords;
   try {
-    records = await listLibraries();
+    [localRecords, floppyRecords] = await Promise.all([
+      listLibraries(),
+      (isCassettePickerSupported() || isFsaSupported()) ? listCassettes() : Promise.resolve([]),
+    ]);
   } catch (error) {
-    console.warn("[LIBRARY-REGISTRY] Could not read saved libraries.", error);
-    records = [];
+    console.warn("[SAVED LIBRARIES] Could not read saved libraries.", error);
+    localRecords = [];
+    floppyRecords = [];
   }
 
-  fsaRecentLibrariesEl.innerHTML = "";
+  const records = [
+    ...localRecords.map((record) => ({ type: "local", record })),
+    ...floppyRecords.map((record) => ({ type: "floppy", record })),
+  ].sort((a, b) =>
+    (b.record.lastOpenedAt || 0) - (a.record.lastOpenedAt || 0) ||
+    a.record.name.localeCompare(b.record.name)
+  );
+
+  fsaRecentLibrariesEl.replaceChildren();
   fsaRecentLibrariesEl.classList.toggle("hidden", records.length === 0);
 
-  for (const record of records) {
+  for (const entry of records) {
+    const { record, type } = entry;
     const row = document.createElement("div");
     row.className = "fsa-recent-library-row";
 
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "fsa-recent-library-btn";
-    openBtn.addEventListener("click", () => resumeLibrary(record));
+    openBtn.addEventListener("click", () => type === "local" ? resumeLibrary(record) : openRememberedCassette(record));
+
+    const iconEl = document.createElement("span");
+    iconEl.className = "saved-library-icon";
+    iconEl.setAttribute("aria-hidden", "true");
+    iconEl.textContent = type === "local" ? "\uD83D\uDCC1" : "\uD83D\uDCBE";
+
+    const copyEl = document.createElement("span");
+    copyEl.className = "saved-library-copy";
 
     const nameEl = document.createElement("span");
     nameEl.className = "fsa-recent-library-name";
@@ -5706,16 +6321,21 @@ async function renderRecentLibraries() {
 
     const metaEl = document.createElement("span");
     metaEl.className = "fsa-recent-library-meta";
-    metaEl.textContent = formatLibraryMeta(record);
+    metaEl.textContent = formatLibraryMeta(
+      record,
+      type === "local" ? "Local Folder" : record.sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk"
+    );
 
-    openBtn.appendChild(nameEl);
-    openBtn.appendChild(metaEl);
+    copyEl.appendChild(nameEl);
+    copyEl.appendChild(metaEl);
+    openBtn.appendChild(iconEl);
+    openBtn.appendChild(copyEl);
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "fsa-recent-library-remove-btn";
-    removeBtn.title = `Remove "${record.name}" from Recent Media Folders`;
-    removeBtn.setAttribute("aria-label", `Remove "${record.name}" from Recent Media Folders`);
+    removeBtn.title = `Forget "${record.name}" from Saved Libraries`;
+    removeBtn.setAttribute("aria-label", `Forget "${record.name}" from Saved Libraries`);
     removeBtn.textContent = "✕";
     removeBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -5725,7 +6345,11 @@ async function renderRecentLibraries() {
       // folder later still recognizes it and recovers the association.
       // See library-registry.js.
       try {
-        await removeFromRecents(record.id);
+        if (type === "local") await removeFromRecents(record.id);
+        else {
+          await clearSourceCuration(`cassette:${record.id}`);
+          await removeCassette(record.id);
+        }
       } catch (error) {
         console.warn("[LIBRARY-REGISTRY] Could not remove this library from Recent Libraries.", error);
       }
@@ -5800,6 +6424,26 @@ async function associateThroughSyncV2(localLibraryId, targetProfileId) {
 // distinct without a truthy/falsy shortcut.
 async function associateCurrentLibraryWithProfile({ targetProfileId } = {}) {
   if (targetProfileId !== null && !getProfileNameById(targetProfileId)) return false;
+
+  if (currentSourceKind === "cassette" || currentSourceKind === "cassette-folder") {
+    if (!activeCassetteRecord?.id) return false;
+    try {
+      await setSourceCuration(`cassette:${activeCassetteRecord.id}`, targetProfileId, {
+        sourceKind: currentSourceKind,
+      });
+      activeCassetteCurationId = targetProfileId;
+      syncAssociateButtonVisibility();
+      const targetProfileName = getProfileNameById(targetProfileId);
+      fsaStatusText.textContent = targetProfileName
+        ? `Now remembered with ${targetProfileName} on this device.`
+        : "This media now has No Curation on this device.";
+      return true;
+    } catch (error) {
+      console.warn("[SOURCE CURATION] Could not save the remembered Floppy Curation.", error);
+      fsaStatusText.textContent = "Could not save the Curation for this media. Try again.";
+      return false;
+    }
+  }
 
   if (currentSourceKind === "legacy") {
     if (legacyHasDurableIdentity) {
@@ -5915,7 +6559,7 @@ function populateAssociationPicker({ preservePending = false } = {}) {
   for (const entry of profiles) {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.textContent = entry.name;
+    option.textContent = displayCurationLabel(entry, profiles);
     profileAssociationSelect.appendChild(option);
   }
 
@@ -5969,9 +6613,14 @@ profileAssociationSaveBtn.addEventListener("click", async () => {
       profileAssociationResult.textContent = "Could not save. Try again.";
       return;
     }
-    profileAssociationResult.textContent = selectedProfileName
-      ? `Now remembered with ${selectedProfileName}.`
-      : "This folder now has No Curation.";
+    const isCassetteSource = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder";
+    profileAssociationResult.textContent = isCassetteSource
+      ? selectedProfileName
+        ? `Now remembered with ${selectedProfileName} on this device.`
+        : "This media now has No Curation on this device."
+      : selectedProfileName
+        ? `Now remembered with ${selectedProfileName}.`
+        : "This folder now has No Curation.";
     // [SYNCV3 / STAGE-10 / COMPLETED-EXPLAINER]
     // [WHY: the old action's benefit has finished its job. Scope dismissal to
     // this exact Library/association state so a new state or later interaction
@@ -6003,8 +6652,11 @@ const NEW_SHARED_LIBRARY_VALUE = "__new_shared_library__";
 // shared catalog into the pure L0-L7 model. Library names remain presentation;
 // every selection and write is keyed by the catalog id.]
 function getCurrentFolderLinkUiState({ selectedLibraryId = null, selectedClaimant = null } = {}) {
+  const folderSourceKind = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
+    ? "none"
+    : currentSourceKind;
   return mapLinkState({
-    sourceKind: currentSourceKind,
+    sourceKind: folderSourceKind,
     legacyHasDurableIdentity,
     folderName: activeLibraryRecord?.name || activeLibraryDisplayName || "Loaded Media Folder",
     localLibraryId: activeLibraryRecord?.id || null,
@@ -6025,7 +6677,8 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   const ordinarySurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "ordinary" });
   const advancedSurface = describeMediaLibrarySurface({ linkState: linkUi, surface: "advanced" });
   profileFolderLinkSummary.textContent = ordinarySurface.statusText;
-  profileFolderLinkSummary.classList.toggle("hidden", !ordinarySurface.showStatus);
+  const hasFolderSource = currentSourceKind !== "cassette" && currentSourceKind !== "cassette-folder";
+  profileFolderLinkSummary.classList.toggle("hidden", !hasFolderSource || !ordinarySurface.showStatus);
   applyProductStatusTone(profileFolderLinkSummary, linkUi.tone);
   profileFolderLinkAdvancedSummary.textContent = advancedSurface.statusText;
   applyProductStatusTone(profileFolderLinkAdvancedSummary, linkUi.tone);
@@ -6035,8 +6688,8 @@ function renderFolderLinkState({ selectedLibraryId = null, selectedClaimant = pe
   // now has exactly one job left — L7 reconnect. `showAction` is true in that
   // state alone; every other durable state renders the selector instead.]
   profileFolderLinkBtn.textContent = linkUi.actionLabel || "Reconnect Media Folder";
-  profileFolderLinkBtn.classList.toggle("hidden", !ordinarySurface.showRecoveryAction);
-  profileFolderLinkBtn.disabled = !ordinarySurface.showRecoveryAction;
+  profileFolderLinkBtn.classList.toggle("hidden", !hasFolderSource || !ordinarySurface.showRecoveryAction);
+  profileFolderLinkBtn.disabled = !hasFolderSource || !ordinarySurface.showRecoveryAction;
 
   const showSelector = Boolean(advancedSurface.showSelector);
   const wasHidden = profileFolderLinkRow.classList.contains("hidden");
@@ -6532,12 +7185,14 @@ function handlePendingFilterReloadOnAdvance(state) {
 // never diverge — the shortcuts are a second way to trigger the existing
 // action, not a second implementation of it.
 function goToPreviousMedia() {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   flushPendingFilterReload();
   runtime.previous();
 }
 
 function goToNextMedia() {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   flushPendingFilterReload();
   runtime.next();
@@ -7388,6 +8043,23 @@ function closeAutomationsTray() {
   overlayAutomationsMenuBtn.setAttribute("aria-expanded", "false");
 }
 
+// [PM-SHUFFLE-FOLDERS] Extracted verbatim from toggleAutomationsTray()'s own
+// open branch (which now calls it) so there is still exactly ONE way the tray
+// opens. Needed as a callable step because a 🎲 switch runs through
+// loadFromFsaHandle(), whose exitFillMode() closes the tray along with
+// Presentation Mode itself — restoring it afterwards has to reach the same
+// mutual-exclusion + aria-expanded work a click does, not re-set the class by
+// hand and let aria drift.
+function openAutomationsTray() {
+  // Only one pop-out panel makes sense open at a time — same rule
+  // #overlay-automation-btn and #overlay-settings-btn already follow.
+  presentationSettings.classList.add("hidden");
+  closeGhostPopunder();
+  pmAutomationsGroup.classList.add("is-open");
+  overlayAutomationsMenuBtn.classList.add("is-open");
+  overlayAutomationsMenuBtn.setAttribute("aria-expanded", "true");
+}
+
 function toggleAutomationsTray() {
   const willOpen = !pmAutomationsGroup.classList.contains("is-open");
 
@@ -7396,13 +8068,130 @@ function toggleAutomationsTray() {
     return;
   }
 
-  // Only one pop-out panel makes sense open at a time — same rule
-  // #overlay-automation-btn and #overlay-settings-btn already follow.
-  presentationSettings.classList.add("hidden");
-  closeGhostPopunder();
-  pmAutomationsGroup.classList.add("is-open");
-  overlayAutomationsMenuBtn.classList.add("is-open");
-  overlayAutomationsMenuBtn.setAttribute("aria-expanded", "true");
+  openAutomationsTray();
+}
+
+// ---- PM Shuffle Folders (immediate runtime action) -------------------------
+//
+// [PM-SHUFFLE-FOLDERS]
+// WHAT: ⚡ → 🎲 switches Browser Gallery to another remembered Media Folder,
+// now. The whole customer interaction is those two clicks: no Settings trip,
+// no Advanced Settings, no folder picker, no restart, and nothing to
+// configure first.
+//
+// WHY it is an ACTION, not an automation: it happens once and is then over.
+// It writes no state that outlives the switch, which is what keeps ⚡'s
+// protected contract intact — syncAutomationsActiveIndicator() derives "an
+// automation is active" from videoLoopInput.checked ALONE, this action never
+// touches that checkbox or activeLoopRule, and so ⚡ keeps behaving exactly
+// as before (idle → toggle the tray; Loop active → stop it). There is
+// deliberately no Stop state for a one-shot: by the time one could be
+// offered, there is nothing left running to stop.
+//
+// Guarded against re-entry by `isShufflingFolders` AND by the loader's own
+// `isLoadingFiles`: loadFromFsaHandle() silently returns if a load is
+// already in flight, so a second 🎲 landing mid-switch would otherwise look
+// like it did nothing at all rather than like a control that was busy.
+let isShufflingFolders = false;
+
+// [PM-SHUFFLE-FOLDERS] "Can this remembered folder be opened WITHOUT asking
+// the customer for anything?" — the live half of usability that
+// folder-shuffle.js deliberately cannot answer.
+//
+// queryPermission() is a question, never a ceremony; requestPermission() is
+// the ceremony, and this action must never reach it. That is the whole
+// reason permission is pre-checked here rather than left to resumeLibrary():
+// resumeLibrary() will happily PROMPT for a folder whose permission has
+// lapsed (correct for a deliberate Recent-Media-Folders click, wrong for a
+// die roll the customer expects to just switch), so only already-granted
+// candidates are ever handed to it. A candidate that fails this is skipped
+// and the next one tried — a revoked permission, a disconnected drive or a
+// stale handle is a reason to move on, not to interrupt.
+async function canShuffleToRememberedFolder(record) {
+  const handle = record && record.handle;
+  if (!handle || typeof handle.queryPermission !== "function") return false;
+
+  try {
+    return (await handle.queryPermission({ mode: "read" })) === "granted";
+  } catch (error) {
+    // A handle can be genuinely invalid (folder deleted/moved, browser data
+    // cleared). Skip it quietly — unlike resumeLibrary()'s own catch, this
+    // deliberately does NOT removeFromRecents(): the customer did not ask
+    // for THIS folder, so a die roll must not prune their remembered list
+    // as a side effect.
+    console.warn("[PM-SHUFFLE-FOLDERS] Skipping a remembered Media Folder that could not be checked.", error);
+    return false;
+  }
+}
+
+async function shuffleToAnotherRememberedFolder() {
+  if (isShufflingFolders || isLoadingFiles) return;
+
+  isShufflingFolders = true;
+  overlayShuffleFoldersBtn.disabled = true;
+
+  try {
+    // [LIBRARY-REGISTRY] listLibraries() is THE authoritative remembered-
+    // Media-Folder collection — the same read renderRecentLibraries() and
+    // the startup-media pass use. Read fresh on every click rather than
+    // cached, so a folder added or removed since Presentation Mode opened
+    // is reflected without this action needing its own invalidation.
+    let rows;
+    try {
+      rows = await listLibraries();
+    } catch (error) {
+      console.warn("[PM-SHUFFLE-FOLDERS] Could not read the remembered Media Folders.", error);
+      return;
+    }
+
+    const candidates = orderShuffleFolderCandidates({
+      libraries: rows,
+      currentLibraryId: activeLibraryRecord?.id || null,
+    });
+
+    for (const candidate of candidates) {
+      if (!(await canShuffleToRememberedFolder(candidate))) continue;
+
+      // Captured BEFORE the load, because loadFromFsaHandle() calls
+      // exitFillMode() as part of its ordinary staging — that is existing,
+      // protected behavior for every media load, not something to change
+      // for this one caller. Restoring Presentation Mode afterwards is the
+      // smallest safe continuation: it reuses enterFillMode()/
+      // openAutomationsTray() exactly as a click would, and adds no new PM
+      // navigation or playback mechanism.
+      const wasPresenting = fillModeActive;
+      const trayWasOpen = pmAutomationsGroup.classList.contains("is-open");
+
+      // [LIBRARY-REGISTRY] The canonical remembered-folder load path, reused
+      // whole: resumeLibrary() → loadFromFsaHandle(). Nothing about
+      // directory scanning, media projection, FSA handling, profile
+      // association or startup-media behavior is duplicated here. Because
+      // permission was already confirmed granted just above, resumeLibrary()
+      // takes its no-prompt path.
+      //
+      // Awaited to COMPLETION, not merely started: loadFromFsaHandle() only
+      // reaches finishLoadingItems() — the MEDIA LOADED boundary, where
+      // runtime.load() publishes the new media set — near the end of its own
+      // work. Re-entering Presentation Mode before that would put the
+      // customer back in front of the OUTGOING media set.
+      await resumeLibrary(candidate);
+
+      if (wasPresenting) {
+        enterFillMode();
+        if (trayWasOpen) openAutomationsTray();
+      }
+      return;
+    }
+
+    // Nothing usable to switch to — the only remembered folder is the one
+    // already loaded, or every alternative needs customer intervention.
+    // Staying put IS the correct outcome here: there is no failure to
+    // report, so Presentation Mode is left exactly as it was rather than
+    // pushed into an error state or interrupted by a modal.
+  } finally {
+    isShufflingFolders = false;
+    overlayShuffleFoldersBtn.disabled = false;
+  }
 }
 
 // ---- Fill Panel (simulated fullscreen) ---------------------------------
@@ -7426,10 +8215,16 @@ function enterFillMode() {
   layoutEl.classList.add("simulated-fullscreen-layout");
   viewerPanel.classList.add("simulated-fullscreen-viewer");
   presentationControls.classList.remove("hidden");
+  transitionSamples = [];
+  transitionCount = 0;
+  lastVisibleCommitAt = currentViewerNode?.tagName === "IMG" ? performance.now() : null;
+  refreshReadyQueue();
 }
 
 function exitFillMode() {
   if (!fillModeActive) return;
+
+  cancelWarmStart();
 
   // [UI-REDESIGN / Stage 3] The unconditional `runtime.stop()` here is
   // retired. It previously treated leaving Presentation as an explicit end
@@ -7444,6 +8239,8 @@ function exitFillMode() {
   // playing state — nothing presentation-specific is tracked here either
   // way; the difference is only that we no longer reach for its stop path.
   fillModeActive = false;
+  lastVisibleCommitAt = null;
+  releaseReadyQueue({ includeWarming: true });
   appShell.classList.remove("simulated-fullscreen");
   layoutEl.classList.remove("simulated-fullscreen-layout");
   viewerPanel.classList.remove("simulated-fullscreen-viewer");
@@ -7557,9 +8354,11 @@ function toggleGhostPopunder() {
 
 function togglePlay() {
   if (runtime.getState().isPlaying) {
+    cancelWarmStart();
     runtime.stop();
   } else {
     runtime.play();
+    maybeBeginWarmStart();
   }
 }
 
@@ -7589,8 +8388,401 @@ function clearViewerNode() {
   currentViewerItem = null;
 }
 
+// BREADCRUMBS - WAS
+// Phase 3A prepared only the item already selected as current. It held the
+// outgoing image until that one resource became ready, so the black frame was
+// removed but the network wait still sat on the customer's critical path.
+//
+// BREADCRUMBS - IS
+// While Presentation Mode is active and the current image is visibly committed,
+// this bounded warmer reads MediaRuntime's actual six-item shuffle plan. It
+// prepares image nodes source-neutrally, never chooses an item, and releases
+// nodes that leave the plan. A ready node is advisory; every miss still takes
+// Phase 3A's held-frame path.
+//
+// BREADCRUMBS - WILL BE
+// The queue remains image-only and count-bounded. Video buffering, byte-based
+// memory policy, retries, failure classification and dead-item auto-skip need
+// separate evidence and architecture; none is implied by this seam.
+function releasePreparedImage(item) {
+  const entry = preparedViewerImages.get(item);
+  if (!entry) return;
+  entry.node.src = "";
+  preparedViewerImages.delete(item);
+}
+
+function releaseReadyQueue({ includeWarming = false } = {}) {
+  for (const item of [...preparedViewerImages.keys()]) releasePreparedImage(item);
+  if (includeWarming) {
+    for (const entry of warmingViewerImages.values()) entry.node.src = "";
+    warmingViewerImages.clear();
+    failedWarmItems.clear();
+  }
+}
+
+function warmPlannedImage(item) {
+  const entry = {
+    item,
+    node: new Image(),
+    loadGeneration: libraryLoadGeneration,
+    galleryGeneration,
+  };
+  const { node } = entry;
+  node.alt = item.name;
+  node.decoding = "async";
+  warmingViewerImages.set(item, entry);
+
+  const settled = new Promise((resolve, reject) => {
+    node.addEventListener("load", resolve, { once: true });
+    node.addEventListener("error", reject, { once: true });
+  });
+  node.src = item.url;
+
+  (async () => {
+    let loaded = false;
+    try {
+      await settled;
+      loaded = true;
+      if (typeof node.decode === "function") {
+        try {
+          await node.decode();
+        } catch {
+          // Native load remains authoritative; decode is best-effort only.
+        }
+      }
+    } catch {
+      // A warm failure changes no playback state and gets no retry loop.
+    }
+
+    if (warmingViewerImages.get(item) !== entry) {
+      node.src = "";
+      return;
+    }
+    warmingViewerImages.delete(item);
+
+    const plannedItems = fillModeActive ? runtime.getPlannedItems(PLAN_LENGTH) : [];
+    const remainsValid =
+      loaded &&
+      fillModeActive &&
+      entry.loadGeneration === libraryLoadGeneration &&
+      entry.galleryGeneration === galleryGeneration &&
+      plannedItems.includes(item);
+
+    if (remainsValid) {
+      preparedViewerImages.set(item, entry);
+    } else {
+      node.src = "";
+      if (!loaded && plannedItems.includes(item)) failedWarmItems.add(item);
+    }
+    refreshReadyQueue();
+  })();
+}
+
+function refreshReadyQueue() {
+  const state = runtime.getState();
+  const currentImageVisible =
+    state.currentItem?.kind === "image" &&
+    currentViewerItem === state.currentItem &&
+    currentViewerNode?.tagName === "IMG" &&
+    !viewerStage.classList.contains("hidden");
+
+  if (!fillModeActive || !currentImageVisible || currentViewerPreparationInFlight) return;
+
+  const plannedItems = runtime.getPlannedItems(PLAN_LENGTH);
+  for (const item of [...failedWarmItems]) {
+    if (!plannedItems.includes(item)) failedWarmItems.delete(item);
+  }
+  const warmablePlan = plannedItems.filter((item) => item.kind === "image" && !failedWarmItems.has(item));
+  const work = planReadyQueueWork({
+    plannedItems: warmablePlan,
+    preparedItems: [...preparedViewerImages.keys()],
+    warmingItems: [...warmingViewerImages.keys()],
+    maxPrepared: MAX_PREPARED,
+    maxConcurrent: MAX_CONCURRENT_WARMING,
+  });
+
+  work.release.forEach(releasePreparedImage);
+  work.start.forEach(warmPlannedImage);
+  if (warmStartState === "warming") evaluateWarmStart();
+}
+
+function takePreparedViewerImage(item) {
+  const entry = preparedViewerImages.get(item);
+  if (!entry) return null;
+  preparedViewerImages.delete(item);
+  const token = ++viewerPreparationCounter;
+  const commit = shouldCommitPreparedViewer({
+    preparedToken: token,
+    currentToken: viewerPreparationCounter,
+    preparedLoadGeneration: entry.loadGeneration,
+    currentLoadGeneration: libraryLoadGeneration,
+    preparedGalleryGeneration: entry.galleryGeneration,
+    currentGalleryGeneration: galleryGeneration,
+    preparedItem: item,
+    currentViewerItem: runtime.getState().currentItem,
+  });
+  if (!commit) {
+    entry.node.src = "";
+    return null;
+  }
+  return entry;
+}
+
+function releaseStaleReadyQueueEntries() {
+  for (const [item, entry] of preparedViewerImages) {
+    if (entry.loadGeneration !== libraryLoadGeneration || entry.galleryGeneration !== galleryGeneration) {
+      releasePreparedImage(item);
+    }
+  }
+  for (const [item, entry] of warmingViewerImages) {
+    if (entry.loadGeneration !== libraryLoadGeneration || entry.galleryGeneration !== galleryGeneration) {
+      entry.node.src = "";
+      warmingViewerImages.delete(item);
+    }
+  }
+}
+
+// BREADCRUMBS - WAS
+// Phase 3B began Presentation with an empty or shallow ready reserve. A slow
+// image among the first few transitions could exhaust the runway before the
+// six-deep reserve accumulated; real URL-backed Presentation runs observed
+// this more than once as an approximately 15-20 second early stall.
+//
+// BREADCRUMBS - IS
+// When URL-backed image playback begins in Presentation with fewer than three
+// valid upcoming prepared images, one small curtain holds automatic advance
+// while the existing two-worker queue fills. The current image still commits
+// through the normal viewer path underneath it. Release occurs once three
+// valid planned images are ready or ten seconds of EXTRA queue-building time
+// has elapsed, but never before the current visual reaches a real terminal
+// outcome. Human navigation cancels immediately.
+//
+// BREADCRUMBS - WILL BE
+// This remains a fixed cold-start policy, not an adaptive buffer, another
+// preloader, or a source model. Future changes require evidence; the runtime's
+// six-item plan, two-worker limit, source neutrality and visible timer remain
+// authoritative.
+function countValidPreparedWarmStartItems() {
+  releaseStaleReadyQueueEntries();
+  const plannedItems = runtime.getPlannedItems(PLAN_LENGTH);
+  let count = 0;
+  for (const [item, entry] of preparedViewerImages) {
+    const valid =
+      entry.loadGeneration === libraryLoadGeneration &&
+      entry.galleryGeneration === galleryGeneration &&
+      plannedItems.includes(item);
+    if (valid) {
+      count += 1;
+    } else {
+      releasePreparedImage(item);
+    }
+  }
+  return count;
+}
+
+function finishWarmStart(reason, preparedCount) {
+  if (warmStartState !== "warming") return;
+  const elapsedMs = performance.now() - warmStartStartedAt;
+  warmStartState = "inactive";
+  warmStartTimeoutReached = false;
+  if (warmStartTimeoutId !== null) {
+    window.clearTimeout(warmStartTimeoutId);
+    warmStartTimeoutId = null;
+  }
+  warmStartOverlay.classList.add("hidden");
+  stopArcadeAnimation();
+  console.info("[PM WARM START] Release", {
+    reason,
+    elapsed_ms: Math.round(elapsedMs),
+    valid_prepared: preparedCount,
+  });
+  runtime.notifyCurrentItemVisible();
+}
+
+function evaluateWarmStart({ cancelled = false } = {}) {
+  if (warmStartState !== "warming") return;
+  const preparedCount = countValidPreparedWarmStartItems();
+  let decision = shouldReleaseWarmStart({
+    preparedCount,
+    readyThreshold: RELEASE_READY_COUNT,
+    elapsedMs: performance.now() - warmStartStartedAt,
+    maxMs: WARM_START_MAX_MS,
+    cancelled,
+  });
+  if (!cancelled && warmStartTimeoutReached) decision = { release: true, reason: "timeout" };
+  if (!canApplyWarmStartRelease({ decision, currentVisualSettled: warmStartCurrentVisualSettled })) return;
+  finishWarmStart(decision.reason, preparedCount);
+}
+
+function cancelWarmStart() {
+  evaluateWarmStart({ cancelled: true });
+}
+
+function maybeBeginWarmStart() {
+  if (warmStartState === "warming") return;
+  const item = runtime.getState().currentItem;
+  if (!fillModeActive || !currentSessionIsUrlBacked || item?.kind !== "image") return;
+  const preparedCount = countValidPreparedWarmStartItems();
+  if (preparedCount >= RELEASE_READY_COUNT) return;
+
+  warmStartState = "warming";
+  warmStartStartedAt = performance.now();
+  warmStartCurrentVisualSettled = lastViewerTerminalItem === item;
+  warmStartTimeoutReached = false;
+  warmStartOverlay.classList.remove("hidden");
+  startArcadeAnimation(warmStartCanvas);
+  runtime.holdAdvanceForPendingVisual();
+  warmStartTimeoutId = window.setTimeout(() => {
+    warmStartTimeoutId = null;
+    warmStartTimeoutReached = true;
+    evaluateWarmStart();
+  }, WARM_START_MAX_MS);
+}
+
+function handleCurrentViewerTerminal(item) {
+  lastViewerTerminalItem = item;
+  currentViewerPreparationInFlight = false;
+  if (warmStartState === "warming") {
+    warmStartCurrentVisualSettled = true;
+    refreshReadyQueue();
+    evaluateWarmStart();
+    return;
+  }
+  runtime.notifyCurrentItemVisible();
+  refreshReadyQueue();
+}
+
+// [PRESENTATION-PERF / PHASE 3A]
+// The held path. Starts the incoming image loading WITHOUT tearing down the
+// outgoing one, then swaps only once the incoming image is genuinely ready —
+// and only if it is still the image the viewer is waiting for.
+//
+// buildViewer() itself stays synchronous: this kicks off a detached promise
+// chain and returns immediately, exactly as the eager path returns immediately
+// after assigning src. The customer-visible difference is only WHEN the stage
+// changes, never what ends up on it.
+function prepareHeldFrameImage(item) {
+  const renderEntryAt = lastRenderEntryAt;
+  const token = ++viewerPreparationCounter;
+  const preparedLoadGeneration = libraryLoadGeneration;
+  const preparedGalleryGeneration = galleryGeneration;
+  currentViewerPreparationInFlight = true;
+  runtime.holdAdvanceForPendingVisual();
+
+  // Claimed EAGERLY, before any await. This is what makes buildViewer()'s
+  // same-item early return absorb every intervening re-emit — a profile change,
+  // a favourite toggle, a status refresh — instead of starting a duplicate
+  // preparation for the same item on each one. currentViewerItem therefore
+  // means "the item the viewer is showing OR preparing" from here on.
+  //
+  // currentViewerNode is deliberately NOT touched: it still points at the
+  // outgoing image, which is still on screen and still owns the stage. That is
+  // the held frame.
+  currentViewerItem = item;
+
+  const img = document.createElement("img");
+  img.alt = item.name;
+  img.decoding = "async";
+  const srcAt = performance.now();
+  img.src = item.url;
+  recordMediaRenderOutcome("mounted");
+
+  // The load/error events are the AUTHORITY on success or failure. Phase 1C's
+  // own listeners are deliberately not attached on this path: this promise is
+  // the single outcome source for a prepared node, and attaching both would
+  // double-count the tally.
+  const loaded = new Promise((resolve, reject) => {
+    img.addEventListener("load", resolve, { once: true });
+    img.addEventListener("error", reject, { once: true });
+  });
+
+  (async () => {
+    let loadAt = 0;
+    let decodeAt = null;
+    let failed = false;
+
+    try {
+      await loaded;
+      loadAt = performance.now();
+      if (typeof img.decode === "function") {
+        try {
+          await img.decode();
+        } catch {
+          // decode() is a refinement, never the verdict. It can reject for
+          // images that render perfectly well, and `load` has already told us
+          // the bytes arrived — so a rejection here must not become a failure.
+        }
+        decodeAt = performance.now();
+      }
+    } catch {
+      failed = true;
+    }
+
+    const commit = shouldCommitPreparedViewer({
+      preparedToken: token,
+      currentToken: viewerPreparationCounter,
+      preparedLoadGeneration,
+      currentLoadGeneration: libraryLoadGeneration,
+      preparedGalleryGeneration,
+      currentGalleryGeneration: galleryGeneration,
+      preparedItem: item,
+      currentViewerItem,
+    });
+
+    if (!commit) {
+      // Superseded, or the source/filter/viewer moved on. Release the decoded
+      // bitmap and the pending request and do nothing else — no DOM, no
+      // classes, no status text, and no outcome recorded, matching the eager
+      // path's own `currentViewerNode !== img` guard.
+      img.src = "";
+      return;
+    }
+
+    // Teardown and insertion in ONE synchronous block, with no await between
+    // them. This is the entire mechanism: the browser never gets a chance to
+    // paint an empty stage.
+    clearViewerNode();
+    const teardownAt = performance.now();
+    // clearViewerNode() nulls both refs; re-establish what this preparation
+    // already owns.
+    currentViewerItem = item;
+
+    if (failed) {
+      // Converge exactly onto Phase 1C's existing behaviour. The held frame is
+      // released here, which is correct: image A cannot be held forever on
+      // behalf of a dead image B. Nothing skips, retries, removes, reorders or
+      // classifies — that is Phase 1C's territory and it stays there.
+      recordMediaRenderOutcome("failed");
+      viewerEmpty.textContent = "This item could not be loaded.";
+      viewerStage.classList.add("hidden");
+      viewerEmpty.classList.remove("hidden");
+      handleCurrentViewerTerminal(item);
+      return;
+    }
+
+    currentViewerNode = img;
+    viewerStage.appendChild(img);
+    recordMediaRenderOutcome("loaded");
+
+    // #viewer-stage was already visible and #viewer-empty already hidden — the
+    // held path only runs when a real image was on screen — so neither class is
+    // touched here.
+    measureTransitionReady({
+      held: true,
+      renderEntryAt,
+      srcAt,
+      loadAt,
+      decodeAt,
+      teardownAt,
+      item,
+      node: img,
+    });
+  })();
+}
+
 function buildViewer(state) {
   const { currentItem: item, isPlaying, hasItems, hasVisibleItems } = state;
+  releaseStaleReadyQueueEntries();
 
   // [UI-REDESIGN / Stage 6]
   // WHAT: One class on .app-shell recording whether the Player currently has
@@ -7624,6 +8816,7 @@ function buildViewer(state) {
     viewerStage.classList.add("hidden");
     viewerEmpty.classList.remove("hidden");
     viewerEmpty.textContent = "All media is hidden. Unhide items in the Gallery to continue.";
+    handleCurrentViewerTerminal(item);
     return;
   }
 
@@ -7640,15 +8833,73 @@ function buildViewer(state) {
         currentViewerNode.pause();
       }
     }
+    refreshReadyQueue();
+    return;
+  }
+
+  // [PRESENTATION-PERF / PHASE 3A] Held-frame eligibility, decided BEFORE
+  // teardown — because holding the outgoing frame means not calling
+  // clearViewerNode() yet. Reaching this line is itself the fourth condition:
+  // the same-item early return above did not fire, so this is a genuine item
+  // change rather than a re-emit for the item already on screen.
+  //
+  // Restricted to image-following-image deliberately. Holding a PLAYING video
+  // while an image prepares would entangle armLoopRuleForCurrentVideo(),
+  // notifyVideoEnded() and the TS adapter, none of which are in scope. Every
+  // other combination — image -> video, video -> image, video -> video, the
+  // first item of a session, and recovery from the "could not be loaded" state
+  // (where #viewer-stage is hidden and there is no frame worth holding) — falls
+  // through to the eager path below, byte for byte unchanged.
+  const outgoingNode = currentViewerNode;
+  const canHoldOutgoingFrame =
+    Boolean(item) &&
+    item.kind === "image" &&
+    Boolean(outgoingNode) &&
+    outgoingNode.tagName === "IMG" &&
+    !viewerStage.classList.contains("hidden");
+
+  if (item?.kind === "image") {
+    const prepared = takePreparedViewerImage(item);
+    if (prepared) {
+      clearViewerNode();
+      const committedAt = performance.now();
+      currentViewerItem = item;
+      currentViewerNode = prepared.node;
+      viewerEmpty.classList.add("hidden");
+      viewerStage.classList.remove("hidden");
+      viewerStage.appendChild(prepared.node);
+      recordMediaRenderOutcome("mounted");
+      recordMediaRenderOutcome("loaded");
+      measureTransitionReady({
+        held: true,
+        readyHit: true,
+        renderEntryAt: lastRenderEntryAt,
+        srcAt: committedAt,
+        loadAt: committedAt,
+        decodeAt: committedAt,
+        teardownAt: committedAt,
+        item,
+        node: prepared.node,
+      });
+      return;
+    }
+  }
+
+  if (canHoldOutgoingFrame) {
+    prepareHeldFrameImage(item);
     return;
   }
 
   clearViewerNode();
+  // Captured at the call site rather than inside clearViewerNode(), which stays
+  // the single teardown owner and keeps doing exactly what it did before.
+  const teardownAt = performance.now();
 
   if (!item) {
     viewerStage.classList.add("hidden");
     viewerEmpty.classList.remove("hidden");
     viewerEmpty.textContent = "Choose files or a folder to begin.";
+    handleCurrentViewerTerminal(item);
     return;
   }
 
@@ -7657,8 +8908,40 @@ function buildViewer(state) {
   currentViewerItem = item;
 
   if (item.kind === "image") {
+    currentViewerPreparationInFlight = true;
+    runtime.holdAdvanceForPendingVisual();
     const img = document.createElement("img");
+    const renderEntryAt = lastRenderEntryAt;
+    const srcAt = performance.now();
     img.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    img.addEventListener("load", () => {
+      if (currentViewerNode !== img) return;
+      recordMediaRenderOutcome("loaded");
+      // [PRESENTATION-PERF / PHASE 3A] The eager path measures itself with the
+      // same definitions the held path uses, so before/after is one comparison
+      // rather than two. On this path the element was appended EMPTY and only
+      // becomes visible now — which is precisely why blank_ms here is the whole
+      // resource wait, and why it is the number this stage exists to collapse.
+      measureTransitionReady({
+        held: false,
+        renderEntryAt,
+        srcAt,
+        loadAt: performance.now(),
+        decodeAt: null,
+        teardownAt,
+        item,
+        node: img,
+      });
+    });
+    img.addEventListener("error", () => {
+      if (currentViewerNode !== img) return;
+      recordMediaRenderOutcome("failed");
+      viewerEmpty.textContent = "This item could not be loaded.";
+      viewerStage.classList.add("hidden");
+      viewerEmpty.classList.remove("hidden");
+      handleCurrentViewerTerminal(item);
+    });
     img.alt = item.name;
     currentViewerNode = img;
     viewerStage.appendChild(img);
@@ -7673,6 +8956,7 @@ function buildViewer(state) {
     video.muted = true;
     currentViewerNode = video;
     viewerStage.appendChild(video);
+    handleCurrentViewerTerminal(item);
 
     if (isTsItem(item)) {
       // [TS-POC] Phase 5 diagnostic timing — counter-based ID only, never
@@ -7685,6 +8969,18 @@ function buildViewer(state) {
       });
     } else {
       video.src = item.url;
+      recordMediaRenderOutcome("mounted");
+      video.addEventListener("loadedmetadata", () => {
+        if (currentViewerNode !== video) return;
+        recordMediaRenderOutcome("loaded");
+      });
+      video.addEventListener("error", () => {
+        if (currentViewerNode !== video) return;
+        recordMediaRenderOutcome("failed");
+        viewerEmpty.textContent = "This item could not be loaded.";
+        viewerStage.classList.add("hidden");
+        viewerEmpty.classList.remove("hidden");
+      });
     }
 
     // A fresh video is on screen — arm whatever the active Loop Rule
@@ -7937,14 +9233,33 @@ function mountThumbMedia(thumb) {
   if (!item || thumb.dataset.mounted === "true") return;
 
   let mediaEl;
+  const mountedGeneration = galleryGeneration;
 
   if (item.kind === "image") {
     mediaEl = document.createElement("img");
     mediaEl.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    mediaEl.addEventListener("load", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("loaded");
+    });
+    mediaEl.addEventListener("error", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("failed");
+    });
     mediaEl.alt = item.name;
   } else if (item.kind === "video") {
     mediaEl = document.createElement("video");
     mediaEl.src = item.url;
+    recordMediaRenderOutcome("mounted");
+    mediaEl.addEventListener("loadedmetadata", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("loaded");
+    });
+    mediaEl.addEventListener("error", () => {
+      if (galleryGeneration !== mountedGeneration) return;
+      recordMediaRenderOutcome("failed");
+    });
     mediaEl.muted = true;
     mediaEl.preload = "metadata";
   } else {
@@ -8010,11 +9325,26 @@ function syncHideButton(item) {
 // resets to "forever" without itself unchecking the box) — this is
 // exactly the case hiding the controls here is a real, needed safety net
 // for, not merely decorative.
+// [PM-SHUFFLE-FOLDERS] Loop/🤖 gating below is UNCHANGED — still exactly
+// `!isVideo`, still the same two elements. What changed is the empty state's
+// derivation: it used to be `isVideo` on the assumption that "photo" and
+// "tray has nothing in it" were the same fact. 🎲 is the tray's first
+// media-agnostic control (switching Media Folders means the same thing on a
+// photo as on a video, so it is deliberately not gated here), which makes
+// that assumption false. The message is now derived from what is ACTUALLY
+// available — no control visible, nothing to offer — so it can never claim
+// "no automations available" while one is sitting next to it. Kept rather
+// than deleted: a tray whose whole contents are media-gated again is exactly
+// what this element is for.
 function syncAutomationsMediaAvailability(item) {
   const isVideo = Boolean(item && item.kind === "video");
   videoLoopControl.classList.toggle("hidden", !isVideo);
   overlayAutomationBtn.classList.toggle("hidden", !isVideo);
-  pmAutomationsPhotoEmpty.classList.toggle("hidden", isVideo);
+
+  const anyAvailable = [videoLoopControl, overlayAutomationBtn, overlayShuffleFoldersBtn].some(
+    (element) => !element.classList.contains("hidden")
+  );
+  pmAutomationsPhotoEmpty.classList.toggle("hidden", anyAvailable);
 }
 
 // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-DYNAMIC-SLOT] [PM-HIDE-UNDO-WAYPOINT] [PM-HIDE-UNDO-WAYPOINT-RUNTIME-FIX]
@@ -8554,8 +9884,33 @@ function syncControls(state) {
 }
 
 function render(state) {
-  renderGallery(state);
+  // [PRESENTATION-PERF / PHASE 3A] t0 for every transition measurement. This is
+  // the earliest point this file can honestly observe — MediaRuntime's own
+  // selection work happens before it and is protected, so every number derived
+  // from this excludes it. That exclusion is bounded and known: the pre-change
+  // profiler measured the whole dispatch at ~0.8 ms median.
+  lastRenderEntryAt = performance.now();
+
+  // [PRESENTATION-PERF / PHASE 3A] Player first, gallery second. buildViewer()
+  // is where the incoming image's src is assigned, so running it ahead of
+  // renderGallery() starts the request before the gallery's per-card
+  // bookkeeping rather than after it.
+  //
+  // Small, low-risk and regression-tested — NOT zero-risk, and not sold as one.
+  // Verified by inspection before the swap: renderGallery() writes only gallery
+  // state (renderedGalleryGeneration, galleryCardEls, galleryThumbEls,
+  // galleryObserver, galleryJumpTargetIndex and the grid DOM), none of which
+  // buildViewer() reads; both functions are called from here and nowhere else;
+  // and syncGalleryJumpTarget() reads only `state` and its own input, so it is
+  // unaffected by their relative order. The one comment in this file that
+  // reasons about buildViewer()'s timing (see syncMobileLoadState's
+  // .app-has-media note) depends on buildViewer() running inside this same
+  // synchronous render() call, which moving it earlier only strengthens.
+  //
+  // The measured benefit is sub-millisecond. This is an ordering-correctness
+  // change, not a performance fix — the blank frame was the defect.
   buildViewer(state);
+  renderGallery(state);
   syncControls(state);
   syncGalleryJumpTarget(state);
   // [UI-REDESIGN / Stage 4] Catches the playback half of the strip's
@@ -8566,13 +9921,62 @@ function render(state) {
 
 // ---- Event wiring ---------------------------------------------------------
 
-fileInput.addEventListener("change", (event) => {
-  loadFiles(event.target.files);
+/*
+BREADCRUMBS - WAS
+Media intake exposed separate local and Floppy controls, requiring the customer to understand which backend or source type should process a selection.
+
+BREADCRUMBS - IS
+The customer chooses only selection shape and intent: Open Files, Open Folder, Remember File, or Remember Folder. Unified intake classification determines whether existing local or Floppy owners handle the selection.
+
+BREADCRUMBS - WILL BE
+Future source types should extend classification and routing behind these generic controls rather than adding new customer-facing picker buttons.
+*/
+
+/*
+BREADCRUMBS - WAS
+Picker handlers passed browser-owned live FileLists into asynchronous intake routing and then cleared the inputs. Clearing the control could empty the selection before evidence collection consumed it.
+
+BREADCRUMBS - IS
+Picker selections are snapshotted into stable arrays before asynchronous unified intake routing. Input controls may be cleared without mutating the selection being classified.
+
+BREADCRUMBS - WILL BE
+Any future picker path crossing an asynchronous boundary must snapshot browser-owned selection state before yielding, clearing, or reusing the control.
+*/
+async function routeOpenSelection(fileList, { shape, rootName = null } = {}) {
+  const evidence = await collectSelectionEvidence(fileList, { shape });
+  const selectionKind = classifySelection(evidence);
+
+  switch (selectionKind) {
+    case "local-files":
+      return loadFiles(fileList);
+    case "local-folder":
+      return loadFiles(fileList, { isFolderPick: true, rootName });
+    case "floppy-file": {
+      const floppy = evidence.entries.find((entry) => entry.qualifiesAsFloppy);
+      return loadRemoteSession(floppy.floppyText, { name: floppy.name, sourceKind: "cassette" });
+    }
+    case "floppy-folder":
+      return loadRemoteSession(combineQualifyingFloppyTexts(evidence), { name: rootName, sourceKind: "cassette-folder" });
+    case "mixed":
+      statusText.textContent = shape === "folder"
+        ? "This folder contains both media and Floppy Disks. Choose a folder containing one type."
+        : "Choose either media files or a Floppy Disk, not both.";
+      return;
+    default:
+      statusText.textContent = shape === "folder"
+        ? "This folder doesn't contain supported media or Floppy Disks."
+        : "Browser Gallery can't open that file.";
+  }
+}
+
+fileInput.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
   fileInput.value = "";
+  await routeOpenSelection(files, { shape: "files" });
 });
 
-folderInput.addEventListener("change", (event) => {
-  const files = event.target.files;
+folderInput.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
 
   // [PHASE-6-SYNC-V2]
   // [STAGE-E-LIVE-INTEGRATION]
@@ -8595,8 +9999,8 @@ folderInput.addEventListener("change", (event) => {
   // identity in loadFiles() — the plain "Choose Files" input below never
   // sets this, since a set of individually-picked files has no folder
   // root to fingerprint against.
-  loadFiles(files, { isFolderPick: true, rootName: topFolderName });
   folderInput.value = "";
+  await routeOpenSelection(files, { shape: "folder", rootName: topFolderName });
 });
 
 intervalInput.addEventListener("change", () => {
@@ -8977,6 +10381,7 @@ nextBtn.addEventListener("click", (event) => {
 // begin.
 function startPlaybackFromTransport() {
   runtime.play();
+  if (fillModeActive) maybeBeginWarmStart();
 }
 
 // The ordinary Player's Play/Pause. Deliberately NOT togglePlay(), which
@@ -8996,6 +10401,7 @@ function startPlaybackFromTransport() {
 // paused/resumed flag here to make this read more like a player.
 function toggleTransportPlayback() {
   if (runtime.getState().isPlaying) {
+    cancelWarmStart();
     runtime.stop();
   } else {
     startPlaybackFromTransport();
@@ -9026,9 +10432,13 @@ function enterFillPanelDeliberately() {
 
   enterFillMode();
 
-  if (wasPlaying) return;
+  if (wasPlaying) {
+    maybeBeginWarmStart();
+    return;
+  }
   if (!autoplayOnFillInput.checked) return;
   runtime.play();
+  maybeBeginWarmStart();
 }
 
 // [UI-REDESIGN / Stage 6] The Play/Pause button and the Space shortcut are
@@ -9144,11 +10554,15 @@ nowPlayingReturnBtn.addEventListener("click", (event) => {
 // pause half, and #now-playing-stop-btn above.
 
 clearBtn.addEventListener("click", () => {
+  currentSessionIsUrlBacked = false;
   libraryLoadGeneration += 1;
   bumpGalleryGeneration();
   runtime.clear();
   provider.dispose();
   fsaProvider.dispose(); // [FSA] whichever source was active, release it
+  remoteProvider.dispose();
+  remoteStatusText.textContent = "";
+  resetMediaRenderOutcomes();
   allItems = [];
   clearViewerNode();
   exitFillMode();
@@ -9159,6 +10573,8 @@ clearBtn.addEventListener("click", () => {
   // [Phase 8.4-2/8.4-3] Nothing is loaded anymore — an "Associate this
   // Library…" click after this point would have nothing to associate.
   activeLibraryRecord = null;
+  activeCassetteRecord = null;
+  activeCassetteCurationId = null;
   associationWriteSuppression.setLoadedLibrary(null);
   clearReverseCurationSuggestion();
   clearDeviceAwareMediaQuestion();
@@ -9217,10 +10633,12 @@ overlayFavoriteBtn.addEventListener("click", () => {
 });
 
 overlayPrevBtn.addEventListener("click", () => {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   runtime.previous();
 });
 overlayNextBtn.addEventListener("click", () => {
+  cancelWarmStart();
   handleManualNavigationLoopReset();
   runtime.next();
 });
@@ -9314,6 +10732,15 @@ overlayAutomationsMenuBtn.addEventListener("click", () => {
     return;
   }
   toggleAutomationsTray();
+});
+
+// [PM-SHUFFLE-FOLDERS] Deliberately the ONLY thing this click does — it does
+// not close the tray, does not touch videoLoopInput/activeLoopRule, and does
+// not call syncAutomationsActiveIndicator(): a one-shot action leaves ⚡
+// idle, so repeated ⚡ → 🎲 → 🎲 keeps switching folders from the same open
+// shelf. See shuffleToAnotherRememberedFolder() for the re-entry guard.
+overlayShuffleFoldersBtn.addEventListener("click", () => {
+  shuffleToAnotherRememberedFolder();
 });
 
 overlayAutomationBtn.addEventListener("click", () => {
@@ -9516,11 +10943,13 @@ function handlePresentationKeydown(event) {
   switch (event.key) {
     case "ArrowRight":
       event.preventDefault();
+      cancelWarmStart();
       handleManualNavigationLoopReset();
       runtime.next();
       break;
     case "ArrowLeft":
       event.preventDefault();
+      cancelWarmStart();
       handleManualNavigationLoopReset();
       runtime.previous();
       break;
@@ -10134,6 +11563,10 @@ profile.subscribe(() => {
   }
   renderTagsGrid();
   renderTagActivityCenter();
+  // [CURATION-IMPORT / STAGE-E] Any Tag vocabulary change (an import
+  // arriving, or a plain manual create) may resolve or introduce a
+  // same-name duplicate group — cheap enough to recompute on every change.
+  renderDuplicateTagNotice();
   // A tag being renamed or deleted (label change, or a chip disappearing
   // entirely) needs to reach the Presentation Tags panel too, not just
   // Gallery Settings' own grid.
@@ -10184,7 +11617,7 @@ function renderProfileSelector() {
   profiles.forEach((entry) => {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.textContent = `${entry.name} Curation`;
+    option.textContent = `${displayCurationLabel(entry, profiles)} Curation`;
     profileSelect.appendChild(option);
   });
 
@@ -10581,9 +12014,47 @@ profileSelect.addEventListener("change", async () => {
   }
 });
 
+// [CURATION-IMPORT / STAGE-D / CREATE DUPLICATE-NAME GUARD]
+// [WHY: manual creation used to silently mint a second identically-named
+//  Curation with no warning at all — the exact ambiguity this whole
+//  amendment exists to prevent. This never merges/aliases anything: "Use
+//  Existing" simply switches to the Curation that already has this name,
+//  and "Create Another" still mints a genuinely new, independent id.]
 async function createProfileFromInput() {
   const name = profileCreateInput.value.trim();
   if (!name) return;
+
+  const existing = profile.listProfiles();
+  const collisions = findCurationNameCollisions(name, existing);
+
+  let finalName = name;
+  if (collisions.length > 0) {
+    const existingLabel = displayCurationLabel(collisions[0], existing);
+    const choice = await openCurationChoiceDialog({
+      title: `A Curation named "${name}" already exists`,
+      choices: [
+        { label: "Cancel", value: "cancel" },
+        { label: "Create Another", value: "create-another" },
+        { label: `Use Existing ${existingLabel}`, value: "use-existing", primary: true },
+      ],
+    });
+
+    if (!choice || choice === "cancel") return;
+
+    if (choice === "use-existing") {
+      await profile.switchProfile(collisions[0].id);
+      profileCreateInput.value = "";
+      profileActiveStatusText.textContent = `Switched to the existing "${collisions[0].name}" Curation.`;
+      return;
+    }
+
+    // Create Another — the familiar filesystem "(2)" convention, editable
+    // before it's final.
+    const suggested = suggestNextCurationName(name, existing.map((entry) => entry.name));
+    const typed = window.prompt("Name for the new Curation:", suggested);
+    if (typed === null) return; // cancelled
+    finalName = typed.trim() || suggested;
+  }
 
   profileCreateBtn.disabled = true;
   try {
@@ -10594,7 +12065,7 @@ async function createProfileFromInput() {
     // (persists activeProfileId, resets in-memory state, loads the new
     // profile's isolated items/tags). "Save" in the UI == these two calls
     // in sequence.
-    const created = await profile.createProfile(name);
+    const created = await profile.createProfile(finalName);
     await profile.switchProfile(created.id);
 
     profileCreateInput.value = "";
@@ -10612,6 +12083,45 @@ profileCreateInput.addEventListener("keydown", (event) => {
     event.preventDefault();
     createProfileFromInput();
   }
+});
+
+// [CURATION-IMPORT / STAGE-D / FRONT-FACING RENAME — Feature 6]
+// [WHY: setProfileName() (profile-store.js) already existed and was already
+//  Sync-safe — it changes the `name` field only, stamped as an ordinary
+//  fact, and never touches the Curation's id, Favorites, Hidden, Tags, or
+//  Media Library associations. It was simply never exposed here. Renaming
+//  to a name already in use is a warning, never an automatic merge — see
+//  the choice dialog below.]
+profileRenameBtn.addEventListener("click", async () => {
+  const activeId = profile.getProfileId();
+  if (!activeId) return;
+
+  let newName = null;
+  for (;;) {
+    const typed = window.prompt("Rename this Curation:", newName ?? profile.getProfileName());
+    if (typed === null) return; // cancelled
+    newName = typed.trim();
+    if (!newName || newName === profile.getProfileName()) return;
+
+    const collisions = findCurationNameCollisions(newName, profile.listProfiles(), activeId);
+    if (collisions.length === 0) break;
+
+    const choice = await openCurationChoiceDialog({
+      title: `A Curation named "${newName}" already exists`,
+      body: "Renaming does not merge or combine Curations — it only changes what this one is called.",
+      choices: [
+        { label: "Cancel", value: "cancel" },
+        { label: "Choose Another Name", value: "choose-another" },
+        { label: `Use "${newName}" Anyway`, value: "use-anyway", primary: true },
+      ],
+    });
+    if (!choice || choice === "cancel") return;
+    if (choice === "use-anyway") break;
+    // "Choose Another Name" loops back to the prompt above.
+  }
+
+  profile.setProfileName(newName);
+  profileActiveStatusText.textContent = `Renamed to "${newName}".`;
 });
 
 profileDeleteBtn.addEventListener("click", async () => {
@@ -10679,8 +12189,6 @@ profile.subscribe(() => {
 
 // ---- Profile Export / Import ----------------------------------------------
 
-let pendingImportMode = "merge";
-
 function downloadTextFile(filename, text, mimeType = "application/json") {
   const blob = new Blob([text], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -10708,79 +12216,487 @@ profileExportBtn.addEventListener("click", () => {
   profileStatusText.textContent = `Exported ${count} curated item${count === 1 ? "" : "s"}.`;
 });
 
-profileImportMergeBtn.addEventListener("click", () => {
-  pendingImportMode = "merge";
-  profileImportInput.click();
-});
-
-profileImportReplaceBtn.addEventListener("click", () => {
-  pendingImportMode = "replace";
-  profileImportInput.click();
-});
+// [CURATION-IMPORT / STAGE-C]
+// [WHY: this replaces the old raw "Merge" / "Replace" / "Import as New"
+//  three-button surface, which asked the customer to already know which
+//  plumbing mode was safe. Browser Gallery now inspects the file's own
+//  Curation identity (curation-import-identity.js) and asks only the
+//  genuinely human question the amendment brief describes. "The customer
+//  curates. Browser Gallery does the bookkeeping."]
+profileImportBtn.addEventListener("click", () => profileImportInput.click());
 
 profileImportInput.addEventListener("change", async (event) => {
   const file = event.target.files && event.target.files[0];
   profileImportInput.value = "";
   if (!file) return;
 
+  let imported;
   try {
     const text = await file.text();
-    const knownRelativePaths = allItems.map((item) => item.relativePath);
+    imported = parseCurationExport(text);
+  } catch (error) {
+    profileStatusText.textContent = `Import failed: ${error.message}`;
+    return;
+  }
 
-    const result = profile.importJSON(text, {
-      mode: pendingImportMode,
-      skipMissingFiles: profileSkipMissingInput.checked,
-      knownRelativePaths,
+  // Existing "only import entries for files currently loaded" behavior,
+  // carried over from the old importer — a pre-filter on the parsed
+  // package, applied before identity classification/plan-building ever see it.
+  if (profileSkipMissingInput.checked) {
+    const knownRelativePaths = new Set(allItems.map((item) => item.relativePath));
+    const filteredItems = {};
+    for (const [path, record] of Object.entries(imported.items)) {
+      if (knownRelativePaths.has(path)) filteredItems[path] = record;
+    }
+    imported = { ...imported, items: filteredItems };
+  }
+
+  await routeCurationImport(imported);
+});
+
+// [CURATION-IMPORT / STAGE-C / IDENTIFY]
+// Case A (SAME_ID) / B (SAME_NAME_DIFFERENT_ID) / C (DIFFERENT) — routes to
+// the right decision. Commits nothing itself; see commitCurationImport().
+async function routeCurationImport(imported) {
+  const curations = profile.listProfiles();
+  const classification = classifyCurationImport({
+    importedProfileId: imported.profileId,
+    importedProfileName: imported.profileName,
+    curations,
+  });
+
+  if (classification.kind === "SAME_ID") {
+    const destination = classification.destinations[0];
+    await presentImportChoice({
+      imported,
+      destinationId: destination.id,
+      destinationLabel: displayCurationLabel(destination, curations),
     });
+    return;
+  }
 
-    profileStatusText.textContent =
-      `Import (${result.mode}) complete: ${result.applied} applied` +
-      (result.skipped ? `, ${result.skipped} skipped` : "") +
-      ".";
+  if (classification.kind === "DIFFERENT") {
+    const newCurationName = (imported.profileName || "").trim() || "Imported Curation";
+    await presentImportChoice({ imported, destinationId: null, destinationLabel: newCurationName, newCurationName });
+    return;
+  }
+
+  // SAME_NAME_DIFFERENT_ID — a genuine human decision, never resolved
+  // automatically. Multiple existing same-name candidates each get their
+  // own "Bring Into" choice, disambiguated with the existing conditional
+  // short-id display labels.
+  const candidates = classification.destinations;
+  const sourceName = (imported.profileName || "").trim() || "this Curation";
+
+  const choices = candidates.map((candidate) => ({
+    label: `Bring Into ${candidates.length > 1 ? "" : "Existing "}${displayCurationLabel(candidate, curations)}`,
+    value: { type: "bring-into", id: candidate.id },
+    primary: candidates.length === 1,
+  }));
+  choices.push({ label: "Keep Separate", value: { type: "keep-separate" } });
+  choices.push({ label: "Cancel", value: null });
+
+  const choice = await openCurationChoiceDialog({
+    title: `Another Curation named "${sourceName}" already exists`,
+    body: "Would you like to bring this import into your existing Curation, or keep it as a separate Curation?",
+    choices,
+  });
+
+  if (!choice) {
+    profileStatusText.textContent = "Import cancelled.";
+    return;
+  }
+
+  if (choice.type === "bring-into") {
+    const destination = candidates.find((candidate) => candidate.id === choice.id);
+    await presentImportChoice({
+      imported,
+      destinationId: destination.id,
+      destinationLabel: displayCurationLabel(destination, curations),
+    });
+    return;
+  }
+
+  // Keep Separate — a brand-new, independent Curation (never an alias of
+  // the existing same-name one). It's about to knowingly share a display
+  // name, so offer to rename it up front — see the brief's "RENAME DURING
+  // IMPORT". Leaving the suggestion as-is is fine too: the existing
+  // conditional short-id display system disambiguates duplicate names
+  // wherever Curations are later listed.
+  const suggested = suggestNextCurationName(sourceName, curations.map((entry) => entry.name));
+  const typedName = window.prompt("Import separately as:", suggested);
+  if (typedName === null) {
+    profileStatusText.textContent = "Import cancelled.";
+    return;
+  }
+  const separateName = typedName.trim() || suggested;
+  await presentImportChoice({ imported, destinationId: null, destinationLabel: separateName, newCurationName: separateName });
+}
+
+// [CURATION-IMPORT / STAGE-C / FEATURE 2 — IMPORT ALL + CURATE IMPORT]
+// The second decision, common to every case above once a destination is
+// known: the fast deterministic path, or customer review before anything
+// is written.
+async function presentImportChoice({ imported, destinationId, destinationLabel, newCurationName }) {
+  const choice = await openCurationChoiceDialog({
+    title: destinationId ? `Import into ${destinationLabel}` : `Import "${destinationLabel}" as a new Curation`,
+    choices: [
+      { label: "Cancel", value: "cancel" },
+      { label: "Curate Import", value: "curate" },
+      { label: "Import All", value: "all", primary: true },
+    ],
+  });
+
+  if (!choice || choice === "cancel") {
+    profileStatusText.textContent = "Import cancelled.";
+    return;
+  }
+
+  if (choice === "all") {
+    await commitCurationImport({ imported, destinationId, newCurationName, plan: null });
+    return;
+  }
+
+  await openCurateImportDialog({ imported, destinationId, destinationLabel, newCurationName });
+}
+
+// [CURATION-IMPORT / STAGE-C / COMMIT]
+// Applies either "Import All" (plan = null, so the default — everything
+// selected — plan is built and used on the spot) or a customer-approved
+// Curate Import plan. Destination targeting reuses the existing, safe
+// switchProfile() pattern (see curation-import-identity.js's header) rather
+// than a second write path — a brand-new destination is created + switched
+// exactly like the old "Import as New Curation" flow already did.
+async function commitCurationImport({ imported, destinationId, newCurationName, plan }) {
+  try {
+    let targetId = destinationId;
+    let targetLabel = null;
+
+    if (!targetId) {
+      const created = await profile.createProfile((newCurationName || imported.profileName || "Imported Curation").trim());
+      targetId = created.id;
+      targetLabel = created.name;
+    }
+
+    if (targetId !== profile.getProfileId()) {
+      await profile.switchProfile(targetId);
+    }
+    targetLabel = targetLabel || profile.getProfileName();
+
+    const finalPlan = plan || buildImportPlan({ imported, destination: await profile.getProfileSnapshot(targetId) });
+    const result = applyImportPlan(profile, finalPlan, imported.items);
+
+    const message =
+      `Imported into "${targetLabel}": ${result.tagsMerged} Tag${result.tagsMerged === 1 ? "" : "s"} merged, ` +
+      `${result.tagsCreated} new Tag${result.tagsCreated === 1 ? "" : "s"} added.`;
+    profileStatusText.textContent = message;
+    profileActiveStatusText.textContent = message;
   } catch (error) {
     profileStatusText.textContent = `Import failed: ${error.message}`;
   }
-});
+}
 
-// [LIBRARY-PROFILE-UX / Phase 8.5]
-// WHAT: "Import as New Profile" — populates a brand-new Profile from an
-// exported .json instead of merging/replacing into whichever Profile is
-// currently active.
-// WHY: Section 9 — reusing another Profile as a starting point without
-// two libraries ending up silently sharing one mutable Profile. Built
-// entirely from EXISTING primitives already used elsewhere on this page
-// (createProfile, switchProfile, importJSON) — no new persistence.
-// FUTURE: This is a one-time copy — the new Profile diverges independently
-// from here on, there is no ongoing link back to the source file.
-profileImportCopyBtn.addEventListener("click", () => profileImportCopyInput.click());
+// [CURATION-IMPORT / STAGE-C / FEATURE 3 — CURATE IMPORT STAGING]
+// [WHY: no ProfileStore mutation happens while the customer is checking
+//  boxes — every checkbox here edits `plan` in place, a plain in-memory
+//  object from buildImportPlan(). Only IMPORT SELECTED calls
+//  commitCurationImport(), which is the sole path to applyImportPlan().]
+function openCurateImportDialog({ imported, destinationId, destinationLabel, newCurationName }) {
+  curateImportSourceName.textContent = (imported.profileName || "").trim() || "(unnamed)";
+  curateImportDestinationName.textContent = destinationLabel;
+  curateImportStatus.textContent = "";
 
-profileImportCopyInput.addEventListener("change", async (event) => {
-  const file = event.target.files && event.target.files[0];
-  profileImportCopyInput.value = "";
-  if (!file) return;
+  function fingerprintTags(tags) {
+    return JSON.stringify((tags || []).map((tag) => [tag.id, tag.name]).sort());
+  }
 
-  try {
-    const text = await file.text();
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error("Not a recognized Curation file (invalid JSON).");
+  return (async () => {
+    const destinationSnapshot = destinationId ? await profile.getProfileSnapshot(destinationId) : null;
+    let plan = buildImportPlan({ imported, destination: destinationSnapshot });
+    // [STALE PLAN PROTECTION] What the plan was built against, so a commit
+    // can detect the destination's Tag vocabulary changing under it (e.g. a
+    // second browser tab) and refuse to apply a stale MATCH/NEW
+    // classification — see onCommit below.
+    let planFingerprint = fingerprintTags(destinationSnapshot?.tags);
+
+    function updateSelectAllState() {
+      const rows = [
+        ...(plan.favorites.total ? [plan.favorites.selected] : []),
+        ...(plan.hidden.total ? [plan.hidden.selected] : []),
+        ...plan.tags.map((tagPlan) => tagPlan.selected),
+      ];
+      const allSelected = rows.length > 0 && rows.every(Boolean);
+      const noneSelected = rows.every((value) => !value);
+      curateImportSelectAll.checked = allSelected;
+      curateImportSelectAll.indeterminate = !allSelected && !noneSelected;
     }
 
-    const suggestedName = typeof parsed.profileName === "string" && parsed.profileName.trim() ? parsed.profileName.trim() : "Imported Curation";
-    const name = window.prompt("Name for the new Curation:", suggestedName);
-    if (!name || !name.trim()) return; // cancelled
+    function updateCommitEnabled() {
+      curateImportCommitBtn.disabled = !importPlanHasSelection(plan);
+    }
 
-    const created = await profile.createProfile(name.trim());
-    await profile.switchProfile(created.id);
-    const result = profile.importJSON(parsed, { mode: "replace" });
+    function renderRows() {
+      curateImportFavoritesRow.classList.toggle("hidden", plan.favorites.total === 0);
+      curateImportFavoritesCheck.checked = plan.favorites.selected;
+      curateImportFavoritesLabel.textContent = plan.favorites.total
+        ? `Favorites   ${plan.favorites.total} — ${plan.favorites.known} already known · ${plan.favorites.new} new`
+        : "Favorites";
 
-    profileActiveStatusText.textContent = `Created "${created.name}" from import (${result.applied} applied).`;
-  } catch (error) {
-    profileActiveStatusText.textContent = `Could not import as a new Curation: ${error.message}`;
+      curateImportHiddenRow.classList.toggle("hidden", plan.hidden.total === 0);
+      curateImportHiddenCheck.checked = plan.hidden.selected;
+      curateImportHiddenLabel.textContent = plan.hidden.total
+        ? `Hidden   ${plan.hidden.total} — ${plan.hidden.known} already known · ${plan.hidden.new} new`
+        : "Hidden";
+
+      curateImportTagsList.innerHTML = "";
+      plan.tags.forEach((tagPlan) => {
+        const row = document.createElement("label");
+        row.className = "compact-check curate-import-tag-row";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = tagPlan.selected;
+
+        const name = document.createElement("span");
+        name.className = "curate-import-tag-name";
+        name.textContent = tagPlan.importedTagName;
+
+        const badge = document.createElement("span");
+        badge.className = "curate-import-tag-badge";
+        badge.textContent = tagPlan.matchType;
+
+        const action = document.createElement("span");
+        action.className = "curate-import-tag-action";
+        const updateAction = () => {
+          action.textContent = tagPlan.selected ? (tagPlan.matchType === "MATCH" ? "Merge" : "Add") : "Skip";
+        };
+        updateAction();
+
+        checkbox.addEventListener("change", () => {
+          tagPlan.selected = checkbox.checked;
+          updateAction();
+          updateSelectAllState();
+          updateCommitEnabled();
+        });
+
+        row.append(checkbox, name, badge, action);
+        curateImportTagsList.appendChild(row);
+      });
+
+      updateSelectAllState();
+      updateCommitEnabled();
+    }
+
+    renderRows();
+
+    return new Promise((resolve) => {
+      const onFavoritesChange = () => {
+        plan.favorites.selected = curateImportFavoritesCheck.checked;
+        updateSelectAllState();
+        updateCommitEnabled();
+      };
+      const onHiddenChange = () => {
+        plan.hidden.selected = curateImportHiddenCheck.checked;
+        updateSelectAllState();
+        updateCommitEnabled();
+      };
+      // Note: checked/unchecked by hand-toggling every row, not a second
+      // "Clear All" affordance — see the brief's SELECT ALL section.
+      const onSelectAllChange = () => {
+        const value = curateImportSelectAll.checked;
+        plan.favorites.selected = value;
+        plan.hidden.selected = value;
+        plan.tags.forEach((tagPlan) => (tagPlan.selected = value));
+        renderRows();
+      };
+
+      const onCommit = async () => {
+        const freshSnapshot = destinationId ? await profile.getProfileSnapshot(destinationId) : null;
+        if (fingerprintTags(freshSnapshot?.tags) !== planFingerprint) {
+          plan = buildImportPlan({ imported, destination: freshSnapshot });
+          planFingerprint = fingerprintTags(freshSnapshot?.tags);
+          renderRows();
+          curateImportStatus.textContent =
+            "The destination changed since this opened — the plan was refreshed. Review it, then Import Selected again.";
+          return;
+        }
+
+        curateImportCommitBtn.disabled = true;
+        await commitCurationImport({ imported, destinationId, newCurationName, plan });
+        curateImportDialog.close();
+      };
+      const onCancel = () => curateImportDialog.close();
+
+      const onDialogClose = () => {
+        curateImportFavoritesCheck.removeEventListener("change", onFavoritesChange);
+        curateImportHiddenCheck.removeEventListener("change", onHiddenChange);
+        curateImportSelectAll.removeEventListener("change", onSelectAllChange);
+        curateImportCommitBtn.removeEventListener("click", onCommit);
+        curateImportCancelBtn.removeEventListener("click", onCancel);
+        curateImportDialog.removeEventListener("close", onDialogClose);
+        resolve();
+      };
+
+      curateImportFavoritesCheck.addEventListener("change", onFavoritesChange);
+      curateImportHiddenCheck.addEventListener("change", onHiddenChange);
+      curateImportSelectAll.addEventListener("change", onSelectAllChange);
+      curateImportCommitBtn.addEventListener("click", onCommit);
+      curateImportCancelBtn.addEventListener("click", onCancel);
+      curateImportDialog.addEventListener("close", onDialogClose);
+
+      curateImportDialog.showModal();
+    });
+  })();
+}
+
+// [CURATION-IMPORT / STAGE-C / GENERIC CHOICE DIALOG]
+// Reused for every simple identify-then-decide moment this amendment adds —
+// Import identity Case A/B/C's decisions, the Create-Curation name-collision
+// guard, and the Rename name-collision guard. Resolves to the `value` of
+// whichever choice was clicked, or null if the dialog was dismissed
+// (Escape / no choice made).
+function openCurationChoiceDialog({ title, body = "", choices }) {
+  return new Promise((resolve) => {
+    curationChoiceTitle.textContent = title;
+    if (body) {
+      curationChoiceBody.textContent = body;
+      curationChoiceBody.classList.remove("hidden");
+    } else {
+      curationChoiceBody.textContent = "";
+      curationChoiceBody.classList.add("hidden");
+    }
+    curationChoiceActions.innerHTML = "";
+
+    let resolvedValue = null;
+    const onClose = () => {
+      curationChoiceDialog.removeEventListener("close", onClose);
+      resolve(resolvedValue);
+    };
+    curationChoiceDialog.addEventListener("close", onClose);
+
+    choices.forEach((choice) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = choice.label;
+      button.className = choice.primary ? "app-dialog-primary" : "secondary";
+      button.addEventListener("click", () => {
+        resolvedValue = choice.value;
+        curationChoiceDialog.close();
+      });
+      curationChoiceActions.appendChild(button);
+    });
+
+    curationChoiceDialog.showModal();
+  });
+}
+
+// [CURATION-IMPORT / STAGE-E / FEATURE 4 — DUPLICATE TAG REPAIR]
+// Same non-mutating staging discipline as Curate Import above — nothing
+// changes until MERGE SELECTED. See duplicate-tag-repair.js for why this is
+// safe with today's V3/Sync tombstone semantics and needs no new alias
+// infrastructure.
+function renderDuplicateTagNotice() {
+  const plan = buildDuplicateTagRepairPlan(profile.getTags());
+  if (plan.length === 0) {
+    duplicateTagNotice.classList.add("hidden");
+    return;
   }
-});
+  duplicateTagNotice.classList.remove("hidden");
+  duplicateTagNoticeText.textContent =
+    `Duplicate Tags found: ${plan.map((group) => `${group.name} ×${group.tagIds.length}`).join(", ")}`;
+}
+
+duplicateTagReviewBtn.addEventListener("click", () => openDuplicateTagRepairDialog());
+
+function openDuplicateTagRepairDialog() {
+  let plan = buildDuplicateTagRepairPlan(profile.getTags());
+  if (plan.length === 0) return Promise.resolve();
+
+  duplicateTagRepairStatus.textContent = "";
+
+  function updateSelectAllState() {
+    const allSelected = plan.every((group) => group.selected);
+    const noneSelected = plan.every((group) => !group.selected);
+    duplicateTagRepairSelectAll.checked = allSelected;
+    duplicateTagRepairSelectAll.indeterminate = !allSelected && !noneSelected;
+  }
+
+  function updateCommitEnabled() {
+    duplicateTagRepairCommitBtn.disabled = !plan.some((group) => group.selected);
+  }
+
+  function renderRows() {
+    duplicateTagRepairList.innerHTML = "";
+    plan.forEach((group) => {
+      const row = document.createElement("label");
+      row.className = "compact-check curate-import-tag-row";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = group.selected;
+
+      const name = document.createElement("span");
+      name.className = "curate-import-tag-name";
+      name.textContent = group.name;
+
+      const detail = document.createElement("span");
+      detail.className = "curate-import-tag-badge";
+      detail.textContent = `${group.tagIds.length} tag records`;
+
+      const action = document.createElement("span");
+      action.className = "curate-import-tag-action";
+      const updateAction = () => {
+        action.textContent = group.selected ? `→ merge into one ${group.name}` : "leave unchanged";
+      };
+      updateAction();
+
+      checkbox.addEventListener("change", () => {
+        group.selected = checkbox.checked;
+        updateAction();
+        updateSelectAllState();
+        updateCommitEnabled();
+      });
+
+      row.append(checkbox, name, detail, action);
+      duplicateTagRepairList.appendChild(row);
+    });
+
+    updateSelectAllState();
+    updateCommitEnabled();
+  }
+
+  renderRows();
+
+  return new Promise((resolve) => {
+    const onSelectAllChange = () => {
+      const value = duplicateTagRepairSelectAll.checked;
+      plan.forEach((group) => (group.selected = value));
+      renderRows();
+    };
+    const onCommit = () => {
+      const result = applyDuplicateTagRepairPlan(profile, plan);
+      tagsStatusText.textContent =
+        `Merged duplicate Tags: ${result.tombstoned} removed, ${result.reassigned} assignment${result.reassigned === 1 ? "" : "s"} reassigned.`;
+      duplicateTagRepairDialog.close();
+    };
+    const onCancel = () => duplicateTagRepairDialog.close();
+
+    const onDialogClose = () => {
+      duplicateTagRepairSelectAll.removeEventListener("change", onSelectAllChange);
+      duplicateTagRepairCommitBtn.removeEventListener("click", onCommit);
+      duplicateTagRepairCancelBtn.removeEventListener("click", onCancel);
+      duplicateTagRepairDialog.removeEventListener("close", onDialogClose);
+      resolve();
+    };
+
+    duplicateTagRepairSelectAll.addEventListener("change", onSelectAllChange);
+    duplicateTagRepairCommitBtn.addEventListener("click", onCommit);
+    duplicateTagRepairCancelBtn.addEventListener("click", onCancel);
+    duplicateTagRepairDialog.addEventListener("close", onDialogClose);
+
+    duplicateTagRepairDialog.showModal();
+  });
+}
 
 // Centralized reaction to ANY profile change — a single toggle, a merge
 // import, or a replace import all funnel through here. allItems is kept in
@@ -11492,6 +13408,7 @@ syncVideoLoopControl();
 resetLoopRuleToDefault();
 syncUndoHideButton();
 renderTagsGrid();
+renderDuplicateTagNotice();
 renderTagsFilterGrid();
 renderProfileSelector();
 // [LIBRARY-PROFILE-UX / Phase 8.5] Redundant with the HTML default (both
@@ -11512,6 +13429,7 @@ window.addEventListener("beforeunload", () => {
   runtime.stop();
   provider.dispose();
   fsaProvider.dispose(); // [FSA]
+  remoteProvider.dispose();
 });
 
 // [STREAMLOOP-INTEGRATION / N6-6] [STREAMLOOP-INTEGRATION / N6-7]
@@ -11678,7 +13596,7 @@ async function attemptBootRestore() {
 (async function initFsaLibraries() {
   if (!isFsaSupported()) {
     fsaChooseFolderBtn.disabled = true;
-    fsaStatusText.textContent = "This browser does not support the File System Access API.";
+    fsaStatusText.textContent = "This browser does not support remembered folders.";
     return;
   }
 
@@ -11688,6 +13606,12 @@ async function attemptBootRestore() {
   // permission check should never block the rest of boot, and nothing here
   // depends on startup media restore having settled.
   attemptStartupMedia();
+})();
+
+// Cassette file picking is an independent capability from directory picking;
+// this boot path must still run when initFsaLibraries() returns early.
+(async function initRemoteCassettes() {
+  await renderRemoteCassettes();
 })();
 
 // [STARTUP-MEDIA / N6-4] [STREAMLOOP-INTEGRATION / N6-6]

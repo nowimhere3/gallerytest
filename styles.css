@@ -763,8 +763,38 @@ a:focus-visible,
 
 .media-picker-row {
   display: grid;
-  grid-template-columns: 1fr 3fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.media-rail-title {
+  margin-bottom: 18px;
+}
+
+.media-source-group,
+.saved-libraries-section {
+  margin-bottom: 18px;
+}
+
+.media-source-heading {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.local-media-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.media-picker-row .button-like {
+  min-width: 0;
+  padding-inline: 8px;
+  text-align: center;
 }
 
 /* [FSA] Its own row — now a single "Choose Folder (FSA)" button; resuming
@@ -772,7 +802,11 @@ a:focus-visible,
    instead of a second button here. */
 .fsa-picker-row {
   grid-template-columns: 1fr;
-  margin-top: 10px;
+}
+
+.fsa-picker-row .button-like {
+  min-height: 40px;
+  font-weight: 600;
 }
 
 /* [LIBRARY-REGISTRY] "Recent Libraries" list — one row per remembered FSA
@@ -861,7 +895,7 @@ a:focus-visible,
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
   gap: 2px;
   text-align: left;
@@ -870,6 +904,22 @@ a:focus-visible,
   border: 1px solid var(--border);
   border-radius: 10px;
   color: var(--text);
+}
+
+.saved-library-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.saved-library-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
 .fsa-recent-library-name {
@@ -883,6 +933,10 @@ a:focus-visible,
 .fsa-recent-library-meta {
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+.source-status-text:empty {
+  display: none;
 }
 
 .fsa-recent-library-remove-btn {
@@ -1695,6 +1749,89 @@ button:not(:disabled):hover,
   border-color: transparent;
 }
 
+.app-dialog-primary:disabled {
+  opacity: 0.5;
+}
+
+/* [CURATION-IMPORT / STAGE-C] Curate Import / Duplicate Tag Repair need more
+   room than a plain confirmation dialog (a scrollable Tag list), so they
+   widen the shared .app-dialog shell rather than growing their own. */
+.curate-import-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+}
+
+.curate-import-dialog .app-dialog-inner {
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+
+.curate-import-tags-heading {
+  margin: 4px 0 0;
+  font-size: 0.95rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.curate-import-tags-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.curate-import-tag-row {
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.curate-import-tag-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.curate-import-tag-badge {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.curate-import-tag-action {
+  font-size: 0.82rem;
+  color: var(--text);
+  flex: 0 0 auto;
+  min-width: 48px;
+  text-align: right;
+}
+
+.duplicate-tag-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(9, 16, 29, 0.65);
+  margin-bottom: 10px;
+}
+
+.duplicate-tag-notice p {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.profile-current-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* [UI-REDESIGN / Stage 1B]
    WHAT: The two width-dependent Tags rules, re-tuned for the Tagging
    workspace. The grid was a hardcoded `1fr 1fr` and the create row was
@@ -1993,6 +2130,43 @@ button:not(:disabled):hover,
 .viewer-stage.is-focus-handoff:focus {
   outline: 2px solid var(--neon-blue);
   outline-offset: 2px;
+}
+
+.viewer-panel {
+  position: relative;
+}
+
+.warm-start-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text);
+  background: #050814;
+}
+
+#warm-start-canvas {
+  display: block;
+  width: 480px;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 160 / 64;
+  border: 1px solid rgba(0, 255, 0, 0.28);
+  image-rendering: pixelated;
+  filter: drop-shadow(0 0 8px rgba(0, 255, 0, 0.24));
+}
+
+.warm-start-text {
+  max-width: 34rem;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
 }
 
 .viewer-stage img,
@@ -3413,6 +3587,26 @@ hr {
   border-color: rgba(0, 255, 0, 0.35);
 }
 
+/* [PM-SHUFFLE-FOLDERS] Sized and weighted exactly like .overlay-btn-automation
+   above — 🎲 is a sibling secondary control inside the ⚡ tray, so it should
+   read as one of that row's controls rather than announce itself as a new
+   kind of thing. Deliberately given NO "is-available"-style glow: that green
+   is .loop-toggle-control.is-enabled's shared "Loop is on" signal, and 🎲 has
+   no on-state to signal — it acts once and is done.
+   `:disabled` only ever applies for the moment a switch is actually in
+   flight (see shuffleToAnotherRememberedFolder() in main.js), so a second
+   click cannot land mid-load. */
+.overlay-btn-shuffle-folders {
+  flex: 0 0 44px;
+  font-size: 1.1rem;
+  background: rgba(9, 16, 29, 0.65);
+}
+
+.overlay-btn-shuffle-folders:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
 .overlay-btn-gear {
   flex: 0 0 56px;
   font-size: 1.1rem;
@@ -4024,6 +4218,7 @@ hr {
   .overlay-loop-toggle,
   .overlay-btn-favorite,
   .overlay-btn-automation,
+  .overlay-btn-shuffle-folders,
   .overlay-btn-gear {
     flex: 0 0 var(--pm-control-size);
     width: var(--pm-control-size);
@@ -4143,6 +4338,7 @@ hr {
   .overlay-loop-toggle,
   .overlay-btn-favorite,
   .overlay-btn-automation,
+  .overlay-btn-shuffle-folders,
   .overlay-btn-gear {
     flex: 0 1 var(--pm-control-size);
     min-width: calc(var(--pm-control-size) - 8px);
@@ -4434,7 +4630,8 @@ hr {
      below — #video-loop-control and #overlay-automation-btn (still the
      SAME two elements, never cloned) pick that up automatically. */
   .overlay-loop-toggle,
-  .overlay-btn-automation {
+  .overlay-btn-automation,
+  .overlay-btn-shuffle-folders {
     flex: 0 0 var(--pm-control-size);
     width: var(--pm-control-size);
     min-width: var(--pm-control-size);
@@ -4493,7 +4690,8 @@ hr {
   .overlay-btn-gear,
   .overlay-btn-automations-menu,
   .overlay-loop-toggle,
-  .overlay-btn-automation {
+  .overlay-btn-automation,
+  .overlay-btn-shuffle-folders {
     flex: 0 0 var(--pm-control-size);
     width: var(--pm-control-size);
     min-width: var(--pm-control-size);
@@ -4569,7 +4767,8 @@ hr {
   .overlay-btn-gear,
   .overlay-btn-automations-menu,
   .overlay-loop-toggle,
-  .overlay-btn-automation {
+  .overlay-btn-automation,
+  .overlay-btn-shuffle-folders {
     flex: 0 1 var(--pm-control-size);
     min-width: calc(var(--pm-control-size) - 6px);
     height: var(--pm-control-size);
@@ -4984,6 +5183,8 @@ hr {
      retry controls live inside them. */
   .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-identity,
   .app-shell[data-mobile-load-state="loading"] .controls-panel > .rail-section-label,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .media-source-group,
+  .app-shell[data-mobile-load-state="loading"] .controls-panel > .saved-libraries-section,
   .app-shell[data-mobile-load-state="loading"] .controls-panel > .legacy-picker-details,
   .app-shell[data-mobile-load-state="loading"] .controls-panel > .fsa-picker-row,
   .app-shell[data-mobile-load-state="loading"] .controls-panel > #fsa-recent-libraries,

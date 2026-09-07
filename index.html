@@ -133,13 +133,14 @@
              heading structure is unchanged for assistive tech — this is a
              type treatment, not a demotion. The name matches the rail IA,
              which calls this section Libraries. -->
-        <h2 class="rail-section-label">Media Folders</h2>
+        <h2 class="rail-section-label media-rail-title">Your Media</h2>
         <!-- [SYNCV3 / STAGE-10 / DRIVE-ROLES]
              [WHY: Google Drive plays two different roles in this product. The
               role descriptor is structural at BOTH choosers so neither can be
               read as "your Google Drive folder"; the Sync Folder's own
               descriptor lives beside its chooser in Curations & Sync.] -->
-        <p class="role-descriptor">Your photos and videos</p>
+        <section class="media-source-group" aria-labelledby="open-now-heading">
+        <h3 id="open-now-heading" class="media-source-heading">Open Now</h3>
  
         <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
              WHAT: Collapses the legacy Choose Files/Choose Folder controls
@@ -151,40 +152,43 @@
              collapsed, may become a user Preference later (see Gallery
              Control Settings Preferences, not built yet) — this hardcoded
              default is a placeholder for that, not a permanent decision. -->
-        <details id="legacy-picker-details" class="legacy-picker-details" open>
-        <summary>Legacy Picker</summary>
-
-        <div class="media-picker-row">
-          <label class="button-like secondary">
-            <span>Choose Files</span>
-            <input id="file-input" type="file" accept="image/*,video/*" multiple hidden />
+        <div id="legacy-picker-details" class="local-media-actions">
+        <div class="media-picker-row media-picker-primary-row">
+          <label class="button-like">
+            <span>Open Files</span>
+            <input id="file-input" type="file" accept="image/*,video/*,.txt,text/plain" multiple hidden />
           </label>
  
           <label class="button-like">
-            <span>Choose Folder</span>
+            <span>Open Folder</span>
             <input id="folder-input" type="file" accept="image/*,video/*" multiple webkitdirectory hidden />
           </label>
         </div>
  
-        <p class="hint">
-          Files stay local in your browser. Nothing is uploaded.
-        </p>
-        </details>
+        </div>
+        </section>
 
-        <!-- [FSA] File System Access folder access — an ADDITIONAL way to
-             load a folder, alongside Choose Files/Choose Folder above (not
-             a replacement). -->
-        <div class="media-picker-row fsa-picker-row">
+        <section class="media-source-group" aria-labelledby="remember-heading">
+        <h3 id="remember-heading" class="media-source-heading">Remember</h3>
+        <div class="media-picker-row media-picker-primary-row">
+          <button id="cassette-add-btn" class="button-like secondary" type="button">
+            <span>Remember File</span>
+          </button>
           <button id="fsa-choose-folder-btn" class="button-like secondary" type="button">
-            <span>Choose Folder (FSA)</span>
+            <span>Remember Folder</span>
           </button>
         </div>
+        </section>
+
+        <section class="saved-libraries-section" aria-labelledby="saved-libraries-heading">
+        <h3 id="saved-libraries-heading" class="media-source-heading">Saved Libraries</h3>
+        <div id="remote-cassettes" class="hidden"></div>
         <!-- [LIBRARY-REGISTRY] Populated by renderRecentLibraries() in
              main.js — one row per previously-chosen FSA folder, most
              recently opened first. Hidden (via the `hidden` class) when
              empty. -->
         <div id="fsa-recent-libraries" class="fsa-recent-libraries hidden"></div>
-        <p id="fsa-status-text" class="hint" role="status"></p>
+        </section>
 
         <hr />
 
@@ -308,6 +312,8 @@
             <div><strong>Selected:</strong> <span id="selected-text">—</span></div>
             <div><strong>View:</strong> <span id="view-mode-text">All Media</span></div>
           </div>
+          <p id="remote-status-text" class="hint source-status-text" role="status"></p>
+          <p id="fsa-status-text" class="hint source-status-text" role="status"></p>
 
           <!-- [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
                WHAT: the mobile-only focused-loading composition — a primary
@@ -531,6 +537,11 @@
              thousands of cards. It is not a button and carries no role, so
              the shortcut guards treat it as neutral ground. -->
         <div id="viewer-stage" class="viewer-stage hidden" tabindex="-1" aria-label="Player"></div>
+
+        <div id="warm-start-overlay" class="warm-start-overlay hidden" role="status">
+          <canvas id="warm-start-canvas" width="160" height="64" aria-hidden="true"></canvas>
+          <p class="warm-start-text">Loading a few photos ahead so your slideshow keeps playing smoothly.</p>
+        </div>
 
         <!-- [UI-REDESIGN / Stage 3]
              WHAT: The transport row, directly beneath the Player. Every
@@ -1351,7 +1362,8 @@
                catalog-independent. A device joining Sync cannot make identity
                plumbing appear here. -->
           <div id="profile-media-folder-controls">
-            <h3 class="profile-group-heading">This Media Folder</h3>
+            <h3 class="profile-group-heading">This Media</h3>
+            <p id="profile-media-source" class="product-status product-status-muted">No media loaded.</p>
             <p id="profile-folder-link-summary" class="product-status product-status-muted">No Media Folder loaded.</p>
             <button
               id="profile-folder-link-btn"
@@ -1478,6 +1490,7 @@
                 is still focused directly by the rail shortcut. -->
           <div class="profile-current-row">
             <select id="profile-select" class="field-control" aria-label="Curation this device is using" aria-describedby="profile-active-context-help"></select>
+            <button id="profile-rename-btn" class="secondary" type="button">Rename</button>
           </div>
           <div id="profile-active-context-help" class="contextual-help hidden" role="note">
             <p class="hint"></p>
@@ -1523,25 +1536,20 @@
         <details class="profile-import-export-section">
         <summary>Import / Export</summary>
 
+        <!-- [CURATION-IMPORT / STAGE-C]
+             WHAT: Replaces the old raw Merge/Replace/"Import as New"
+             three-button surface, which required the customer to already
+             know which mode was safe, with ONE entry point. Browser Gallery
+             now inspects the file's Curation identity itself (see
+             curation-import-identity.js) and asks only the genuinely human
+             question — bring this into an existing Curation, or keep it
+             separate — never "merge or replace?".
+             WHY: "The customer curates. Browser Gallery does the
+             bookkeeping." -->
         <div class="control-stack">
           <button id="profile-export-btn" class="secondary" type="button">Export Curation (.json)</button>
-          <button id="profile-import-merge-btn" class="secondary" type="button">Import Curation (Merge)</button>
-          <button id="profile-import-replace-btn" class="secondary" type="button">Import Curation (Replace)</button>
+          <button id="profile-import-btn" class="secondary" type="button">Import Curation…</button>
           <input id="profile-import-input" type="file" accept="application/json,.json" hidden />
-          <!-- [LIBRARY-PROFILE-UX / Phase 8.5]
-               WHAT: Creates a brand-new, independent Profile pre-populated
-               from an exported .json, instead of merging/replacing into
-               whichever Profile is currently active.
-               WHY: Section 9 — "reuse another Profile as a starting point"
-               without two libraries ending up silently sharing one mutable
-               Profile. Built entirely from EXISTING primitives
-               (createProfile + switchProfile + importJSON(\"replace\")) —
-               no new Profile-storage mechanism.
-               FUTURE: The created Profile diverges independently from here
-               on — this is a one-time copy, not an ongoing link back to
-               the source file. -->
-          <button id="profile-import-copy-btn" class="secondary" type="button">Import as New Curation</button>
-          <input id="profile-import-copy-input" type="file" accept="application/json,.json" hidden />
         </div>
 
         <label class="compact-check wide-check">
@@ -1611,6 +1619,15 @@
         </div>
 
         <p id="tags-status-text" class="hint" role="status"></p>
+
+        <!-- [CURATION-IMPORT / STAGE-E / DUPLICATE-TAG-REPAIR]
+             Hidden unless buildDuplicateTagRepairPlan() actually finds a
+             same-name group in this Curation's own vocabulary — see
+             renderDuplicateTagNotice() in main.js. -->
+        <div id="duplicate-tag-notice" class="duplicate-tag-notice hidden" role="status">
+          <p id="duplicate-tag-notice-text" class="hint"></p>
+          <button id="duplicate-tag-review-btn" class="secondary" type="button">Review &amp; Merge</button>
+        </div>
 
         <div id="tags-empty" class="hint">No tags yet.</div>
         <div id="tags-grid" class="tags-grid hidden"></div>
@@ -1940,6 +1957,25 @@
           <span id="video-loop-state-text">🔁</span>
         </label>
         <button id="overlay-automation-btn" class="overlay-btn overlay-btn-automation" type="button" title="Loop Automations" aria-label="Loop Automations">🤖</button>
+        <!-- [PM-SHUFFLE-FOLDERS]
+             WHAT: An IMMEDIATE RUNTIME ACTION, not an automation: one click
+             switches Browser Gallery to another remembered Media Folder,
+             right now, and is then finished. It deliberately establishes no
+             ongoing state, so ⚡'s protected two-state contract is untouched
+             — syncAutomationsActiveIndicator() still derives "an automation
+             is active" from videoLoopInput.checked alone, which 🎲 never
+             writes, and there is deliberately no Stop state for a one-shot.
+             WHY it lives here anyway: this tray is the declared expansion
+             point for PM automations and actions (see the group's own
+             comment above), and ⚡ → 🎲 is the whole interaction — no
+             Settings trip, no picker, no configuration.
+             NOT gated by syncAutomationsMediaAvailability() the way Loop/🤖
+             are: switching Media Folders is exactly as meaningful for a
+             photo as for a video, so it is the tray's first media-agnostic
+             control — which is also why the photo empty state below is now
+             derived from what is actually available rather than from
+             "is this a video". -->
+        <button id="overlay-shuffle-folders-btn" class="overlay-btn overlay-btn-shuffle-folders" type="button" title="Shuffle Folders" aria-label="Shuffle Folders">🎲</button>
         <p id="pm-automations-photo-empty" class="pm-automations-photo-empty hint hidden">No automations available for photos yet.</p>
       </div>
       <button id="overlay-prev-btn" class="overlay-btn" type="button">◀</button>
@@ -2105,6 +2141,88 @@
         <button id="profile-sync-setup-copy-btn" class="secondary" type="button">Copy Folder Name</button>
         <button id="profile-sync-setup-cancel-btn" class="secondary" type="button">Cancel</button>
         <button id="profile-sync-setup-open-btn" class="app-dialog-primary" type="button" autofocus>Open Google Drive Picker</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- [CURATION-IMPORT / STAGE-C / GENERIC CHOICE DIALOG]
+       WHAT: One reusable 2-3 button decision dialog (openCurationChoiceDialog()
+       in main.js), used for every simple identify-then-decide moment this
+       amendment adds — Import identity Case A/B/C's first choice, the
+       Create-Curation name-collision guard, and the Rename name-collision
+       guard. A single small primitive rather than near-identical bespoke
+       dialogs at each call site.
+       WHY: reuses the existing .app-dialog shell (see profile-sync-setup-dialog
+       above), which was deliberately named generically for exactly this. -->
+  <dialog id="curation-choice-dialog" class="app-dialog" aria-labelledby="curation-choice-title">
+    <div class="app-dialog-inner">
+      <h2 id="curation-choice-title" class="app-dialog-title"></h2>
+      <p id="curation-choice-body" class="app-dialog-body hidden"></p>
+      <div id="curation-choice-actions" class="app-dialog-actions"></div>
+    </div>
+  </dialog>
+
+  <!-- [CURATION-IMPORT / STAGE-C / CURATE IMPORT]
+       WHAT: The staging review surface for Feature 3 — nothing here mutates
+       ProfileStore. Checkboxes edit an in-memory Import Plan
+       (curation-import-plan.js); only IMPORT SELECTED commits it
+       (curation-import-commit.js). -->
+  <dialog id="curate-import-dialog" class="app-dialog curate-import-dialog" aria-labelledby="curate-import-title">
+    <div class="app-dialog-inner">
+      <h2 id="curate-import-title" class="app-dialog-title">Curate Import</h2>
+      <p class="app-dialog-body">
+        Imported Curation: <strong id="curate-import-source-name"></strong><br />
+        Destination: <strong id="curate-import-destination-name"></strong>
+      </p>
+      <p class="hint" id="curate-import-question">What would you like to bring in?</p>
+
+      <label class="compact-check wide-check">
+        <input id="curate-import-select-all" type="checkbox" />
+        <span>Select All</span>
+      </label>
+
+      <label id="curate-import-favorites-row" class="compact-check wide-check">
+        <input id="curate-import-favorites-check" type="checkbox" />
+        <span id="curate-import-favorites-label"></span>
+      </label>
+
+      <label id="curate-import-hidden-row" class="compact-check wide-check">
+        <input id="curate-import-hidden-check" type="checkbox" />
+        <span id="curate-import-hidden-label"></span>
+      </label>
+
+      <h3 class="curate-import-tags-heading">Tags</h3>
+      <div id="curate-import-tags-list" class="curate-import-tags-list"></div>
+
+      <p id="curate-import-status" class="hint" role="status"></p>
+
+      <div class="app-dialog-actions">
+        <button id="curate-import-cancel-btn" class="secondary" type="button">Cancel</button>
+        <button id="curate-import-commit-btn" class="app-dialog-primary" type="button" disabled>Import Selected</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- [CURATION-IMPORT / STAGE-E / DUPLICATE-TAG-REPAIR]
+       WHAT: The staging review surface for Feature 4 — same non-mutating
+       staging discipline as Curate Import above; nothing changes until
+       MERGE SELECTED (duplicate-tag-repair.js). -->
+  <dialog id="duplicate-tag-repair-dialog" class="app-dialog curate-import-dialog" aria-labelledby="duplicate-tag-repair-title">
+    <div class="app-dialog-inner">
+      <h2 id="duplicate-tag-repair-title" class="app-dialog-title">Merge Duplicate Tags</h2>
+
+      <label class="compact-check wide-check">
+        <input id="duplicate-tag-repair-select-all" type="checkbox" />
+        <span>Select All</span>
+      </label>
+
+      <div id="duplicate-tag-repair-list" class="curate-import-tags-list"></div>
+
+      <p id="duplicate-tag-repair-status" class="hint" role="status"></p>
+
+      <div class="app-dialog-actions">
+        <button id="duplicate-tag-repair-cancel-btn" class="secondary" type="button">Cancel</button>
+        <button id="duplicate-tag-repair-commit-btn" class="app-dialog-primary" type="button" disabled>Merge Selected</button>
       </div>
     </div>
   </dialog>
