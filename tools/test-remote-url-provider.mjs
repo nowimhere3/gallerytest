@@ -34,6 +34,29 @@ assert(
   "classification uses pathname rather than query-string format hints"
 );
 
+const signedHlsUrl = "https://cdn.example.com/hls/stream.m3u8?token=synthetic%2Bfixture&expires=9999999999&quality=1080#Original";
+const hlsParsed = extractRemoteUrls(`  ${signedHlsUrl}  \nhttps://cdn.example.com/hls/UPPER.M3U8`);
+const hls = await new RemoteUrlProvider().loadFromUrls(hlsParsed.urls);
+assert(hls.items.length === 2, ".m3u8 URLs, including uppercase extensions, are accepted");
+assert(hls.items.every((item) => item.kind === "video" && item.mediaType === "video"), "HLS keeps the canonical video media kind");
+assert(hls.items.every((item) => item.type === "application/vnd.apple.mpegurl"), "HLS exposes its MIME type for adapter selection");
+assert(hls.items[0].url === signedHlsUrl, "signed HLS URL survives parser and provider without any normalization");
+assert(hls.items[0].relativePath === `remote://${signedHlsUrl}`, "HLS preserves the existing remote identity convention");
+assert(hls.items[0].name === "stream.m3u8", "HLS display name excludes query parameters and fragment");
+assert(JSON.stringify(hls.items[0].systemTags) === '["video"]', "HLS retains canonical video system tags");
+assert(hls.diagnostics.videos === 2 && hls.diagnostics.skipped === 0, "HLS contributes to existing video diagnostics");
+
+const unsupported = await new RemoteUrlProvider().loadFromUrls([
+  "https://cdn.example.com/stream.mpd",
+  "https://cdn.example.com/page.html",
+  "https://cdn.example.com/urls.txt",
+  "https://cdn.example.com/unknown.bin",
+  "https://cdn.example.com/resource?format=m3u8",
+  "https://cdn.example.com/playlist.m3u8.txt",
+]);
+assert(unsupported.items.length === 0, "unknown extensions and query-only HLS hints remain rejected");
+assert(unsupported.diagnostics.skipped === 6, "unsupported extensions remain explicitly counted as skipped");
+
 const expectedKeys = [
   "id", "kind", "mediaType", "name", "path", "relativePath", "systemTags", "type", "url", "userTags",
 ].sort();
@@ -41,6 +64,8 @@ assert(
   JSON.stringify(Object.keys(result.items[0]).sort()) === JSON.stringify(expectedKeys),
   "remote item has the exact approved key set"
 );
+assert(JSON.stringify(Object.keys(hls.items[0]).sort()) === JSON.stringify(expectedKeys), "HLS preserves the exact existing MediaItem key set");
+assert(result.items.every((item) => item.type === ""), "existing image and direct-video MIME fields remain unchanged");
 assert(!("size" in result.items[0]), "size is absent");
 assert(!("lastModified" in result.items[0]), "lastModified is absent");
 

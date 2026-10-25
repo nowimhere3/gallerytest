@@ -129,6 +129,7 @@ import {
   saveAmbientProfileDecision,
 } from "./profile/indexeddb.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
+import { HlsPlaybackAdapter } from "./playback/hls-playback-adapter.js";
 import { parseLaunchContext, LAUNCH_CONTEXT_STREAMLOOP } from "./runtime/launch-context.js";
 import { parseStreamLoopMessage, nextPendingIntent } from "./runtime/streamloop-bridge.js";
 
@@ -197,6 +198,7 @@ const runtime = new MediaRuntime({ profile: profileView });
 // call repeatedly across NEXT/PREV without accumulating state. See
 // src/playback/ts-playback-adapter.js for the full explanation.
 const tsPlaybackAdapter = new TsPlaybackAdapter();
+const hlsPlaybackAdapter = new HlsPlaybackAdapter();
 let tsDiagnosticCounter = 0;
 
 // Files are processed in chunks of this size (with a yield to the browser
@@ -8371,7 +8373,36 @@ function isTsItem(item) {
   return typeof item.name === "string" && item.name.toLowerCase().endsWith(".ts");
 }
 
+function isHlsItem(item) {
+  return item?.kind === "video" && item.type === "application/vnd.apple.mpegurl";
+}
+
+function showHlsStatus(video, message) {
+  if (currentViewerNode !== video) return;
+  const status = viewerStage.querySelector(".hls-playback-status");
+  if (status) {
+    status.textContent = message;
+    status.classList.toggle("hidden", !message);
+  }
+}
+
+function playViewerVideo(video) {
+  if (currentViewerNode !== video) return;
+  // Source readiness belongs to this node; playback intent stays in Runtime.
+  // Re-emits while the lazy module loads must not play an empty/stale source.
+  if (isHlsItem(currentViewerItem) && video.dataset.hlsState !== "ready") return;
+  video.play().catch((error) => {
+    if (currentViewerNode !== video || !isHlsItem(currentViewerItem)) return;
+    if (error.name === "NotAllowedError") {
+      video.dataset.hlsAutoplayBlocked = "true";
+      showHlsStatus(video, "Autoplay was blocked. Press Play on the video to start playback.");
+    }
+  });
+}
+
 function clearViewerNode() {
+  // Also cancels pending HLS module loads and destroys their network/MSE work.
+  hlsPlaybackAdapter.detach();
   // Unconditional and cheap even when the outgoing item wasn't .ts — see
   // TsPlaybackAdapter#detach()'s own comment for why this is the simplest
   // correct place to guarantee cleanup on every item change.
@@ -8826,9 +8857,7 @@ function buildViewer(state) {
   if (item && currentViewerItem === item && currentViewerNode) {
     if (currentViewerNode.tagName === "VIDEO") {
       if (isPlaying) {
-        currentViewerNode.play().catch(() => {
-          // ignore autoplay failures
-        });
+        playViewerVideo(currentViewerNode);
       } else {
         currentViewerNode.pause();
       }
@@ -8958,7 +8987,39 @@ function buildViewer(state) {
     viewerStage.appendChild(video);
     handleCurrentViewerTerminal(item);
 
-    if (isTsItem(item)) {
+    if (isHlsItem(item)) {
+      video.dataset.hlsState = "loading";
+      const status = document.createElement("p");
+      status.className = "hls-playback-status";
+      status.setAttribute("role", "status");
+      viewerStage.appendChild(status);
+      recordMediaRenderOutcome("mounted");
+      video.addEventListener("loadedmetadata", () => {
+        if (currentViewerNode !== video) return;
+        recordMediaRenderOutcome("loaded");
+      }, { once: true });
+      hlsPlaybackAdapter.attach(video, item.url, {
+        onStatus: ({ code, message }) => {
+          if (code === "ready" && video.dataset.hlsAutoplayBlocked === "true") return;
+          if (code === "playing") delete video.dataset.hlsAutoplayBlocked;
+          showHlsStatus(video, message);
+        },
+        onError: ({ message }) => {
+          if (currentViewerNode !== video) return;
+          video.dataset.hlsState = "error";
+          recordMediaRenderOutcome("failed");
+          viewerEmpty.textContent = message;
+          viewerStage.classList.add("hidden");
+          viewerEmpty.classList.remove("hidden");
+          clearLoopRuleTimer();
+          runtime.stop();
+        },
+      }).then((path) => {
+        if (!path || currentViewerNode !== video) return;
+        video.dataset.hlsState = "ready";
+        if (runtime.getState().isPlaying) playViewerVideo(video);
+      });
+    } else if (isTsItem(item)) {
       // [TS-POC] Phase 5 diagnostic timing — counter-based ID only, never
       // the filename/path, per the branch's logging requirement.
       const diagnosticId = `ts-${++tsDiagnosticCounter}`;
@@ -8989,6 +9050,7 @@ function buildViewer(state) {
     const loopRuleToken = armLoopRuleForCurrentVideo();
 
     video.addEventListener("ended", () => {
+      if (currentViewerNode !== video) return;
       // A newer video/rule has since superseded this listener (stale, left
       // over from a video that's no longer current, or a just-completed
       // finite automation) — do nothing.
@@ -8998,9 +9060,7 @@ function buildViewer(state) {
         if (activeLoopRule.type === "times") {
           if (shouldLoopRuleRestartVideo()) {
             video.currentTime = 0;
-            video.play().catch(() => {
-              // ignore autoplay failures
-            });
+            playViewerVideo(video);
             return;
           }
           // Requested total plays reached — this is completion, not just
@@ -9015,18 +9075,14 @@ function buildViewer(state) {
           // advances Presentation once time is up, independent of this
           // event — until it fires, every natural video end just replays.
           video.currentTime = 0;
-          video.play().catch(() => {
-            // ignore autoplay failures
-          });
+          playViewerVideo(video);
           return;
         }
 
         // "forever" (and any unrecognized type, defensively) — loop
         // indefinitely until manually advanced, per Requirement 6.
         video.currentTime = 0;
-        video.play().catch(() => {
-          // ignore autoplay failures
-        });
+        playViewerVideo(video);
         return;
       }
 
@@ -9034,9 +9090,7 @@ function buildViewer(state) {
     });
 
     if (isPlaying) {
-      video.play().catch(() => {
-        // ignore autoplay failures
-      });
+      playViewerVideo(video);
     }
 
     return;
@@ -9248,6 +9302,13 @@ function mountThumbMedia(thumb) {
       recordMediaRenderOutcome("failed");
     });
     mediaEl.alt = item.name;
+  } else if (isHlsItem(item)) {
+    // Gallery cards never create HLS engines or request streaming playlists.
+    // The existing card metadata below the thumbnail already shows the name.
+    mediaEl = document.createElement("span");
+    mediaEl.className = "hls-thumb-placeholder";
+    mediaEl.textContent = "▶ HLS video";
+    mediaEl.setAttribute("aria-label", `Play ${item.name}`);
   } else if (item.kind === "video") {
     mediaEl = document.createElement("video");
     mediaEl.src = item.url;
@@ -13425,8 +13486,21 @@ runtime.subscribe(handlePendingFilterReloadOnAdvance);
 
 runtime.subscribe(render);
 
+// pagehide also covers departures where beforeunload is omitted. A cached page
+// restores the same runtime item through its usual viewer path, paused.
+window.addEventListener("pagehide", () => {
+  runtime.stop();
+  clearLoopRuleTimer();
+  clearViewerNode();
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) render(runtime.getState());
+});
+
 window.addEventListener("beforeunload", () => {
   runtime.stop();
+  clearLoopRuleTimer();
+  clearViewerNode();
   provider.dispose();
   fsaProvider.dispose(); // [FSA]
   remoteProvider.dispose();

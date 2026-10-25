@@ -26,7 +26,7 @@ upstream of this provider and must not infect Browser Gallery runtime policy.
 
 const DEFAULT_BATCH_SIZE = 250;
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
-const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "m4v"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "m4v", "m3u8"]);
 
 function nextFrame() {
   return new Promise((resolve) => {
@@ -62,7 +62,10 @@ function inspectRemoteUrl(url) {
       ? "video"
       : null;
 
-  return { kind, name };
+  // Retain the existing MediaItem shape. The MIME type selects HLS playback;
+  // classification still uses only the pathname and never probes the URL.
+  const type = extension === "m3u8" ? "application/vnd.apple.mpegurl" : "";
+  return { kind, name, type };
 }
 
 export class RemoteUrlProvider {
@@ -99,14 +102,14 @@ export class RemoteUrlProvider {
         }
 
         const index = start + offset;
-        const { kind, name } = inspected;
+        const { kind, name, type } = inspected;
         diagnostics[kind === "image" ? "images" : "videos"] += 1;
         batchItems.push({
           id: `remote-${index}`,
           name,
           path: name,
           relativePath: `remote://${url}`,
-          type: "",
+          type,
           kind,
           url,
           mediaType: kind,

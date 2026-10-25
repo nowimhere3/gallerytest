@@ -343,6 +343,28 @@ Because the adapter consumes normal `File` objects, the same TS path can be used
 
 Current TS support should still be considered a working implementation undergoing broader regression/hardening tests, especially for large files and unusual codecs.
 
+## Remote HLS playback
+
+A Floppy Disk (`.txt`) may contain HTTP(S) `.m3u8` URLs, including signed query
+parameters. The remote provider identifies them as videos without fetching them
+or changing their URLs. Unknown extensions are still skipped.
+
+`src/playback/hls-playback-adapter.js` selects native HLS first, then the bundled
+[hls.js 1.7.3](https://github.com/video-dev/hls.js/releases/tag/v1.7.3) MediaSource
+player. Both use the existing viewer's video element and controls. Gallery HLS
+cards show placeholders and do not request playlists. Item/session changes and
+application unload destroy the previous stream. The local MPEG-TS path is separate.
+
+The manifest, segments and any keys must allow browser access from the application
+origin. CORS, provider authorization, expired links, DRM and unsupported codecs
+can prevent playback. The player reports failures without renewing signed links
+or proxying media. Native browser errors may not distinguish those causes.
+
+Focused checks: `node tools/test-remote-url-provider.mjs`,
+`node tools/test-hls-playback-adapter.mjs`, and `node tools/test-hls-viewer.mjs`.
+The optional real-browser check is `node tools/test-hls-browser.mjs`; its header
+documents Playwright setup and distinguishes live playback from mocked checks.
+
 ## Persistence
 
 LBG currently uses IndexedDB for persistent state.

@@ -86,6 +86,9 @@ assert(
   "accepted URLs preserve exact trimmed input rather than constructor canonicalization"
 );
 
+const signedHls = "https://cdn.example.com/live/master.m3u8?token=synthetic%2Bfixture&expires=9999999999&quality=1080#KeepMe";
+assert(extractRemoteUrls(`  ${signedHls}\n`).urls[0] === signedHls, "HLS signed query and fragment are preserved exactly");
+
 const bareCarriageReturns = extractRemoteUrls(
   "https://cdn.example.com/a.jpg\rhttps://cdn.example.com/b.jpg\r"
 );
