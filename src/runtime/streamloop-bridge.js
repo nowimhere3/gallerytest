@@ -34,8 +34,7 @@ export function nextPendingIntent(intent) {
   return intent === "play" || intent === "pause" ? intent : null;
 }
 
-// S5B: discovery only. The host owns generation freshness; echo opaque strings
-// without normalizing or retaining them. Empty features claims no action support.
+// The host owns generation freshness; echo opaque strings unchanged.
 export function createGalleryCapabilityResponse(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
   if (data.source !== "gs3-capability-bridge" || data.version !== 1 ||
@@ -47,6 +46,37 @@ export function createGalleryCapabilityResponse(data) {
     type: "CAPABILITY_PRESENT",
     capability: "GALLERY_FAVORITE",
     generation: data.generation,
-    features: [],
+    features: ["favoriteCurrent"],
+  };
+}
+
+// Pure envelope parsing: never execute malformed requests or retain correlation IDs.
+export function parseFavoriteCurrent(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data) ||
+      data.source !== "gs3-capability-bridge" || data.version !== 1 ||
+      data.type !== "FAVORITE_CURRENT" || data.capability !== "GALLERY_FAVORITE" ||
+      typeof data.generation !== "string" || typeof data.requestId !== "string") return null;
+  return { generation: data.generation, requestId: data.requestId };
+}
+
+export async function executeFavoriteCurrent(command, runtime, profileView, settleLocal) {
+  let status = "unavailable";
+  try {
+    const item = runtime.getCurrentItem();
+    const path = item?.relativePath;
+    if (typeof path !== "string" || !path.trim()) status = "no-media";
+    else if (profileView.isFavorite(path)) status = "already-favorite";
+    else {
+      profileView.setFavorite(path, true);
+      await settleLocal();
+      status = "favorited";
+    }
+  } catch {
+    status = "unavailable";
+  }
+  return {
+    source: "gs3-capability-bridge", version: 1, type: "FAVORITE_RESULT",
+    capability: "GALLERY_FAVORITE", generation: command.generation,
+    requestId: command.requestId, status,
   };
 }

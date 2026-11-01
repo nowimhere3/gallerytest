@@ -131,7 +131,7 @@ import {
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 import { HlsPlaybackAdapter } from "./playback/hls-playback-adapter.js";
 import { parseLaunchContext, LAUNCH_CONTEXT_STREAMLOOP } from "./runtime/launch-context.js";
-import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse } from "./runtime/streamloop-bridge.js";
+import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse, parseFavoriteCurrent, executeFavoriteCurrent } from "./runtime/streamloop-bridge.js";
 
 // [STREAMLOOP-INTEGRATION / N6-6]
 // BREADCRUMBS — IS: parsed once, here, from the URL this tab was actually
@@ -13574,6 +13574,14 @@ window.addEventListener("message", (event) => {
     // require '*'; the actual parent WindowProxy is always checked above.
     const targetOrigin = event.origin && event.origin !== "null" ? event.origin : "*";
     window.parent.postMessage(capabilityResponse, targetOrigin);
+    return;
+  }
+  const command = parseFavoriteCurrent(event.data);
+  if (command) {
+    const parent = event.source;
+    const targetOrigin = event.origin && event.origin !== "null" ? event.origin : "*";
+    void executeFavoriteCurrent(command, runtime, profileView, () => profile.whenLocalWritesSettled())
+      .then((result) => parent.postMessage(result, targetOrigin));
     return;
   }
   if (launchContext !== LAUNCH_CONTEXT_STREAMLOOP) return;

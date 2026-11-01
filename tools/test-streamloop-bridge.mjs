@@ -104,7 +104,7 @@ console.log("\n7. integration: the message listener in main.js");
     "main.js imports the launch-context contract"
   );
   assert(
-    mainSource.includes('import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse } from "./runtime/streamloop-bridge.js";'),
+    mainSource.includes('import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse, parseFavoriteCurrent, executeFavoriteCurrent } from "./runtime/streamloop-bridge.js";'),
     "main.js imports the streamloop-bridge contract"
   );
   assert(

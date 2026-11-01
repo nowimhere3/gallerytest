@@ -503,6 +503,16 @@ export class ProfileStore {
     return saved;
   }
 
+  #localSaveFailures = 0;
+
+  // Local persistence only; deliberately independent of Profile Sync transport.
+  async whenLocalWritesSettled() {
+    const failures = this.#localSaveFailures;
+    await this.whenFactsSettled();
+    await this.#saveQueue;
+    if (this.#localSaveFailures !== failures) throw new Error("Local profile save failed");
+  }
+
   /**
    * Resolves once every mutation issued so far has been stamped and recorded.
    * Fact recording is queued behind the clock being ready (see #recordFact), so
@@ -2544,6 +2554,7 @@ export class ProfileStore {
       })
       .catch((error) => {
         // Persistence must never make the in-memory profile unusable.
+        this.#localSaveFailures += 1;
         console.warn("Could not save gallery profile.", error);
       })
       .then(() => {
