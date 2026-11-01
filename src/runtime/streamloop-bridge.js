@@ -33,3 +33,20 @@ export function parseStreamLoopMessage(data) {
 export function nextPendingIntent(intent) {
   return intent === "play" || intent === "pause" ? intent : null;
 }
+
+// S5B: discovery only. The host owns generation freshness; echo opaque strings
+// without normalizing or retaining them. Empty features claims no action support.
+export function createGalleryCapabilityResponse(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  if (data.source !== "gs3-capability-bridge" || data.version !== 1 ||
+      data.type !== "QUERY_CAPABILITY" || data.capability !== "GALLERY_FAVORITE" ||
+      typeof data.generation !== "string") return null;
+  return {
+    source: "gs3-capability-bridge",
+    version: 1,
+    type: "CAPABILITY_PRESENT",
+    capability: "GALLERY_FAVORITE",
+    generation: data.generation,
+    features: [],
+  };
+}
