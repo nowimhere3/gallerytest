@@ -46,8 +46,48 @@ export function createGalleryCapabilityResponse(data) {
     type: "CAPABILITY_PRESENT",
     capability: "GALLERY_FAVORITE",
     generation: data.generation,
-    features: ["favoriteCurrent", "favoriteState"],
+    features: ["favoriteCurrent", "favoriteState", "keyForward"],
   };
+}
+
+// [S9B-A / SHORTCUT KEY FORWARDING]
+// IS: the ONE table of candidate shortcut codes. Gallery forwards raw key INTENT
+// only (KeyboardEvent.code); the trusted parent alone decides presets, physical
+// Positions, Slots and Panels. Keep this table here and nowhere else.
+export const SHORTCUT_KEY_CODES = Object.freeze(new Set([
+  "Digit1", "Digit2", "Digit3", "Digit4", "KeyZ", "KeyX", "KeyC", "KeyV",
+]));
+
+const EDITABLE_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
+const EDITABLE_ROLES = new Set(["textbox", "combobox", "searchbox", "spinbutton"]);
+
+function isEditableNode(node) {
+  if (!node || typeof node !== "object") return false;
+  if (node.isContentEditable === true) return true;
+  if (typeof node.tagName === "string" && EDITABLE_TAGS.has(node.tagName.toUpperCase())) return true;
+  const getAttribute = typeof node.getAttribute === "function" ? (name) => node.getAttribute(name) : () => null;
+  const editable = getAttribute("contenteditable");
+  if (editable !== null && editable !== undefined && String(editable).toLowerCase() !== "false") return true;
+  const role = getAttribute("role");
+  return typeof role === "string" && role.split(/\s+/).some((token) => EDITABLE_ROLES.has(token.toLowerCase()));
+}
+
+// Walks the composed path (crosses shadow roots) plus target as a fallback.
+export function isEditableShortcutTarget(event) {
+  let path = [];
+  try { path = typeof event.composedPath === "function" ? event.composedPath() : []; } catch { path = []; }
+  if (!Array.isArray(path) || !path.length) path = [event.target];
+  return path.some(isEditableNode);
+}
+
+// Returns the approved KeyboardEvent.code, or null if this keydown must not be forwarded.
+export function getShortcutKeyCode(event) {
+  if (!event || typeof event !== "object") return null;
+  if (typeof event.code !== "string" || !SHORTCUT_KEY_CODES.has(event.code)) return null;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return null;
+  if (event.repeat || event.isComposing || event.defaultPrevented) return null;
+  if (isEditableShortcutTarget(event)) return null;
+  return event.code;
 }
 
 // [S7A / LIVE CURRENT FAVORITE STATE]
@@ -108,6 +148,19 @@ export function createCurrentFavoriteStatePublisher(runtime, profileView) {
       session = { generation, parent, targetOrigin };
       lastFingerprint = null;
       publish();
+    },
+    // [S9B-A] Forward one approved key code to the trusted parent using the
+    // already-accepted generation and reply target. Silent before a handshake.
+    // Pure signal: no favorite write, no Position/Slot/media fields.
+    forwardShortcutKey(code) {
+      if (!session || !SHORTCUT_KEY_CODES.has(code)) return false;
+      try {
+        session.parent.postMessage({
+          source: "gs3-capability-bridge", version: 1, type: "SHORTCUT_KEY",
+          capability: "GALLERY_FAVORITE", generation: session.generation, code,
+        }, session.targetOrigin);
+        return true;
+      } catch { return false; }
     },
     // Wire to runtime.subscribe(): covers navigation, clear, and every
     // profile/alias projection change. Duplicates are dropped by fingerprint.

@@ -131,7 +131,7 @@ import {
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 import { HlsPlaybackAdapter } from "./playback/hls-playback-adapter.js";
 import { parseLaunchContext, LAUNCH_CONTEXT_STREAMLOOP } from "./runtime/launch-context.js";
-import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse, parseFavoriteCurrent, executeFavoriteCurrent, createCurrentFavoriteStatePublisher } from "./runtime/streamloop-bridge.js";
+import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse, parseFavoriteCurrent, executeFavoriteCurrent, createCurrentFavoriteStatePublisher, getShortcutKeyCode } from "./runtime/streamloop-bridge.js";
 
 // [STREAMLOOP-INTEGRATION / N6-6]
 // BREADCRUMBS — IS: parsed once, here, from the URL this tab was actually
@@ -13616,6 +13616,19 @@ if (launchContext === LAUNCH_CONTEXT_STREAMLOOP) {
     tryBecomeStreamLoopReady();
   });
 }
+
+// [S9B-A] ONE canonical child-side keydown observer (module scope, registered
+// once; capability generations only update the publisher's session, never add
+// listeners). Launch-context independent. Forwards approved candidate key
+// intent (getShortcutKeyCode: plain Digit1-4 / KeyZXCV, no modifiers, no
+// repeat/composition/defaultPrevented, not in an editable control) to the
+// trusted parent. Deliberately does NOT preventDefault/stopPropagation: Gallery
+// cannot know whether the parent's preset makes the key active. No Position,
+// Slot, media or favorite action lives here — the parent owns all of that.
+document.addEventListener("keydown", (event) => {
+  const code = getShortcutKeyCode(event);
+  if (code) favoriteStatePublisher.forwardShortcutKey(code);
+});
 
 // [BOOT-RESTORE / N6]
 // [WHY: queryPermission ONLY, wrapped so a missing API, a missing handle, or

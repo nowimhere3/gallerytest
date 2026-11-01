@@ -57,7 +57,7 @@ for (const search of ["", "?launch=streamloop"]) {
   await tick(); assert.equal(app.traffic.length, 0, "S: untrusted sources / bad queries grant no authority");
   runtime.clear(); await tick();
   app.send(query("g1")); // E/F/G: exact generation, immediate no-media snapshot
-  assert.deepEqual(app.traffic[0][0].features, ["favoriteCurrent", "favoriteState"]); // A/B/C
+  assert.deepEqual(app.traffic[0][0].features, ["favoriteCurrent", "favoriteState", "keyForward"]); // A/B/C
   assert.deepEqual(app.traffic[1], [{ source: "gs3-capability-bridge", version: 1, type: "CURRENT_FAVORITE_STATE",
     capability: "GALLERY_FAVORITE", generation: "g1", hasMedia: false, mediaKey: null, isFavorite: false }, "https://host.example"]);
   const unframed = boot(search, false);

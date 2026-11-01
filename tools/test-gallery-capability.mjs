@@ -53,7 +53,7 @@ for (const search of ["", "?launch=streamloop"]) {
   // CAPABILITY_PRESENT first, then one immediate no-media state snapshot (S7A).
   assert.deepEqual(app.traffic, [[{
     source: "gs3-capability-bridge", version: 1, type: "CAPABILITY_PRESENT",
-    capability: "GALLERY_FAVORITE", generation: query.generation, features: ["favoriteCurrent", "favoriteState"],
+    capability: "GALLERY_FAVORITE", generation: query.generation, features: ["favoriteCurrent", "favoriteState", "keyForward"],
   }, "https://host.example"], [{
     source: "gs3-capability-bridge", version: 1, type: "CURRENT_FAVORITE_STATE",
     capability: "GALLERY_FAVORITE", generation: query.generation,
