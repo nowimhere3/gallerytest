@@ -91,7 +91,7 @@ import {
 } from "./profile/indexeddb.js";
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 import { parseLaunchContext, LAUNCH_CONTEXT_STREAMLOOP } from "./runtime/launch-context.js";
-import { parseStreamLoopMessage, nextPendingIntent } from "./runtime/streamloop-bridge.js";
+import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse } from "./runtime/streamloop-bridge.js";
 
 // [STREAMLOOP-INTEGRATION / N6-6]
 // BREADCRUMBS — IS: parsed once, here, from the URL this tab was actually
@@ -11544,10 +11544,9 @@ window.addEventListener("beforeunload", () => {
 // This shared state is declared unconditionally (module scope), since
 // attemptStartupMedia() below — reachable regardless of launch context —
 // needs to set streamLoopStartupSettled and call tryBecomeStreamLoopReady().
-// It stays completely inert for an ordinary browser tab: nothing calls into
-// it, because the only two things that DO — the message listener and the
-// extra runtime.subscribe() below — stay behind the launchContext guard, and
-// attemptStartupMedia()'s own StreamLoop branch is itself gated the same way.
+// Playback state stays inert in normal mode: command dispatch and the
+// readiness subscription below remain gated by explicit StreamLoop context.
+// Capability discovery never reads or updates this playback state.
 let streamLoopPendingIntent = null;
 let streamLoopReady = false;
 let streamLoopStartupSettled = false;
@@ -11573,22 +11572,29 @@ function isTrustedStreamLoopSource(event) {
   return event.source != null && event.source === window.parent && event.source !== window;
 }
 
-// Registered ONLY when this tab was explicitly launched with
-// `?launch=streamloop` — an ordinary browser tab never adds this listener or
-// the extra runtime.subscribe() below, so there is no dormant surface for a
-// normal customer session.
-if (launchContext === LAUNCH_CONTEXT_STREAMLOOP) {
-  window.addEventListener("message", (event) => {
-    if (!isTrustedStreamLoopSource(event)) return;
-    const intent = parseStreamLoopMessage(event.data);
-    if (!intent) return;
-    if (streamLoopReady) {
-      applyStreamLoopIntent(intent);
-    } else {
-      streamLoopPendingIntent = nextPendingIntent(intent);
-    }
-  });
+// Capability discovery is launch-context independent and query-driven.
+// Playback commands still require the explicit StreamLoop launch contract.
+window.addEventListener("message", (event) => {
+  if (!isTrustedStreamLoopSource(event)) return;
+  const capabilityResponse = createGalleryCapabilityResponse(event.data);
+  if (capabilityResponse) {
+    // Pin replies to the sender origin when addressable. Opaque origins
+    // require '*'; the actual parent WindowProxy is always checked above.
+    const targetOrigin = event.origin && event.origin !== "null" ? event.origin : "*";
+    window.parent.postMessage(capabilityResponse, targetOrigin);
+    return;
+  }
+  if (launchContext !== LAUNCH_CONTEXT_STREAMLOOP) return;
+  const intent = parseStreamLoopMessage(event.data);
+  if (!intent) return;
+  if (streamLoopReady) {
+    applyStreamLoopIntent(intent);
+  } else {
+    streamLoopPendingIntent = nextPendingIntent(intent);
+  }
+});
 
+if (launchContext === LAUNCH_CONTEXT_STREAMLOOP) {
   // Fallback ONLY: covers the boot-time StreamLoop load finding nothing to
   // restore, with media appearing later through some other path in the same
   // tab (e.g. a manual folder pick). Does NOT trigger Auto Fill Panel — see

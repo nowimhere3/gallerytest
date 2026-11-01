@@ -104,7 +104,7 @@ console.log("\n7. integration: the message listener in main.js");
     "main.js imports the launch-context contract"
   );
   assert(
-    mainSource.includes('import { parseStreamLoopMessage, nextPendingIntent } from "./runtime/streamloop-bridge.js";'),
+    mainSource.includes('import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse } from "./runtime/streamloop-bridge.js";'),
     "main.js imports the streamloop-bridge contract"
   );
   assert(
@@ -112,30 +112,19 @@ console.log("\n7. integration: the message listener in main.js");
     "launchContext is parsed once, from window.location.search"
   );
 
-  // [STREAMLOOP-INTEGRATION / N6-7] N6-6 declared the bridge's shared state
-  // and helpers INSIDE the launchContext guard. N6-7 promoted them to module
-  // scope — attemptStartupMedia() needs to reach them — leaving only the two
-  // registrations (the message listener and the fallback runtime.subscribe())
-  // behind the guard. `bridgeRegion` spans from that shared-state declaration
-  // through the end of the guard block, so assertions about what the bridge
-  // DOES (source validation, runtime.play()/stop(), readiness) still hold
-  // regardless of which of the two regions the code physically lives in;
-  // assertions about what stays CONDITIONAL still use the narrower guardBody.
+  // One shared listener routes discovery before the StreamLoop command gate.
   const sharedStateStart = mainSource.indexOf("let streamLoopPendingIntent = null;");
   assert(sharedStateStart !== -1, "the StreamLoop bridge's shared state is declared in main.js");
 
   const guardStart = mainSource.indexOf("if (launchContext === LAUNCH_CONTEXT_STREAMLOOP) {", sharedStateStart);
-  assert(guardStart !== -1, "the StreamLoop bridge's registrations are wired inside an explicit launchContext guard");
+  assert(guardStart !== -1, "the readiness subscription retains its explicit launchContext guard");
   const guardEnd = mainSource.indexOf("\n}\n", guardStart);
   const guardBody = mainSource.slice(guardStart, guardEnd);
   const bridgeRegion = mainSource.slice(sharedStateStart, guardEnd);
 
-  assert(guardBody.includes('window.addEventListener("message"'), "a message listener is registered inside the guard");
-  assert(
-    !mainSource.slice(0, guardStart).includes('window.addEventListener("message"') &&
-      !mainSource.slice(guardEnd).includes('window.addEventListener("message"'),
-    "no message listener is registered OUTSIDE the launchContext guard — an ordinary browser tab never adds one"
-  );
+  assert(bridgeRegion.includes('window.addEventListener("message"'), "shared parent-message listener is registered");
+  assertEqual((mainSource.match(/window\.addEventListener\("message"/g) || []).length, 1, "only one global message listener");
+  assert(bridgeRegion.includes("if (launchContext !== LAUNCH_CONTEXT_STREAMLOOP) return;"), "playback dispatch requires StreamLoop context");
   assert(
     guardBody.includes("runtime.subscribe((state) => {"),
     "the fallback runtime.subscribe() readiness watch is also registered inside the guard"
@@ -145,7 +134,7 @@ console.log("\n7. integration: the message listener in main.js");
     bridgeRegion.includes("event.source === window.parent") && bridgeRegion.includes("event.source !== window"),
     "source validation checks event.source against window.parent, excluding the tab's own window"
   );
-  assert(!bridgeRegion.includes("event.origin"), "source validation does not key off event.origin (GS3 posts with target origin '*')");
+  assert(bridgeRegion.includes("if (!isTrustedStreamLoopSource(event)) return;"), "parent trust is checked before responding");
 
   assert(bridgeRegion.includes("parseStreamLoopMessage(event.data)"), "incoming messages are parsed through the pure bridge function");
   assert(bridgeRegion.includes("nextPendingIntent("), "a pre-readiness intent is folded through nextPendingIntent() — latest wins");
@@ -168,7 +157,7 @@ console.log("\n7. integration: the message listener in main.js");
   assert(bridgeRegion.includes("runtime.stop()"), "PAUSE is applied through runtime.stop() — the same seam togglePlay() uses");
   assert(!bridgeRegion.includes("requestPermission"), "the bridge never calls requestPermission()");
   assert(!bridgeRegion.includes("LAUNCHPAD_READY"), "no LAUNCHPAD_READY acknowledgement is sent — deliberately left as future only");
-  assert(!bridgeRegion.includes("postMessage("), "the bridge never posts a message back to StreamLoop");
+  assert(bridgeRegion.includes("window.parent.postMessage(capabilityResponse, targetOrigin)"), "only a capability response is sent to the parent");
 
   assert(
     !mainSource.includes("window.top") && !mainSource.includes("window.self !== window.top"),
