@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
-import { createGalleryCapabilityResponse, parseStreamLoopMessage, nextPendingIntent, parseFavoriteCurrent, executeFavoriteCurrent } from "../src/runtime/streamloop-bridge.js";
+import { createGalleryCapabilityResponse, parseStreamLoopMessage, nextPendingIntent, parseFavoriteCurrent, executeFavoriteCurrent, createCurrentFavoriteStatePublisher } from "../src/runtime/streamloop-bridge.js";
 import { parseLaunchContext, LAUNCH_CONTEXT_STREAMLOOP } from "../src/runtime/launch-context.js";
 
 const main = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
@@ -34,7 +34,7 @@ function boot(search, framed = true, action = {}) {
   } });
   const context = vm.createContext({ window, runtime, profileView: action.view, profile: action.profile,
     launchContext: parseLaunchContext(search), LAUNCH_CONTEXT_STREAMLOOP,
-    createGalleryCapabilityResponse, parseStreamLoopMessage, nextPendingIntent, parseFavoriteCurrent, executeFavoriteCurrent });
+    createGalleryCapabilityResponse, parseStreamLoopMessage, nextPendingIntent, parseFavoriteCurrent, executeFavoriteCurrent, createCurrentFavoriteStatePublisher });
   vm.runInContext(bridge, context);
   return { window, parent, traffic, playback, listeners, context,
     reads: () => stateReads, subscriptions: () => subscriptions,
@@ -45,18 +45,26 @@ function boot(search, framed = true, action = {}) {
 for (const search of ["", "?launch=streamloop"]) {
   const app = boot(search);
   const isStreamLoop = search !== "";
-  assert.equal(app.subscriptions(), isStreamLoop ? 1 : 0);
+  // S7A adds one launch-independent publisher subscription; StreamLoop keeps its readiness one.
+  assert.equal(app.subscriptions(), isStreamLoop ? 2 : 1);
   assert.equal(app.listeners.length, 1);
   assert.equal(app.traffic.length, 0); // no startup announcement
   app.send(query);
+  // CAPABILITY_PRESENT first, then one immediate no-media state snapshot (S7A).
   assert.deepEqual(app.traffic, [[{
     source: "gs3-capability-bridge", version: 1, type: "CAPABILITY_PRESENT",
-    capability: "GALLERY_FAVORITE", generation: query.generation, features: ["favoriteCurrent"],
+    capability: "GALLERY_FAVORITE", generation: query.generation, features: ["favoriteCurrent", "favoriteState"],
+  }, "https://host.example"], [{
+    source: "gs3-capability-bridge", version: 1, type: "CURRENT_FAVORITE_STATE",
+    capability: "GALLERY_FAVORITE", generation: query.generation,
+    hasMedia: false, mediaKey: null, isFavorite: false,
   }, "https://host.example"]]);
   // Strings are opaque, including strings unlike today's host token format.
   for (const generation of ["", " opaque token \n", "NEXT-generation"]) {
     app.send({ ...query, generation });
-    assert.equal(app.traffic.at(-1)[0].generation, generation);
+    const reply = app.traffic.at(-2)[0], state = app.traffic.at(-1)[0];
+    assert.equal(reply.type, "CAPABILITY_PRESENT"); assert.equal(reply.generation, generation);
+    assert.equal(state.type, "CURRENT_FAVORITE_STATE"); assert.equal(state.generation, generation);
   }
   const invalid = [null, undefined, 1, true, "QUERY_CAPABILITY", [], {},
     ...["source", "version", "type", "capability", "generation"].flatMap(key => {

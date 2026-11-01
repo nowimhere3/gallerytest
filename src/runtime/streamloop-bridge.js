@@ -46,7 +46,76 @@ export function createGalleryCapabilityResponse(data) {
     type: "CAPABILITY_PRESENT",
     capability: "GALLERY_FAVORITE",
     generation: data.generation,
-    features: ["favoriteCurrent"],
+    features: ["favoriteCurrent", "favoriteState"],
+  };
+}
+
+// [S7A / LIVE CURRENT FAVORITE STATE]
+// IS: Gallery is the authority on whether the CURRENT item is favorited. This
+// publisher tells the trusted parent, so the parent never has to guess from its
+// own FAVORITE_CURRENT presses. It owns only ephemeral, in-memory session state:
+// the latest accepted host generation (opaque, never generated here), the
+// reply target, and the last published fingerprint. Nothing is persisted.
+// Truth comes from the projected Profile view (same semantics as Gallery's own
+// heart), never from a possibly stale copied item.isFavorite.
+// mediaKey is a session-local opaque counter token: item ids and relativePaths
+// embed file names / folder structure, so neither is exposed.
+// WHY a microtask coalesce for runtime emissions: reloadRuntime() calls
+// runtime.load() (index 0) then setCurrentIndex(preserved) synchronously, so
+// without it the parent would briefly be told about the wrong item.
+export function createCurrentFavoriteStatePublisher(runtime, profileView) {
+  let session = null; // { generation, parent, targetOrigin }
+  let lastFingerprint = null;
+  let flushQueued = false;
+  let nextKey = 1;
+  const keys = new WeakMap();
+
+  function mediaKeyFor(item) {
+    let key = keys.get(item);
+    if (!key) { key = `m${nextKey++}`; keys.set(item, key); }
+    return key;
+  }
+
+  function readState() {
+    const item = runtime.getCurrentItem();
+    const path = item?.relativePath;
+    // Same "has media" predicate as FAVORITE_CURRENT, so the two never disagree.
+    if (typeof path !== "string" || !path.trim()) {
+      return { hasMedia: false, mediaKey: null, isFavorite: false };
+    }
+    return { hasMedia: true, mediaKey: mediaKeyFor(item), isFavorite: profileView.isFavorite(path) === true };
+  }
+
+  function publish() {
+    if (!session) return;
+    let state;
+    try { state = readState(); } catch { return; } // never publish a guess
+    const fingerprint = JSON.stringify([session.generation, state.hasMedia, state.mediaKey, state.isFavorite]);
+    if (fingerprint === lastFingerprint) return;
+    lastFingerprint = fingerprint;
+    try {
+      session.parent.postMessage({
+        source: "gs3-capability-bridge", version: 1, type: "CURRENT_FAVORITE_STATE",
+        capability: "GALLERY_FAVORITE", generation: session.generation, ...state,
+      }, session.targetOrigin);
+    } catch { /* a dead parent must never break Gallery */ }
+  }
+
+  return {
+    // Call only after a valid, trusted GALLERY_FAVORITE QUERY_CAPABILITY.
+    // Every accepted query yields exactly one fresh snapshot.
+    establish(generation, parent, targetOrigin) {
+      session = { generation, parent, targetOrigin };
+      lastFingerprint = null;
+      publish();
+    },
+    // Wire to runtime.subscribe(): covers navigation, clear, and every
+    // profile/alias projection change. Duplicates are dropped by fingerprint.
+    refresh() {
+      if (!session || flushQueued) return;
+      flushQueued = true;
+      queueMicrotask(() => { flushQueued = false; publish(); });
+    },
   };
 }
 

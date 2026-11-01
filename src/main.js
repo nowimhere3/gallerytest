@@ -131,7 +131,7 @@ import {
 import { TsPlaybackAdapter } from "./playback/ts-playback-adapter.js";
 import { HlsPlaybackAdapter } from "./playback/hls-playback-adapter.js";
 import { parseLaunchContext, LAUNCH_CONTEXT_STREAMLOOP } from "./runtime/launch-context.js";
-import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse, parseFavoriteCurrent, executeFavoriteCurrent } from "./runtime/streamloop-bridge.js";
+import { parseStreamLoopMessage, nextPendingIntent, createGalleryCapabilityResponse, parseFavoriteCurrent, executeFavoriteCurrent, createCurrentFavoriteStatePublisher } from "./runtime/streamloop-bridge.js";
 
 // [STREAMLOOP-INTEGRATION / N6-6]
 // BREADCRUMBS — IS: parsed once, here, from the URL this tab was actually
@@ -13564,6 +13564,14 @@ function isTrustedStreamLoopSource(event) {
   return event.source != null && event.source === window.parent && event.source !== window;
 }
 
+// [S7A] Live current-favorite truth for the trusted parent. Launch-context
+// independent. It stays silent until a valid GALLERY_FAVORITE handshake
+// establishes a generation (see the message listener below). runtime.subscribe
+// already emits for navigation, clear, and every Profile/alias projection
+// change, so there is no polling, timer or DOM observation.
+const favoriteStatePublisher = createCurrentFavoriteStatePublisher(runtime, profileView);
+runtime.subscribe(() => favoriteStatePublisher.refresh());
+
 // Capability discovery is launch-context independent and query-driven.
 // Playback commands still require the explicit StreamLoop launch contract.
 window.addEventListener("message", (event) => {
@@ -13574,6 +13582,9 @@ window.addEventListener("message", (event) => {
     // require '*'; the actual parent WindowProxy is always checked above.
     const targetOrigin = event.origin && event.origin !== "null" ? event.origin : "*";
     window.parent.postMessage(capabilityResponse, targetOrigin);
+    // [S7A] Remember only the latest accepted generation + reply target, then
+    // publish one immediate snapshot so the parent need not wait for navigation.
+    favoriteStatePublisher.establish(capabilityResponse.generation, window.parent, targetOrigin);
     return;
   }
   const command = parseFavoriteCurrent(event.data);
