@@ -86,7 +86,7 @@ try {
     // Focus INSIDE the iframe, then use real browser keyboard input.
     const hasFocusInChild = await child.evaluate(() => document.hasFocus() && document.activeElement === document.body);
     check(hasFocusInChild, `${launch}: focus is inside the Gallery iframe`);
-    for (const [press, code] of [["1", "Digit1"], ["2", "Digit2"], ["3", "Digit3"], ["4", "Digit4"], ["z", "KeyZ"], ["x", "KeyX"], ["c", "KeyC"], ["v", "KeyV"]]) {
+    for (const [press, code] of [["1", "Digit1"], ["2", "Digit2"], ["3", "Digit3"], ["4", "Digit4"], ["z", "KeyZ"], ["x", "KeyX"], ["c", "KeyC"], ["v", "KeyV"], ["m", "KeyM"], [",", "Comma"], [".", "Period"], ["/", "Slash"]]) {
       const before = (await shortcuts(page)).length;
       await page.keyboard.press(press);
       await page.waitForFunction((n) => window.log.filter((m) => m.data?.type === "SHORTCUT_KEY").length === n + 1, before);
@@ -97,8 +97,9 @@ try {
     check((await page.evaluate(() => window.parentKeys.length)) === 0, "iframe isolation: parent document saw no keydown (the S9A boundary)");
     // Exactly one message per press, and a Ctrl variant sends nothing.
     const count = (await shortcuts(page)).length;
-    check(count === 8, `${launch}: exactly one message per press (${count})`);
+    check(count === 12, `${launch}: exactly one message per press (${count})`);
     await page.keyboard.press("Control+z"); await page.keyboard.press("Control+Digit1"); await page.keyboard.press("Alt+x"); await page.keyboard.press("Shift+c");
+    for (const combo of ["Control+m", "Control+,", "Control+.", "Control+/", "Alt+m", "Shift+m", "Meta+m"]) await page.keyboard.press(combo);
     await settle();
     check((await shortcuts(page)).length === count, `${launch}: modified keys not forwarded`);
     // Held key: only the first keydown (repeat=false) is forwarded.
@@ -117,11 +118,11 @@ try {
     const after = (await shortcuts(page)).length;
     for (const id of ["s9b-probe", "s9b-probe-area", "s9b-probe-edit", "s9b-probe-role"]) {
       await child.evaluate((i) => document.getElementById(i).focus(), id);
-      for (const k of ["z", "x", "c", "v", "1", "2", "3", "4"]) await page.keyboard.press(k);
+      for (const k of ["z", "x", "c", "v", "1", "2", "3", "4", "m", ",", ".", "/"]) await page.keyboard.press(k);
     }
     await settle();
     check((await shortcuts(page)).length === after, `${launch}: typing in editable controls not forwarded`);
-    check((await child.evaluate(() => document.getElementById("s9b-probe").value)) === "zxcv1234", "input still receives ordinary typing");
+    check((await child.evaluate(() => document.getElementById("s9b-probe").value)) === "zxcv1234m,./", "input still receives ordinary typing");
     // A newer handshake replaces the generation for future keys.
     await child.evaluate(() => { document.activeElement.blur(); document.body.focus(); });
     await page.evaluate(() => window.query("browser-gen-2"));

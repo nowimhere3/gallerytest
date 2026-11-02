@@ -19,7 +19,8 @@ assert.equal((main.match(/SHORTCUT_KEY/g) || []).length, 0, "no key table / mess
 
 const query = (generation) => ({ source: "gs3-capability-bridge", version: 1, type: "QUERY_CAPABILITY",
   capability: "GALLERY_FAVORITE", generation });
-const CODES = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyZ", "KeyX", "KeyC", "KeyV"];
+const CODES = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyZ", "KeyX", "KeyC", "KeyV", "KeyM", "Comma", "Period", "Slash"];
+const NEW_CODES = ["KeyM", "Comma", "Period", "Slash"];
 const el = (props = {}) => ({ tagName: "DIV", isContentEditable: false, getAttribute: () => null, ...props });
 const key = (code, extra = {}) => ({ code, key: "x", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
   repeat: false, isComposing: false, defaultPrevented: false, target: el(), ...extra });
@@ -89,10 +90,21 @@ for (const search of ["", "?launch=streamloop"]) { // B, C: both launch modes
     ...["textbox", "combobox", "searchbox", "spinbutton"].map((role) => el({ getAttribute: (n) => (n === "role" ? role : null) })),
   ];
   for (const target of editable) {
-    app.press(key("KeyZ", { target }));
-    app.press(key("KeyZ", { target: el(), composedPath: () => [el(), target, el()] })); // ancestor in path
+    for (const code of ["KeyZ", ...NEW_CODES]) {
+      app.press(key(code, { target }));
+      app.press(key(code, { target: el(), composedPath: () => [el(), target, el()] })); // ancestor in path
+    }
   }
   assert.equal(app.traffic.length, count, "no forwards for modified/repeat/composing/prevented/unrelated/editable");
+  // Each new key forwards exactly once on a plain press (A-D).
+  const preNew = app.shortcuts().length;
+  for (const code of NEW_CODES) {
+    const n = app.shortcuts().length;
+    app.press(key(code));
+    assert.equal(app.shortcuts().length, n + 1);
+    assert.equal(app.shortcuts().at(-1)[0].code, code);
+  }
+  assert.equal(app.shortcuts().length, preNew + 4);
   // contenteditable="false" is not editable; plain focused elements still forward (focus scope).
   app.press(key("KeyV", { target: el({ getAttribute: (n) => (n === "contenteditable" ? "false" : null) }) }));
   app.press(key("Digit4", { target: el({ tagName: "BUTTON" }) }));

@@ -56,6 +56,7 @@ export function createGalleryCapabilityResponse(data) {
 // Positions, Slots and Panels. Keep this table here and nowhere else.
 export const SHORTCUT_KEY_CODES = Object.freeze(new Set([
   "Digit1", "Digit2", "Digit3", "Digit4", "KeyZ", "KeyX", "KeyC", "KeyV",
+  "KeyM", "Comma", "Period", "Slash",
 ]));
 
 const EDITABLE_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
