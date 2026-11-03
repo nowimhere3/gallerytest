@@ -1,5 +1,6 @@
 import { primaryFallbackTarget } from "./profile/primary-curation-policy.js";
 import { publishExplicitLocalBinding } from "./profile/explicit-binding-publication.js";
+import { publishLibraryIdentityForHeart } from "./profile/heart-time-identity.js";
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
 import { extractRemoteUrls } from "./providers/remote-url-parser.js";
@@ -162,7 +163,7 @@ const profile = new ProfileStore();
 //  disagree with each other. `profile` itself stays the writer and the owner of
 //  everything that is not per-item curation (profiles, tags vocabulary,
 //  import/export, associations) — this facade deliberately does not wrap those.]
-const profileView = createProfileProjectionView({ profile });
+const profileView = createProfileProjectionView({ profile, onFavoriteSet: () => { void ensureLibraryIdentityForHeart(); } });
 // [PROFILE-SYNC]
 // WHAT: The Profile Sync engine — watches `profile` for changes and mirrors
 // the full Profile collection into a separately-chosen sync folder.
@@ -6485,6 +6486,38 @@ async function publishExplicitBindingForLoadedLibrary() {
     activeLibraryRecord = updated;
     establishAmbientProfileContext(activeLibraryRecord);
   }
+}
+
+// [HEART-REACH / REMEMBERED-FOLDER-LIBRARY-IDENTITY]
+// [WHY: a remembered local folder that follows the Primary Curation has no shared
+//  Library identity, so the Curation Suite cannot locate media for its Hearts.
+//  Publish "this is Library X" (catalog + structure evidence) at the first Heart,
+//  without any association: Primary stays a default, never an explicit per-folder
+//  Curation. See heart-time-identity.js. One flight at a time; failures only warn.]
+let heartIdentityFlight = null;
+function ensureLibraryIdentityForHeart() {
+  if (heartIdentityFlight) return heartIdentityFlight;
+  const rootId = activeLibraryRecord?.id;
+  heartIdentityFlight = (async () => {
+    try {
+      const updated = await publishLibraryIdentityForHeart({
+        record: activeLibraryRecord,
+        sourceKind: currentSourceKind,
+        promote: async (record) => {
+          const shared = await profile.promoteLibraryToShared(record.id, { name: record.name || activeLibraryDisplayName || null });
+          if (!shared) return null;
+          await recordPortableStructureForLoad(record.id, allItems);
+          return getLibraryById(record.id);
+        },
+      });
+      if (updated && activeLibraryRecord && activeLibraryRecord.id === rootId) activeLibraryRecord = updated;
+    } catch (error) {
+      console.warn("[HEART-REACH] Could not publish this folder's Library identity.", error);
+    } finally {
+      heartIdentityFlight = null;
+    }
+  })();
+  return heartIdentityFlight;
 }
 
 // [SYNCV3 / STAGE-07 / ASSOCIATION-WRITE]

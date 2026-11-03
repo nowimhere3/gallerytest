@@ -42,7 +42,7 @@ import {
  * `profile` is the real ProfileStore. Nothing here writes to it except through
  * its existing public mutators.
  */
-export function createProfileProjectionView({ profile }) {
+export function createProfileProjectionView({ profile, onFavoriteSet = null }) {
   const listeners = new Set();
 
   let aliasIndex = null;
@@ -256,6 +256,11 @@ export function createProfileProjectionView({ profile }) {
       entry.favorite = { on: next, gen };
     });
     profile.setFavorite(relativePath, next);
+    // [HEART-REACH] Observation only: lets the app publish the folder's Library
+    // identity at a first Heart. It never alters, delays or fails the write.
+    if (next && typeof onFavoriteSet === "function") {
+      try { onFavoriteSet(relativePath); } catch (error) { console.warn("[HEART-REACH] onFavoriteSet failed.", error); }
+    }
     profile.whenFactsSettled().then(
       () => settle(relativePath, "favorite", gen, writtenEpoch),
       () => settle(relativePath, "favorite", gen, writtenEpoch)
