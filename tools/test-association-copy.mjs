@@ -20,7 +20,7 @@ verify("S0", {}, {
   associationScope: "none", showAction: false, allowPicker: false,
 });
 verify("S1", { sourceKind: "fsa", mediaName: "Library A" }, {
-  state: "S1", tone: "muted", associatedText: "None chosen yet", productLine: "Library A — no Curation chosen yet",
+  state: "S1", tone: "muted", associatedText: "Current Curation (no source Curation)", productLine: "Library A — no Curation chosen yet",
   actionLabel: "Choose a Curation for this media", associationScope: "shared", showAction: true, allowPicker: true,
 });
 verify("S2", {
@@ -97,8 +97,8 @@ for (const input of [{}, { sourceKind: "legacy" }]) {
 }
 // "None chosen yet" states the STATE. "No Curation" read like the name of a
 // thing the Media Library had been given.
-assert(mapAssociationCopy({ sourceKind: "fsa", folderName: "Library A" }).associatedText === "None chosen yet",
-  "the empty card reads as an unmade choice, not as a chosen nothing");
+assert(mapAssociationCopy({ sourceKind: "fsa", folderName: "Library A" }).associatedText === "Current Curation (no source Curation)",
+  "the empty card identifies the active heart destination and missing source choice");
 assert(!/No Curation/.test(mapAssociationCopy({ sourceKind: "fsa", folderName: "Library A" }).associatedText),
   "the retired value is gone from the card");
 
@@ -136,3 +136,6 @@ verify("durable legacy folder", {
 });
 
 console.log(`association copy: ${assertions} assertions passed`);
+
+verify("truthful divergent rail", {sourceKind:"fsa", associatedProfileId:"best", associatedProfileName:"Best", activeProfileId:"mine", activeProfileName:"My Gallery"}, {associatedText:"My Gallery (media remembers Best)"});
+verify("Primary rail", {sourceKind:"fsa", activeProfileId:"best", activeProfileName:"Best", primaryProfileId:"best", primaryProfileName:"Best"}, {associatedText:"Best (Primary)"});

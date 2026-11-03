@@ -77,6 +77,7 @@ function asV3Replica(replica) {
     //  produces with what THIS transport speaks, which is why schemaVersion is
     //  already normalized on the line above. Each transport now shapes the
     //  replica to its own schema, and neither has to know about the other's.]
+    primaryCuration: replica.primaryCuration ?? null,
     associations: replica.associations || {},
     libraries: replica.libraries || {},
     structure: replica.structure || {},

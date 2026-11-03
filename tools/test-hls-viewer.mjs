@@ -141,6 +141,7 @@ function harness({ loadHls } = {}) {
     console: { info() {}, log() {}, warn() {} }, performance, window: testWindow,
     document: { createElement(tag) { const node = new FakeNode(tag); nodes.push(node); return node; } },
     runtime, hlsPlaybackAdapter, tsPlaybackAdapter, extractRemoteUrls,
+    applyPrimaryForCurrentSource: async () => {},
     remoteProvider: new RemoteUrlProvider(), provider: disposable(), fsaProvider: disposable(),
     viewerStage: new FakeNode("div"), viewerEmpty: new FakeNode("div"), appShell: new FakeNode("div"),
     clearBtn: new FakeNode("button"),

@@ -20,6 +20,8 @@ export function mapAssociationCopy({
   associatedProfileName = null,
   activeProfileId = null,
   activeProfileName = null,
+  primaryProfileId = null,
+  primaryProfileName = null,
   legacySessionAssociated = false,
   canWriteAssociation = true,
 } = {}) {
@@ -60,7 +62,7 @@ export function mapAssociationCopy({
   if (!durable) {
     const sessionProfile = activeProfileName || (legacySessionAssociated ? associatedProfileName : null) || "None chosen yet";
     return {
-      ...common, state: "S5", tone: "muted", associatedText: sessionProfile,
+      ...common, state: "S5", tone: "muted", associatedText: primaryProfileId && activeProfileId === primaryProfileId ? `${sessionProfile} (Primary)` : sessionProfile,
       productLine: `${displayName} — used for this session only. Curation: ${sessionProfile}`,
       actionLabel: "", actionHelp: "", showAction: false, allowPicker: false,
       associatedProfileId: null,
@@ -69,7 +71,7 @@ export function mapAssociationCopy({
 
   if (associatedProfileId && !associatedProfileName) {
     return {
-      ...common, state: "S4", tone: "warning", associatedText: "Unavailable Curation",
+      ...common, state: "S4", tone: "warning", associatedText: `${activeProfileName || "Current Curation"} (media remembers an unavailable Curation)`,
       productLine: `${displayName} — remembers a Curation that no longer exists`,
       actionLabel: "Choose a Curation for this media", actionHelp: chooseCurationBenefit(),
       showAction: writable, allowPicker: writable, associatedProfileId,
@@ -78,7 +80,8 @@ export function mapAssociationCopy({
 
   if (!associatedProfileId) {
     return {
-      ...common, state: "S1", tone: "muted", associatedText: "None chosen yet",
+      ...common, state: "S1", tone: "muted", associatedText: primaryProfileId && activeProfileId === primaryProfileId
+        ? `${primaryProfileName || activeProfileName} (Primary)` : `${activeProfileName || "Current Curation"} (no source Curation)`,
       productLine: `${displayName} — no Curation chosen yet`,
       actionLabel: "Choose a Curation for this media", actionHelp: chooseCurationBenefit(),
       showAction: writable, allowPicker: writable, associatedProfileId: null,
@@ -88,7 +91,7 @@ export function mapAssociationCopy({
   const isActive = associatedProfileId === activeProfileId;
   return {
     ...common, state: isActive ? "S2" : "S3", tone: isActive ? "success" : "active",
-    associatedText: associatedProfileName,
+    associatedText: isActive ? associatedProfileName : `${activeProfileName || "Current Curation"} (media remembers ${associatedProfileName})`,
     productLine: `${displayName} — remembered with ${associatedProfileName} Curation`
       + (isActive ? "" : " (not used on this device)"),
     actionLabel: "Change Curation for this media", actionHelp: chooseCurationBenefit(),

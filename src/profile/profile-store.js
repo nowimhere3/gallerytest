@@ -55,6 +55,7 @@ import { SyncIdentity } from "./sync-device.js";
 //  same boundary ProfileStore already keeps between itself and indexeddb.js.]
 import * as LibraryRegistry from "../storage/library-registry.js";
 import {
+  getPrimaryCurationV3, mergePrimaryCurationV3,
   V2_ASSOCIATION_STORE,
   loadV3LibrariesCache,
   saveV3LibrariesCache,
@@ -219,6 +220,9 @@ export class ProfileStore {
   // whether THIS device happens to have a local library-registry row for a
   // given libraryId — a device can hold and republish an association fact for
   // a library it has never physically opened at all.
+  #primaryCuration = null;
+  #primaryReady;
+  #primaryQueue = Promise.resolve();
   #associations = {};
   #associationsReady;
 
@@ -329,6 +333,62 @@ export class ProfileStore {
     this.#associationsReady = this.#loadAssociations();
     this.#librariesReady = this.#loadLibraries();
     this.#structureReady = this.#loadStructure();
+    this.#primaryReady = this.#loadPrimaryCuration();
+  }
+
+  async #loadPrimaryCuration() {
+    try { this.#primaryCuration = await getPrimaryCurationV3(); }
+    catch (error) { console.warn("Could not load Primary Curation", error); }
+    await this.#identity.ready;
+    this.#identity.observeReplica({ primaryCuration: this.#primaryCuration });
+    await this.#ready;
+    this.#emit();
+  }
+
+  getPrimaryCurationFact() { return takeSnapshot(this.#primaryCuration); }
+  getPrimaryProfileId() {
+    const id = this.#primaryCuration?.v;
+    return id && this.#profiles.some((p) => p.id === id)
+      && !(id === this.#profileId && this.#facts.deleted?.v === true) ? id : null;
+  }
+
+  async setPrimaryCuration(profileId) {
+    await this.#ready;
+    await this.#primaryReady;
+    if (profileId !== null && (!this.#profiles.some((p) => p.id === profileId)
+        || (profileId === this.#profileId && this.#facts.deleted?.v === true))) {
+      throw new TypeError("Choose an available Curation");
+    }
+    return this.#queuePrimary(async () => {
+      const stored = await getPrimaryCurationV3();
+      this.#identity.observeReplica({ primaryCuration: stored });
+      this.#primaryCuration = Facts.setPrimaryCuration(
+        { primaryCuration: MergeEngine.mergeFact(this.#primaryCuration, stored) },
+        profileId, this.#identity.tick()).primaryCuration;
+      this.#primaryCuration = await mergePrimaryCurationV3(this.#primaryCuration);
+      this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.PRIMARY_CURATION_CHANGED);
+      this.#emit();
+    });
+  }
+
+  #queuePrimary(action) {
+    const pending = this.#primaryQueue.then(action);
+    this.#primaryQueue = pending.catch(() => undefined);
+    return pending;
+  }
+
+  async adoptMergedPrimaryCuration(incoming) {
+    await this.#primaryReady;
+    return this.#queuePrimary(async () => {
+      const merged = MergeEngine.mergeFact(MergeEngine.mergeFact(this.#primaryCuration,
+        await getPrimaryCurationV3()), incoming) || null;
+      this.#identity.observeReplica({ primaryCuration: merged });
+      if (MergeEngine.stableStringify(merged) === MergeEngine.stableStringify(this.#primaryCuration)) return;
+      this.#primaryCuration = merged;
+      this.#primaryCuration = await mergePrimaryCurationV3(merged);
+      this.#announceLocalStateChange(LOCAL_STATE_MESSAGE_KINDS.PRIMARY_CURATION_CHANGED);
+      this.#emit();
+    });
   }
 
   async #loadAssociations() {
@@ -523,6 +583,8 @@ export class ProfileStore {
     await this.#ready;
     await this.#identity.ready;
     await this.#factQueue;
+    await this.#primaryReady;
+    await this.#primaryQueue;
   }
 
   async whenAssociationsSettled() {
@@ -913,6 +975,9 @@ export class ProfileStore {
 
     const replica = Facts.emptyReplica();
     replica.associations = this.#associations;
+    // Primary is a shared V3 preference; V2's disk schema stays unchanged.
+    if (this.#associationStore.id === "associations-v3") replica.primaryCuration = this.#primaryCuration;
+    else delete replica.primaryCuration;
     // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
     // [WHY: present only when it carries something, and this is a CORRECTION to
     //  the Stage 04A audit rather than a style choice. That audit reasoned that
@@ -1075,6 +1140,7 @@ export class ProfileStore {
     await this.#adoptMergedAssociations(mergedReplica.associations);
     await this.#adoptMergedLibraries(mergedReplica.libraries);
     await this.#adoptMergedStructure(mergedReplica.structure);
+    await this.adoptMergedPrimaryCuration(mergedReplica.primaryCuration);
   }
 
   // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
@@ -1756,6 +1822,8 @@ export class ProfileStore {
     //  lets getFullReplica() keep publishing the tombstone until every peer has
     //  converged on it, exactly like a tag's deletion already works.]
     await this.#tombstoneProfile(profileId, wasActive);
+    await this.#primaryReady;
+    if (this.#primaryCuration?.v === profileId) await this.setPrimaryCuration(null);
 
     if (wasActive) {
       // [DEBUG-8.3-PROFILE-DELETE] Deleting the ACTIVE profile needs the
@@ -2162,6 +2230,7 @@ export class ProfileStore {
         if (message.profileId && message.profileId !== this.#profileId) return;
         break;
       case LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED:
+      case LOCAL_STATE_MESSAGE_KINDS.PRIMARY_CURATION_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.ASSOCIATIONS_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.LIBRARIES_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.STRUCTURE_CHANGED:
@@ -2223,9 +2292,20 @@ export class ProfileStore {
    *  peers simply become current at their next pass instead of within
    *  milliseconds, and the writer is still never the stale one.]
    */
+  #localStateRefreshRequested = false;
   async refreshFromStorage({ includeStructure = true } = {}) {
-    if (this.#localStateRefresh) return this.#localStateRefresh;
-    this.#localStateRefresh = this.#refreshFromStorageImpl({ includeStructure }).finally(() => {
+    if (this.#localStateRefresh) {
+      this.#localStateRefreshRequested = true;
+      return this.#localStateRefresh;
+    }
+    this.#localStateRefresh = (async () => {
+      let changed = false;
+      do {
+        this.#localStateRefreshRequested = false;
+        changed = await this.#refreshFromStorageImpl({ includeStructure }) || changed;
+      } while (this.#localStateRefreshRequested);
+      return changed;
+    })().finally(() => {
       this.#localStateRefresh = null;
     });
     return this.#localStateRefresh;
@@ -2272,6 +2352,8 @@ export class ProfileStore {
     } catch (error) {
       console.warn("[SYNCV3] Could not re-read the active profile's facts.", error);
     }
+
+    await this.adoptMergedPrimaryCuration(await getPrimaryCurationV3());
 
     // ---- associations ----
     try {

@@ -49,8 +49,8 @@ assert(mainSource.includes('currentSourceKind === "cassette" || currentSourceKin
   && mainSource.includes('? "none"'), "Floppy sources are adapted to none at the folder-link boundary");
 
 const unchosen = mapAssociationCopy({ sourceKind: "fsa", folderName: "Nature" });
-assert(unchosen.associatedText === "None chosen yet" && unchosen.productLine === "Nature — no Curation chosen yet",
-  "an unchosen Media Library states an unmade choice, in Curation language");
+assert(unchosen.associatedText === "Current Curation (no source Curation)" && unchosen.productLine === "Nature — no Curation chosen yet",
+  "an unchosen Media Library identifies the current heart destination");
 assert(unchosen.actionLabel === "Choose a Curation for this media", "choose action names the customer relationship");
 const remembered = mapAssociationCopy({ sourceKind: "fsa", folderName: "Nature", associatedProfileId: "beast", associatedProfileName: "BEAST", activeProfileId: "beast" });
 assert(remembered.productLine === "Nature — remembered with BEAST Curation", "remembered status identifies Curation");

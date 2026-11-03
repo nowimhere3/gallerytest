@@ -1357,6 +1357,15 @@
              BREADCRUMBS — IS: this ordinary media area combines folder status
               and Curation choice; identity administration exists only below in
               Advanced, while required recovery remains here. -->
+        <div id="profile-primary-group" class="profile-settings-group">
+          <h3 class="profile-group-heading">Primary Curation</h3>
+          <label for="profile-primary-select" class="hint">Used automatically across your synced devices unless this media has its own Curation.</label>
+          <div class="profile-current-row">
+            <select id="profile-primary-select" class="field-control" aria-describedby="profile-primary-status-text"><option value="">Off</option></select>
+            <button id="profile-primary-save-btn" class="secondary" type="button">Save</button>
+          </div>
+          <p id="profile-primary-status-text" class="hint" role="status"></p>
+        </div>
         <div id="profile-folder-group" class="profile-settings-group">
           <!-- BREADCRUMBS — IS: ordinary rendering is peer-, Sync-, and
                catalog-independent. A device joining Sync cannot make identity
@@ -1450,7 +1459,7 @@
 
           <!-- [SYNCV3 / STAGE-07 / ASSOCIATION-UI]
                [WHY: association is shared state while active Profile is a
-                local device choice; association changes must never silently
+                local device choice; passive association changes must never silently
                 switch the active Profile.] -->
           <div id="profile-association-row" class="profile-association-row hidden">
             <label for="profile-association-select">Curation for this folder</label>
@@ -1460,7 +1469,7 @@
               <button id="profile-association-cancel-btn" class="secondary" type="button">Cancel</button>
             </div>
             <p class="hint">Only the Curation remembered for this folder changes. Favorites, Hidden items and Tags stay in their own Curations.</p>
-            <p class="hint">This choice is shared with your other devices. The Curation this device is using does not change.</p>
+            <p class="hint">Saving a Curation here switches this device to that Curation and remembers it for this media.</p>
           </div>
           <p id="profile-association-result" class="hint" role="status"></p>
 

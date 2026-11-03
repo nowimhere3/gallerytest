@@ -1,3 +1,4 @@
+import { mergeFact } from "../profile/sync-merge.js";
 import { isNullableStringFact } from "../profile/sync-facts.js";
 // [PROFILE-SYNC]
 // WHAT: Persists the independently-selected Profile Sync directory handle
@@ -755,5 +756,26 @@ export async function putPrimaryCurationV3(primaryCuration) {
     const tx = database.transaction(STORE_NAME, "readwrite");
     tx.objectStore(STORE_NAME).put({ id: PRIMARY_CURATION_V3_KEY, primaryCuration });
     await completeTransaction(tx);
+  } finally { database.close(); }
+}
+
+// Read/merge/write in one transaction so sibling tabs cannot regress this register.
+export async function mergePrimaryCurationV3(incoming) {
+  if (incoming !== null && !isNullableStringFact(incoming)) throw new TypeError("Invalid Primary Curation fact");
+  const database = await openDatabase();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = database.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      let merged;
+      const request = store.get(PRIMARY_CURATION_V3_KEY);
+      request.onsuccess = () => {
+        merged = mergeFact(request.result?.primaryCuration, incoming) || null;
+        store.put({ id: PRIMARY_CURATION_V3_KEY, primaryCuration: merged });
+      };
+      tx.oncomplete = () => resolve(merged);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
   } finally { database.close(); }
 }

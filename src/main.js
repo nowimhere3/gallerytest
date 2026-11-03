@@ -1,3 +1,4 @@
+import { primaryFallbackTarget } from "./profile/primary-curation-policy.js";
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
 import { extractRemoteUrls } from "./providers/remote-url-parser.js";
@@ -1243,6 +1244,33 @@ function getProfileNameById(profileId) {
 
 // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
 // The only adapter from live app state into the pure S0-S5 mapper.
+// Passive Primary updates cannot bulldoze source intent, including explicit null.
+let primaryActivationQueue = Promise.resolve();
+let observedPrimaryId;
+let sessionExplicitNoCuration = false;
+function currentSourceHasChoice() {
+  if (sessionExplicitNoCuration || legacySessionAssociated) return true;
+  if (currentSourceKind === "cassette" || currentSourceKind === "cassette-folder") return activeCassetteCurationId !== null;
+  const record = activeLibraryRecord;
+  if (!record) return false;
+  if (record.libraryId && Object.prototype.hasOwnProperty.call(profile.getAssociations(), record.libraryId)) return true;
+  return Boolean(record.profileId);
+}
+async function applyPrimaryForCurrentSource() {
+  const target = primaryFallbackTarget({ primaryProfileId: profile.getPrimaryProfileId(),
+    hasSourceChoice: currentSourceHasChoice(),
+    safetyRefused: currentSourceKind === "legacy" && legacyHasDurableIdentity && !activeLibraryRecord && !pendingLegacySignature });
+  if (target && target !== profile.getProfileId()) await profile.switchProfile(target);
+}
+async function activateExplicitSourceChoice(target) {
+  // Explicit Human Save activates its chosen destination even when re-saving S3.
+  await primaryActivationQueue;
+  if (activeLibraryRecord?.libraryId) await deleteAmbientProfileDecision(activeLibraryRecord.libraryId);
+  sessionExplicitNoCuration = target === null;
+  if (target !== null) await profile.switchProfile(target);
+  syncAssociateButtonVisibility();
+}
+
 function getCurrentAssociationUiState() {
   const mediaName = activeCassetteRecord?.name
     || activeLibraryRecord?.name
@@ -1269,6 +1297,8 @@ function getCurrentAssociationUiState() {
     associatedProfileName: getProfileNameById(associatedProfileId),
     activeProfileId: profile.getProfileId(),
     activeProfileName: profile.getProfileName(),
+    primaryProfileId: currentSourceHasChoice() ? null : profile.getPrimaryProfileId(),
+    primaryProfileName: getProfileNameById(profile.getPrimaryProfileId()),
     legacySessionAssociated,
     canWriteAssociation:
       currentSourceKind === "cassette" || currentSourceKind === "cassette-folder"
@@ -4861,6 +4891,7 @@ async function writeReverseCurationAssociation(rootId, profileId) {
   const updated = await associateThroughSyncV2(rootId, profileId);
   if (!updated || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return false;
   activeLibraryRecord = updated;
+  await activateExplicitSourceChoice(profileId);
   establishAmbientProfileContext(activeLibraryRecord);
   syncAssociateButtonVisibility();
   await renderRecentLibraries();
@@ -5383,6 +5414,7 @@ async function loadRemoteSession(text, { name, record = null, sourceKind = "cass
   activeLibraryRecord = null;
   activeCassetteRecord = record;
   activeCassetteCurationId = record ? curationId : null;
+  sessionExplicitNoCuration = false;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
@@ -5429,6 +5461,10 @@ async function loadRemoteSession(text, { name, record = null, sourceKind = "cass
       provider: result.diagnostics,
     });
 
+    if (activeCassetteCurationId && getProfileNameById(activeCassetteCurationId)) {
+      await profile.switchProfile(activeCassetteCurationId);
+    } else if (activeCassetteCurationId === null) await applyPrimaryForCurrentSource();
+    if (loadToken !== libraryLoadGeneration) return;
     const firstPaintStartedAt = performance.now();
     finishLoadingItems(result.items);
     const toFirstPaintMs = performance.now() - firstPaintStartedAt;
@@ -5496,6 +5532,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   activeLibraryRecord = null;
   activeCassetteRecord = null;
   activeCassetteCurationId = null;
+  sessionExplicitNoCuration = false;
   associationWriteSuppression.setLoadedLibrary(null);
   ambientProfileObserver.clearContext();
   renderAmbientProfileOffer();
@@ -5610,6 +5647,8 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
       }
     }
 
+    await applyPrimaryForCurrentSource();
+    if (loadToken !== libraryLoadGeneration) return;
     finishLoadingItems(items);
     await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
@@ -5746,6 +5785,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   activeLibraryRecord = libraryRecord || null;
   activeCassetteRecord = null;
   activeCassetteCurationId = null;
+  sessionExplicitNoCuration = false;
   associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
   establishAmbientProfileContext(activeLibraryRecord);
   activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
@@ -5894,6 +5934,8 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       preparedMediaIdentity?.portableCurrentSample || null
     );
 
+    await applyPrimaryForCurrentSource();
+    if (loadToken !== libraryLoadGeneration) return;
     finishLoadingItems(result.items);
     await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
@@ -6604,17 +6646,15 @@ profileAssociateBtn.addEventListener("click", () => {
 profileAssociationSaveBtn.addEventListener("click", async () => {
   const selectedProfileId = profileAssociationSelect.value || null;
   const selectedProfileName = selectedProfileId ? getProfileNameById(selectedProfileId) : null;
-  const associationBeforeSave = getCurrentAssociationUiState();
   profileAssociationSaveBtn.disabled = true;
   profileAssociationCancelBtn.disabled = true;
   try {
-    const saved = associationBeforeSave.associatedProfileId === selectedProfileId
-      ? true
-      : await associateCurrentLibraryWithProfile({ targetProfileId: selectedProfileId });
+    const saved = await associateCurrentLibraryWithProfile({ targetProfileId: selectedProfileId });
     if (!saved) {
       profileAssociationResult.textContent = "Could not save. Try again.";
       return;
     }
+    await activateExplicitSourceChoice(selectedProfileId);
     const isCassetteSource = currentSourceKind === "cassette" || currentSourceKind === "cassette-folder";
     profileAssociationResult.textContent = isCassetteSource
       ? selectedProfileName
@@ -10636,6 +10676,7 @@ clearBtn.addEventListener("click", () => {
   activeLibraryRecord = null;
   activeCassetteRecord = null;
   activeCassetteCurationId = null;
+  sessionExplicitNoCuration = false;
   associationWriteSuppression.setLoadedLibrary(null);
   clearReverseCurationSuggestion();
   clearDeviceAwareMediaQuestion();
@@ -14695,3 +14736,35 @@ window.__bgProfileIdentityAudit = async function (options = {}) {
 
   return report;
 };
+
+// Shared preference; explicit Save avoids stamping intermediate keyboard selections.
+const primarySelect = document.getElementById("profile-primary-select");
+const primarySave = document.getElementById("profile-primary-save-btn");
+const primaryStatus = document.getElementById("profile-primary-status-text");
+function renderPrimaryCuration() {
+  const profiles = profile.listProfiles();
+  primarySelect.replaceChildren(new Option("Off", ""), ...profiles.map((entry) =>
+    new Option(displayCurationLabel(entry, profiles), entry.id)));
+  primarySelect.value = profile.getPrimaryProfileId() || "";
+  const next = profile.getPrimaryProfileId();
+  if (next !== observedPrimaryId) {
+    observedPrimaryId = next;
+    primaryActivationQueue = primaryActivationQueue.then(() => applyPrimaryForCurrentSource())
+      .catch((error) => console.warn("Could not activate Primary Curation", error));
+  }
+}
+primarySave.addEventListener("click", async () => {
+  primarySave.disabled = true;
+  try {
+    const selected = primarySelect.value || null;
+    await profile.setPrimaryCuration(selected);
+    await primaryActivationQueue;
+    await applyPrimaryForCurrentSource();
+    primaryStatus.textContent = selected === null ? "Primary Curation turned off."
+      : currentSourceHasChoice() ? `Primary Curation saved. This device stays on ${profile.getProfileName()}; current media has its own Curation choice.`
+      : `Primary Curation saved. This device is now using ${profile.getProfileName()}.`;
+  } catch (error) { primaryStatus.textContent = "Could not save Primary Curation. Try again."; }
+  finally { primarySave.disabled = false; }
+});
+profile.subscribe(renderPrimaryCuration);
+renderPrimaryCuration();
