@@ -694,6 +694,64 @@ await test("The Stage 03B writer lock is unchanged (req 19)", async () => {
   assertEqual((await second.ensure()).allowed, true, "handoff still works");
 });
 
+
+// Drive the real debounce timers while withholding periodic polls: a sibling
+// mutation must wake the idle writer rather than waiting for the next poll.
+const { ProfileSync } = await import(src("profile/profile-sync.js"));
+for (const firstWriter of ["A", "B"]) await test(`Reader changes wake idle writer ${firstWriter} across Curations`, async () => {
+  const origin = makeOrigin();
+  const messages = [];
+  const a = await makeContext(origin, { spy: messages });
+  const b = await makeContext(origin, { spy: messages });
+  const foreign = await b.createProfile("Reader Curation");
+  await propagate();
+  const writer = firstWriter === "A" ? a : b;
+  const reader = firstWriter === "A" ? b : a;
+  await reader.switchProfile(foreign.id);
+  const dir = createVirtualDirectory("Reader delivery");
+  const nativeSet = globalThis.setTimeout, nativeClear = globalThis.clearTimeout;
+  const timers = new Map(); let nextTimer = 100000;
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    if (ms === 3000) { const id = nextTimer++; timers.set(id, fn); return id; }
+    return nativeSet(fn, ms, ...args);
+  };
+  globalThis.clearTimeout = (id) => { if (!timers.delete(id)) nativeClear(id); };
+  const ws = new ProfileSync(writer), rs = new ProfileSync(reader);
+  try {
+    for (const engine of [ws, rs]) { await engine.connectV3Folder(dir.handle); await engine.activateSyncV3(); }
+    await propagate();
+    const drainDebounce = async () => {
+      const pending = [...timers.entries()].filter(([,fn]) => String(fn).includes("Auto sync failed"));
+      assert(pending.length > 0, "committed reader invalidation arms debounce without a periodic poll");
+      for (const [id,fn] of pending) { timers.delete(id); fn(); }
+      await new Promise(resolve => nativeSet(resolve, 400));
+      await propagate();
+    };
+    const published = async () => {
+      const devices = await Transport.getDevicesDir(await Transport.getSyncV3Root(dir.handle));
+      const entries = await Transport.discoverDevices(devices, { ownDeviceId: DEVICE_ID });
+      return entries.own.replica.profiles[foreign.id];
+    };
+    reader.setFavorite("reader-heart.jpg", true);
+    await reader.whenLocalWritesSettled(); await propagate();
+    assert(messages.some(m => m.kind === Channel.LOCAL_STATE_MESSAGE_KINDS.PROFILE_FACTS_CHANGED && m.profileId === foreign.id), "reader announces persisted facts");
+    assertEqual((await writer.getFullReplica()).profiles[foreign.id].items["reader-heart.jpg"].favorite.v.on, true, "writer rereads durable foreign Profile");
+    await drainDebounce();
+    assertEqual((await published()).items["reader-heart.jpg"].favorite.v.on, true, "idle writer publishes reader heart");
+    reader.setFavorite("reader-heart.jpg", false);
+    reader.setHidden("hidden.jpg", true);
+    const tag = reader.createTag("Reader tag");
+    reader.setFavorite("rapid-1.jpg", true); reader.setFavorite("rapid-2.jpg", true);
+    await reader.whenLocalWritesSettled(); await propagate(); await drainDebounce();
+    const facts = await published();
+    assertEqual(facts.items["reader-heart.jpg"].favorite.v.on, false, "reader unheart published");
+    assertEqual(facts.items["hidden.jpg"].hidden.v, true, "reader hidden published");
+    assert(Object.values(facts.tags).some(t => t.name?.v === "Reader tag"), "reader tag published");
+    assert(facts.items["rapid-1.jpg"].favorite.v.on && facts.items["rapid-2.jpg"].favorite.v.on, "rapid changes survive coalescing");
+    assertEqual(deviceDirectories(dir).length, 1, "one device generation; existing writer lease retained");
+  } finally { ws.dispose(); rs.dispose(); globalThis.setTimeout=nativeSet; globalThis.clearTimeout=nativeClear; }
+});
+
 // ---- Summary ---------------------------------------------------------------
 
 console.log(`\n${"-".repeat(60)}`);

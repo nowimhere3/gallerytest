@@ -2225,9 +2225,9 @@ export class ProfileStore {
       case LOCAL_STATE_MESSAGE_KINDS.CONTEXT_HERE:
         return;
       case LOCAL_STATE_MESSAGE_KINDS.PROFILE_FACTS_CHANGED:
-        // A message about a Profile this context is not showing needs no work:
-        // foreign Profiles are read from IndexedDB on demand, never cached here.
-        if (message.profileId && message.profileId !== this.#profileId) return;
+        // Foreign Profiles are read on demand by getFullReplica, but their
+        // committed changes must still wake this tab's sync scheduler. The
+        // writer lease belongs to a tab, not to its currently displayed Profile.
         break;
       case LOCAL_STATE_MESSAGE_KINDS.PROFILE_REGISTRY_CHANGED:
       case LOCAL_STATE_MESSAGE_KINDS.PRIMARY_CURATION_CHANGED:
@@ -2270,7 +2270,11 @@ export class ProfileStore {
         // write-then-announce, rather than trusting stale UI state. A local-only
         // link can leave every shared cache byte unchanged, so force one emit
         // only when refreshFromStorage did not already emit for shared changes.]
-        if (localLibraryLinkChanged && !durableSharedStateChanged) this.#emit();
+        // A fact invalidation is durable shared movement even if it changes
+        // no active-profile projection (foreign Profile or negative fact).
+        // Notify the existing scheduler; never publish from this handler.
+        if ((localLibraryLinkChanged || message.kind === LOCAL_STATE_MESSAGE_KINDS.PROFILE_FACTS_CHANGED)
+            && !durableSharedStateChanged) this.#emit();
       })
       .catch((error) =>
         console.warn("[SYNCV3] Could not refresh local state after a peer context changed it.", error)
