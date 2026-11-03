@@ -1,3 +1,4 @@
+import { isNullableStringFact } from "../profile/sync-facts.js";
 // [PROFILE-SYNC]
 // WHAT: Persists the independently-selected Profile Sync directory handle
 // (a FileSystemDirectoryHandle) plus small sync-relationship metadata —
@@ -728,4 +729,31 @@ export async function clearSyncConfig() {
   } finally {
     database.close();
   }
+}
+
+// Dedicated V3 metadata row; never a synthetic library association.
+const PRIMARY_CURATION_V3_KEY = "primary-curation-v3";
+
+export async function getPrimaryCurationV3() {
+  const database = await openDatabase();
+  try {
+    const tx = database.transaction(STORE_NAME, "readonly");
+    const row = await requestToPromise(tx.objectStore(STORE_NAME).get(PRIMARY_CURATION_V3_KEY));
+    await completeTransaction(tx);
+    const value = row?.primaryCuration ?? null;
+    if (value !== null && !isNullableStringFact(value)) throw new TypeError("Invalid Primary Curation fact");
+    return value;
+  } finally { database.close(); }
+}
+
+export async function putPrimaryCurationV3(primaryCuration) {
+  if (primaryCuration !== null && !isNullableStringFact(primaryCuration)) {
+    throw new TypeError("Invalid Primary Curation fact");
+  }
+  const database = await openDatabase();
+  try {
+    const tx = database.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).put({ id: PRIMARY_CURATION_V3_KEY, primaryCuration });
+    await completeTransaction(tx);
+  } finally { database.close(); }
 }

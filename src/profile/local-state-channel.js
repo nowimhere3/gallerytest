@@ -27,6 +27,7 @@ export const LOCAL_STATE_MESSAGE_KINDS = Object.freeze({
   PROFILE_FACTS_CHANGED: "profile-facts-changed",
   PROFILE_REGISTRY_CHANGED: "profile-registry-changed",
   ASSOCIATIONS_CHANGED: "associations-changed",
+  PRIMARY_CURATION_CHANGED: "primary-curation-changed",
   // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
   // [WHY: its own kind rather than reusing ASSOCIATIONS_CHANGED. The two are
   //  separate durable rows with separate meanings, and a receiver that could not

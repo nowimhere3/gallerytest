@@ -53,7 +53,7 @@ export const REPLICA_SCHEMA_VERSION = 2;
 // Fact<V>   { v: V, t: number, d: deviceId }
 
 export function emptyReplica() {
-  return { schemaVersion: REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: {}, structure: {} };
+  return { schemaVersion: REPLICA_SCHEMA_VERSION, profiles: {}, associations: {}, libraries: {}, structure: {}, primaryCuration: null };
 }
 
 function emptyProfileFacts() {
@@ -204,6 +204,19 @@ export function restoreTag(replica, profileId, tagId, stamp) {
 //  BEAST to BBG4 must not read as curation belonging to either Profile.
 //  Minting a libraryId and matching a physical folder to one is Stage D/E; the
 //  pure model only needs the fact to exist and to merge.]
+// Off is a stamped null value so stale peers cannot restore an older choice.
+export function setPrimaryCuration(replica, profileId, stamp) {
+  if (profileId !== null && (typeof profileId !== "string" || !profileId.length)) {
+    throw new TypeError("Primary Curation must be a non-empty profile ID or null");
+  }
+  return { ...replica, primaryCuration: put(replica.primaryCuration, profileId, stamp) };
+}
+
+export function isNullableStringFact(value) {
+  return isFact(value) && (value.v === null || (typeof value.v === "string" && value.v.length > 0))
+    && Object.keys(value).every((key) => ["v", "t", "d"].includes(key));
+}
+
 export function setLibraryAssociation(replica, libraryId, profileId, stamp) {
   const value = profileId === null || profileId === undefined ? null : String(profileId);
   return {
@@ -442,7 +455,7 @@ function isTrue(fact) {
 //  anything published a Library. The allow-list stays an ALLOW-list: nothing is
 //  relaxed elsewhere to make Libraries pass.]
 const ALLOWED = {
-  replica: new Set(["schemaVersion", "profiles", "associations", "libraries", "structure"]),
+  replica: new Set(["schemaVersion", "profiles", "associations", "libraries", "structure", "primaryCuration"]),
   profile: new Set(["name", "deleted", "items", "tags"]),
   item: new Set(["favorite", "hidden", "tags"]),
   tag: new Set(["name", "deleted"]),
@@ -497,6 +510,11 @@ export function findSessionStateLeaks(replica) {
 
   for (const key of Object.keys(replica)) {
     if (!ALLOWED.replica.has(key)) leaks.push(key);
+  }
+
+  if (replica.primaryCuration !== undefined && replica.primaryCuration !== null
+      && !isNullableStringFact(replica.primaryCuration)) {
+    leaks.push("primaryCuration (not a nullable-string fact)");
   }
 
   for (const [libraryId, fact] of Object.entries(replica.associations || {})) {

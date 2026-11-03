@@ -250,6 +250,7 @@ export function mergeProfileFacts(a, b) {
 export function mergeReplicas(a, b) {
   return {
     schemaVersion: Math.max(a.schemaVersion || 0, b.schemaVersion || 0),
+    primaryCuration: mergeFact(a.primaryCuration, b.primaryCuration) || null,
     profiles: mergeMaps(a.profiles, b.profiles, mergeProfileFacts),
     associations: mergeMaps(a.associations, b.associations, mergeFact),
     // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
@@ -277,6 +278,8 @@ export function mergeAll(replicas) {
 /** Visits every fact in a replica. Used by the clock and by the shape guard. */
 export function forEachFact(replica, visit) {
   if (!replica || typeof replica !== "object") return;
+
+  if (isFact(replica.primaryCuration)) visit(replica.primaryCuration);
 
   for (const fact of Object.values(replica.associations || {})) {
     if (isFact(fact)) visit(fact);

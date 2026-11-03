@@ -110,7 +110,10 @@ export async function currentHashAlgo() {
 
 /** Two replicas are equal iff their canonical form is byte-identical. */
 export function replicasEqual(a, b) {
-  return stableStringify(a) === stableStringify(b);
+  // The shared fact model adds an optional V3 register. An absent register
+  // and its never-configured null default have identical meaning in V2.
+  const normalize = (replica) => ({ ...replica, primaryCuration: replica?.primaryCuration ?? null });
+  return stableStringify(normalize(a)) === stableStringify(normalize(b));
 }
 
 // ---- Directory navigation --------------------------------------------------

@@ -1,3 +1,4 @@
+import { isNullableStringFact } from "./sync-facts.js";
 // [SYNCV3 / STAGE-02 / CONTENT-ADDRESSED-DEVICE-DISCOVERY]
 // [WHY: this is a SIBLING of sync-v2-transport.js, not a generalization of it.
 //  Parameterizing V2's module to serve both roots would put the shipped, proven
@@ -121,7 +122,7 @@ export async function currentHashAlgo() {
 
 /** Two replicas are equal iff their canonical form is byte-identical. */
 export function replicasEqual(a, b) {
-  const normalize = (replica) => ({ ...replica, structure: replica?.structure || {} });
+  const normalize = (replica) => ({ ...replica, structure: replica?.structure || {}, primaryCuration: replica?.primaryCuration ?? null });
   return stableStringify(normalize(a)) === stableStringify(normalize(b));
 }
 
@@ -416,6 +417,11 @@ export async function readDeviceDirectory(devicesDir, directoryName) {
     structure = parsed.structure;
   }
 
+  const primaryCuration = associationsParsed.primaryCuration ?? null;
+  if (primaryCuration !== null && !isNullableStringFact(primaryCuration)) {
+    return { status: "invalid", directoryName, reason: "primary-curation-shape" };
+  }
+
   return {
     status: "valid",
     directoryName,
@@ -427,6 +433,7 @@ export async function readDeviceDirectory(devicesDir, directoryName) {
       schemaVersion: SCHEMA_VERSION,
       profiles,
       associations: associationsParsed.associations,
+      primaryCuration,
       libraries,
       structure,
     },
@@ -618,11 +625,11 @@ async function writeProfileFile(profilesDir, fileName, profileId, humanName, fac
   return hashText(text);
 }
 
-async function writeAssociationsFile(deviceDir, associations) {
+async function writeAssociationsFile(deviceDir, associations, primaryCuration) {
   const handle = await deviceDir.getFileHandle(ASSOCIATIONS_FILE_NAME, { create: true });
   const writable = await handle.createWritable();
   const text = JSON.stringify(
-    { schemaVersion: SCHEMA_VERSION, kind: ASSOCIATIONS_KIND, associations: associations || {} },
+    { schemaVersion: SCHEMA_VERSION, kind: ASSOCIATIONS_KIND, associations: associations || {}, primaryCuration: primaryCuration ?? null },
     null,
     2
   );
@@ -814,6 +821,7 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
   const normalized = {
     ...replica,
     associations: replica.associations || {},
+    primaryCuration: replica.primaryCuration ?? null,
     libraries: replica.libraries || {},
     structure: replica.structure || {},
   };
@@ -857,7 +865,7 @@ export async function publishOwnReplicaVerified(devicesDir, { deviceId, label = 
     declaredFileNames.add(fileName);
   }
 
-  const associations = await writeAssociationsFile(deviceDir, normalized.associations);
+  const associations = await writeAssociationsFile(deviceDir, normalized.associations, normalized.primaryCuration);
   hashAlgo = hashAlgo || associations.algo;
 
   // Written BEFORE device.json, like every other data file - the manifest is the
