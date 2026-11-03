@@ -1,4 +1,5 @@
 import { primaryFallbackTarget } from "./profile/primary-curation-policy.js";
+import { publishExplicitLocalBinding } from "./profile/explicit-binding-publication.js";
 import { LocalFileInputProvider } from "./providers/local-file-input-provider.js";
 import { FsaFileProvider } from "./providers/fsa-file-provider.js";
 import { extractRemoteUrls } from "./providers/remote-url-parser.js";
@@ -5688,6 +5689,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     //  signature or a folder name.]
     if (activeLibraryRecord && activeLibraryRecord.id) {
       try {
+        await publishExplicitBindingForLoadedLibrary();
         await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: activeLibraryRecord.name || rootName });
         await recordPortableStructureForLoad(activeLibraryRecord.id, items);
       } catch (error) {
@@ -5985,6 +5987,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       //  call's.]
       if (!result.incomplete) {
         try {
+          await publishExplicitBindingForLoadedLibrary();
           await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: dirHandle.name });
           await recordPortableStructureForLoad(activeLibraryRecord.id, result.items);
         } catch (error) {
@@ -6462,6 +6465,25 @@ async function associateThroughSyncV2(localLibraryId, targetProfileId) {
     return getLibraryByLibraryId(sharedLibraryId);
   } finally {
     associationWriteSuppression.endIntent(intent);
+  }
+}
+
+// [HEART-REACH / EXPLICIT-LOCAL-BINDING-PUBLICATION]
+// [WHY: a folder explicitly bound to a Curation on this device alone has no shared
+//  identity, so the Curation Suite Heart Watcher cannot find it when one of its
+//  Hearts is published. Publish that existing explicit binding on load through the
+//  one association seam. Plain opens and Primary fallback carry no binding and are
+//  untouched; see explicit-binding-publication.js.]
+async function publishExplicitBindingForLoadedLibrary() {
+  const rootId = activeLibraryRecord?.id;
+  const updated = await publishExplicitLocalBinding({
+    record: activeLibraryRecord,
+    profileExists: (profileId) => Boolean(getProfileNameById(profileId)),
+    associate: associateThroughSyncV2,
+  });
+  if (updated && activeLibraryRecord && activeLibraryRecord.id === rootId) {
+    activeLibraryRecord = updated;
+    establishAmbientProfileContext(activeLibraryRecord);
   }
 }
 
