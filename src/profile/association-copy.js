@@ -22,6 +22,7 @@ export function mapAssociationCopy({
   activeProfileName = null,
   primaryProfileId = null,
   primaryProfileName = null,
+  hasExplicitSourceChoice = false,
   legacySessionAssociated = false,
   canWriteAssociation = true,
 } = {}) {
@@ -49,7 +50,13 @@ export function mapAssociationCopy({
         : "";
   const sourceLine = sourceKind === "none" ? "No media loaded." : `${displayName} · ${sourceLabel}`;
   const writable = canWriteAssociation;
-  const common = { sourceLabel, sourceLine, associationScope, scopeNote };
+  // Primary already answers the Curation question; this action is an override.
+  // A source choice (including explicit null) still outranks the shared fallback.
+  const usesPrimary = sourceKind !== "none" && !hasExplicitSourceChoice
+    && !associatedProfileId && !legacySessionAssociated && Boolean(primaryProfileId)
+    && activeProfileId === primaryProfileId && Boolean(primaryProfileName || activeProfileName);
+  const primaryLine = `Using Primary: ${primaryProfileName || activeProfileName}`;
+  const common = { sourceLabel, sourceLine, associationScope, scopeNote, usesPrimary };
 
   if (sourceKind === "none") {
     return {
@@ -62,8 +69,8 @@ export function mapAssociationCopy({
   if (!durable) {
     const sessionProfile = activeProfileName || (legacySessionAssociated ? associatedProfileName : null) || "None chosen yet";
     return {
-      ...common, state: "S5", tone: "muted", associatedText: primaryProfileId && activeProfileId === primaryProfileId ? `${sessionProfile} (Primary)` : sessionProfile,
-      productLine: `${displayName} — used for this session only. Curation: ${sessionProfile}`,
+      ...common, state: "S5", tone: "muted", associatedText: usesPrimary ? `${sessionProfile} (Primary)` : sessionProfile,
+      productLine: usesPrimary ? primaryLine : `${displayName} — used for this session only. Curation: ${sessionProfile}`,
       actionLabel: "", actionHelp: "", showAction: false, allowPicker: false,
       associatedProfileId: null,
     };
@@ -80,10 +87,11 @@ export function mapAssociationCopy({
 
   if (!associatedProfileId) {
     return {
-      ...common, state: "S1", tone: "muted", associatedText: primaryProfileId && activeProfileId === primaryProfileId
+      ...common, state: "S1", tone: usesPrimary ? "success" : "muted", associatedText: usesPrimary
         ? `${primaryProfileName || activeProfileName} (Primary)` : `${activeProfileName || "Current Curation"} (no source Curation)`,
-      productLine: `${displayName} — no Curation chosen yet`,
-      actionLabel: "Choose a Curation for this media", actionHelp: chooseCurationBenefit(),
+      productLine: usesPrimary ? primaryLine : `${displayName} — no Curation chosen yet`,
+      actionLabel: usesPrimary ? "Use a different Curation" : "Choose a Curation for this media",
+      actionHelp: usesPrimary ? "Use another Curation for this media instead of Primary." : chooseCurationBenefit(),
       showAction: writable, allowPicker: writable, associatedProfileId: null,
     };
   }

@@ -1297,7 +1297,8 @@ function getCurrentAssociationUiState() {
     associatedProfileName: getProfileNameById(associatedProfileId),
     activeProfileId: profile.getProfileId(),
     activeProfileName: profile.getProfileName(),
-    primaryProfileId: currentSourceHasChoice() ? null : profile.getPrimaryProfileId(),
+    hasExplicitSourceChoice: currentSourceHasChoice(),
+    primaryProfileId: profile.getPrimaryProfileId(),
     primaryProfileName: getProfileNameById(profile.getPrimaryProfileId()),
     legacySessionAssociated,
     canWriteAssociation:
@@ -1360,7 +1361,9 @@ function syncAssociateButtonVisibility() {
     // above this button, so the button says only what pressing it does. That
     // also retires the hard-coded line break the long label needed to wrap
     // tidily in the rail — a short label wraps on its own or not at all.]
-    fsaAssociateBtnLabel.textContent = ["S2", "S3"].includes(associationUi.state)
+    fsaAssociateBtnLabel.textContent = associationUi.usesPrimary
+      ? associationUi.actionLabel
+      : ["S2", "S3"].includes(associationUi.state)
       ? "Change Curation"
       : "Choose a Curation";
     profileAssociateBtn.textContent = associationUi.actionLabel;

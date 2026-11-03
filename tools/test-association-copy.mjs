@@ -135,7 +135,17 @@ verify("durable legacy folder", {
   state: "S1", sourceLabel: "Local Folder", associationScope: "shared",
 });
 
-console.log(`association copy: ${assertions} assertions passed`);
+
 
 verify("truthful divergent rail", {sourceKind:"fsa", associatedProfileId:"best", associatedProfileName:"Best", activeProfileId:"mine", activeProfileName:"My Gallery"}, {associatedText:"My Gallery (media remembers Best)"});
 verify("Primary rail", {sourceKind:"fsa", activeProfileId:"best", activeProfileName:"Best", primaryProfileId:"best", primaryProfileName:"Best"}, {associatedText:"Best (Primary)"});
+
+const primaryInput = {sourceKind:"fsa", activeProfileId:"beast", activeProfileName:"BEAST", primaryProfileId:"beast", primaryProfileName:"BEAST"};
+verify("Primary supplies source", primaryInput, {usesPrimary:true, productLine:"Using Primary: BEAST", actionLabel:"Use a different Curation", showAction:true, allowPicker:true});
+verify("explicit source null", {...primaryInput,hasExplicitSourceChoice:true}, {usesPrimary:false, actionLabel:"Choose a Curation for this media"});
+verify("Primary Off", {...primaryInput,primaryProfileId:null}, {usesPrimary:false, actionLabel:"Choose a Curation for this media"});
+verify("unknown Primary", {...primaryInput,primaryProfileId:"unknown",primaryProfileName:null}, {usesPrimary:false});
+verify("Family override", {...primaryInput,associatedProfileId:"family",associatedProfileName:"Family",activeProfileId:"family",hasExplicitSourceChoice:true}, {usesPrimary:false,associatedText:"Family",actionLabel:"Change Curation for this media"});
+verify("divergent source", {...primaryInput,associatedProfileId:"family",associatedProfileName:"Family",hasExplicitSourceChoice:true}, {state:"S3",usesPrimary:false,associatedText:"BEAST (media remembers Family)"});
+
+console.log(`association copy: ${assertions} assertions passed`);
