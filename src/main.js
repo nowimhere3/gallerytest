@@ -7922,7 +7922,7 @@ let activeSpeedRule = { rate: 1, scope: "current" };
 let committedAutomationValues = { loopTimes: 5, timerMinutes: 0, timerSeconds: 0, playbackSpeed: 1 };
 function normalizeAutomationSpeed(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? Math.round(Math.max(0.1, Math.min(1, number)) * 10) / 10 : 1;
+  return Number.isFinite(number) ? Math.round(Math.max(0.1, Math.min(1, number)) * 100) / 100 : 1;
 }
 function isFolderScopedLoopRule() {
   return activeLoopRule.scope === "folder" && activeLoopRule.generation === libraryLoadGeneration;
@@ -8145,7 +8145,7 @@ function openAutomationEditor() {
   automationDraftMinutes = committedAutomationValues.timerMinutes;
   automationDraftSeconds = committedAutomationValues.timerSeconds;
   automationSpeedInput.value = committedAutomationValues.playbackSpeed;
-  automationSpeedValue.textContent = `${Number(automationSpeedInput.value).toFixed(1)}x`;
+  automationSpeedValue.textContent = `${Number(automationSpeedInput.value).toFixed(2)}x`;
   automationEditorStep = "choose";
   renderAutomationEditor();
   automationPanel.classList.remove("hidden");
@@ -10965,7 +10965,13 @@ overlayAutomationBtn.addEventListener("click", () => {
   presentationSettings.classList.add("hidden");
   closeGhostPopunder();
 
-  // Editing either slot must not activate or cancel the other slot.
+  // Opening Loop Automations expresses loop intent: protect short videos
+  // through the ordinary Loop authority while the Human configures a rule.
+  if (!videoLoopInput.checked) {
+    activeLoopRule = { type: "forever" };
+    videoLoopInput.checked = true;
+    syncVideoLoopControl();
+  }
   if (automationPanel.classList.contains("hidden")) openAutomationEditor();
   else closeAutomationEditor();
 });
@@ -10986,13 +10992,13 @@ automationChoiceForeverBtn.addEventListener("click", () => {
 });
 
 automationChoiceTimesBtn.addEventListener("click", () => {
-  automationDraftTotalPlays = 5;
+  automationDraftTotalPlays = committedAutomationValues.loopTimes;
   setAutomationEditorStep("times");
 });
 
 automationChoiceTimerBtn.addEventListener("click", () => {
-  automationDraftMinutes = 0;
-  automationDraftSeconds = 0;
+  automationDraftMinutes = committedAutomationValues.timerMinutes;
+  automationDraftSeconds = committedAutomationValues.timerSeconds;
   setAutomationEditorStep("timer");
 });
 
@@ -11029,11 +11035,11 @@ automationTimerMinutesIncreaseBtn.addEventListener("click", () => {
 // Seconds only ever land on 0/10/20/30/40/50 — always moving by exactly 10
 // from a starting point of 0 guarantees that, per this phase's spec.
 automationTimerSecondsDecreaseBtn.addEventListener("click", () => {
-  automationDraftSeconds = Math.max(0, automationDraftSeconds - 10);
+  automationDraftSeconds = Math.max(0, automationDraftSeconds - 1);
   renderAutomationEditor();
 });
 automationTimerSecondsIncreaseBtn.addEventListener("click", () => {
-  automationDraftSeconds = Math.min(50, automationDraftSeconds + 10);
+  automationDraftSeconds = Math.min(59, automationDraftSeconds + 1);
   renderAutomationEditor();
 });
 
@@ -14872,7 +14878,7 @@ renderPrimaryCuration();
 
 automationSpeedChoice.addEventListener("click", () => setAutomationEditorStep("speed"));
 automationSpeedBack.addEventListener("click", () => setAutomationEditorStep("choose"));
-automationSpeedInput.addEventListener("input", () => { automationSpeedValue.textContent = `${normalizeAutomationSpeed(automationSpeedInput.value).toFixed(1)}x`; });
+automationSpeedInput.addEventListener("input", () => { automationSpeedValue.textContent = `${normalizeAutomationSpeed(automationSpeedInput.value).toFixed(2)}x`; });
 automationSpeedApply.addEventListener("click", () => {
   const rate = normalizeAutomationSpeed(automationSpeedInput.value);
   activeSpeedRule = {rate,scope:rate < 1 && automationSpeedFolder.checked ? "folder" : "current",generation:libraryLoadGeneration};

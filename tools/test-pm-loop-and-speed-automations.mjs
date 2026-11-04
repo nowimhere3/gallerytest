@@ -28,3 +28,30 @@ assert(source.slice(source.indexOf('function exitFillMode()'),source.indexOf('fu
 installFakeIndexedDB();await savePresentationPreferences({loopTimes:2,timerMinutes:0,timerSeconds:30,playbackSpeed:.4});const prefs=await loadPreferences();assert.equal(prefs.presentation.loopTimes,2);assert.equal(prefs.presentation.timerSeconds,30);assert.equal(prefs.presentation.playbackSpeed,.4);assert(!('scope' in prefs.presentation));
 assert(source.includes('let activeSpeedRule = { rate: 1, scope: "current" }'));assert.equal(c.normalizeAutomationSpeed(1),1);
 console.log('PASS loop/speed current and folder lifecycle, composition, generation, master stop, preferences and normalization');
+
+// Actual editor entry and ended callback: configuring a short video is protected.
+const clickNode=()=>({addEventListener(_,fn){this.click=fn;}});
+c.overlayAutomationBtn=clickNode();c.presentationSettings={classList:{add(){}}};c.closeGhostPopunder=()=>{};
+c.automationPanel={classList:{contains:()=>true}};c.openAutomationEditor=()=>{};c.closeAutomationEditor=()=>{};
+c.videoLoopInput.checked=false;c.syncVideoLoopControl=()=>c.applyLoopRuleToCurrentVideo();
+let from=source.indexOf('overlayAutomationBtn.addEventListener("click",');let to=source.indexOf('\n});',from)+4;
+vm.runInContext(source.slice(from,to),c);c.overlayAutomationBtn.click();assert(c.videoLoopInput.checked);assert.equal(c.activeLoopRule.type,'forever');
+let replayCount=0,ended;
+c.video={currentTime:5,addEventListener(_,fn){ended=fn;}};c.currentViewerNode=c.video;c.fillModeActive=true;c.runtime.getState=()=>({isPlaying:true});c.playViewerVideo=()=>replayCount++;
+from=source.indexOf('    video.addEventListener("ended",',source.indexOf('const loopRuleToken = armLoopRuleForCurrentVideo();'));to=source.indexOf('\n    });',from)+7;
+vm.runInContext('const loopRuleToken = loopRuleVideoToken;'+source.slice(from,to),c);
+const before=advances;ended();ended();ended();assert.equal(replayCount,3);assert.equal(advances,before);
+for(const mode of ['times','timer']){
+ const key=mode==='times'?'automationTimesApplyBtn':'automationTimerApplyBtn';c[key]=clickNode();
+ c.automationTimesFolder=c.automationTimerFolder={checked:false};c.automationDraftTotalPlays=2;c.automationDraftMinutes=0;c.automationDraftSeconds=26;c.rememberAutomationValues=()=>{};
+ from=source.indexOf(key+'.addEventListener("click",');to=source.indexOf('\n});',from)+4;vm.runInContext(source.slice(from,to),c);c[key].click();assert.equal(c.activeLoopRule.type,mode);
+}
+for(let seconds=0;seconds<60;seconds++){
+ await savePresentationPreferences({timerSeconds:seconds});assert.equal((await loadPreferences()).presentation.timerSeconds,seconds);
+}
+for(const rate of [.26,.35,.41,.42,.57,.83]){
+ assert.equal(c.normalizeAutomationSpeed(rate),rate);await savePresentationPreferences({playbackSpeed:rate});assert.equal((await loadPreferences()).presentation.playbackSpeed,rate);
+}
+assert.equal(c.normalizeAutomationSpeed(.1+.16),.26);
+await savePresentationPreferences({timerMinutes:0,timerSeconds:26});assert.equal((await loadPreferences()).presentation.timerSeconds,26);
+console.log('PASS editing loop protection, repeated ended replay, finite Apply replacement, all 60 seconds, precise saved speed');

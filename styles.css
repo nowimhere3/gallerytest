@@ -5646,3 +5646,24 @@ hr {
 
 .automation-folder-scope { display: flex; align-items: center; gap: .4rem; font-size: .8rem; flex-basis: 100%; }
 .automation-step-workflow { flex-wrap: wrap; }
+
+/* Keep value -> scope -> Apply adjacent, with secondary navigation separate. */
+.automation-panel { width: min(96vw, 620px); max-width: calc(100vw - 16px); }
+.automation-step-workflow { padding: 8px; display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; }
+.automation-work-cluster { margin-left: auto; min-width: 0; display: grid; grid-template-columns: auto minmax(120px, 170px) auto; align-items: center; gap: 10px; }
+.automation-values { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.automation-folder-scope { flex-basis: auto; min-width: 0; margin: 0; line-height: 1.25; }
+.automation-folder-scope input { flex: 0 0 auto; width: 20px; height: 20px; }
+.automation-step-workflow .automation-apply-btn { margin-left: 0; }
+.automation-step-workflow button { min-width: 40px; min-height: 40px; }
+.automation-values input[type="range"] { width: 120px; min-width: 70px; }
+#automation-speed-value { min-width: 4.5ch; font-variant-numeric: tabular-nums; }
+@media (max-width: 620px) {
+ .automation-step-workflow { align-items: flex-start; gap: 6px; }
+ .automation-work-cluster { flex: 1; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+ .automation-values { grid-column: 1 / -1; flex-wrap: wrap; justify-content: flex-end; }
+ .automation-values input[type="range"] { flex: 1; width: 100px; }
+ .automation-values label { flex-basis: 100%; font-size: .85rem; }
+ .automation-folder-scope { font-size: .75rem; }
+ .automation-step-workflow button { min-height: 44px; }
+}

@@ -2075,12 +2075,15 @@
          type's controls, replacing Step 1 in place, not appended below it). -->
     <div id="automation-panel" class="automation-panel hidden" role="group" aria-label="Loop Automations">
       <div id="automation-step-speed" class="automation-step automation-step-workflow hidden">
-        <button id="automation-speed-back" class="automation-back-btn" type="button" aria-label="Back">Back</button>
+        <button id="automation-speed-back" class="automation-back-btn" type="button" aria-label="Back">&#8249;</button>
+        <div class="automation-work-cluster"><div class="automation-values">
         <label for="automation-speed-input">Playback Speed</label>
-        <input id="automation-speed-input" type="range" min="0.1" max="1" step="0.1" value="1" />
-        <output id="automation-speed-value" for="automation-speed-input">1.0x</output>
+        <input id="automation-speed-input" type="range" min="0.10" max="1.00" step="0.01" value="1" />
+        <output id="automation-speed-value" for="automation-speed-input">1.00x</output>
+                </div>
         <label class="automation-folder-scope"><input type="checkbox" id="automation-speed-folder" /> Apply to all videos in this folder</label>
         <button id="automation-speed-apply" class="automation-chip" type="button">Apply</button>
+        </div>
       </div>
       <div id="automation-step-choose" class="automation-step">
         <button id="automation-speed-choice" class="automation-chip" type="button">Playback Speed</button>
@@ -2091,6 +2094,7 @@
  
       <div id="automation-step-times" class="automation-step automation-step-workflow hidden">
         <button id="automation-times-back-btn" class="automation-back-btn" type="button" aria-label="Back">‹</button>
+        <div class="automation-work-cluster"><div class="automation-values">
         <div class="automation-config-group">
           <span class="automation-step-label">X Times</span>
           <div class="automation-mini-stepper">
@@ -2099,20 +2103,15 @@
             <button id="automation-times-increase-btn" type="button" aria-label="Increase total plays">+</button>
           </div>
         </div>
+                </div>
         <label class="automation-folder-scope"><input type="checkbox" id="automation-times-folder" /> Apply to all videos in this folder</label>
         <button id="automation-times-apply-btn" class="automation-chip automation-apply-btn" type="button">Apply</button>
+        </div>
       </div>
  
       <div id="automation-step-timer" class="automation-step automation-step-workflow hidden">
         <button id="automation-timer-back-btn" class="automation-back-btn" type="button" aria-label="Back">‹</button>
-        <div class="automation-config-group">
-          <span class="automation-step-label">Min</span>
-          <div class="automation-mini-stepper">
-            <button id="automation-timer-minutes-decrease-btn" type="button" aria-label="Decrease minutes">−</button>
-            <span id="automation-timer-minutes-value" class="automation-mini-value">0</span>
-            <button id="automation-timer-minutes-increase-btn" type="button" aria-label="Increase minutes">+</button>
-          </div>
-        </div>
+        <div class="automation-work-cluster"><div class="automation-values">
         <div class="automation-config-group">
           <span class="automation-step-label">Sec</span>
           <div class="automation-mini-stepper">
@@ -2121,8 +2120,19 @@
             <button id="automation-timer-seconds-increase-btn" type="button" aria-label="Increase seconds">+</button>
           </div>
         </div>
+
+        <div class="automation-config-group">
+          <span class="automation-step-label">Min</span>
+          <div class="automation-mini-stepper">
+            <button id="automation-timer-minutes-decrease-btn" type="button" aria-label="Decrease minutes">−</button>
+            <span id="automation-timer-minutes-value" class="automation-mini-value">0</span>
+            <button id="automation-timer-minutes-increase-btn" type="button" aria-label="Increase minutes">+</button>
+          </div>
+        </div>
+        </div>
         <label class="automation-folder-scope"><input type="checkbox" id="automation-timer-folder" /> Apply to all videos in this folder</label>
         <button id="automation-timer-apply-btn" class="automation-chip automation-apply-btn" type="button">Apply</button>
+        </div>
       </div>
     </div>
   </div>
