@@ -360,7 +360,7 @@ async function runV3PassBody({ profileStore, dirHandle, state, deviceId, lease, 
 
   // Data files first, device.json last, read-back-and-verify, own-subtree-only
   // cleanup on success - see Transport.publishOwnReplicaVerified.
-  const publishResult = await Transport.publishOwnReplicaVerified(devicesDir, {
+  const publish = () => Transport.publishOwnReplicaVerified(devicesDir, {
     deviceId,
     // The same value the publish-skip decision above was made from - see its WHY.
     // The transport treats `label` as presentation and derives the readable
@@ -369,6 +369,9 @@ async function runV3PassBody({ profileStore, dirHandle, state, deviceId, lease, 
     label: deviceLabel,
     replica: toPublish,
   });
+  const publishResult = writerLease && typeof writerLease.runWhileHeld === "function"
+    ? await writerLease.runWhileHeld(publish)
+    : await publish();
 
   if (!publishResult.ok) {
     return {

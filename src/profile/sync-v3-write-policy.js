@@ -106,6 +106,8 @@ export function createV3WriterLease({ deviceId, locks = resolveLockManager() } =
   let held = false;
   let releaseHeld = null;
   let pending = null;
+  let publications = 0;
+  let releaseRequested = false;
 
   const lockName = deviceId ? writerLockName(deviceId) : null;
 
@@ -126,6 +128,10 @@ export function createV3WriterLease({ deviceId, locks = resolveLockManager() } =
         settleOutcome({ allowed: false, reason: WRITE_BLOCKED_LEASE_HELD_ELSEWHERE, lockName });
         return undefined; // another tab holds it; do not queue behind them
       }
+      if (releaseRequested) {
+        settleOutcome({ allowed: false, reason: WRITE_BLOCKED_LEASE_HELD_ELSEWHERE, lockName });
+        return undefined;
+      }
       held = true;
       settleOutcome({ allowed: true, reason: null, lockName });
       return new Promise((resolve) => {
@@ -137,6 +143,7 @@ export function createV3WriterLease({ deviceId, locks = resolveLockManager() } =
       () => {
         held = false;
         releaseHeld = null;
+        releaseRequested = false;
       },
       (error) => {
         held = false;
@@ -171,6 +178,7 @@ export function createV3WriterLease({ deviceId, locks = resolveLockManager() } =
       if (!locks || typeof locks.request !== "function") {
         return { allowed: false, reason: WRITE_BLOCKED_NO_WEB_LOCKS, lockName };
       }
+      if (releaseRequested) return { allowed: false, reason: WRITE_BLOCKED_LEASE_HELD_ELSEWHERE, lockName };
       if (held) return { allowed: true, reason: null, lockName };
 
       // Coalesced: two passes overlapping on one tab must not race to acquire.
@@ -192,11 +200,29 @@ export function createV3WriterLease({ deviceId, locks = resolveLockManager() } =
      *  and a user who simply switched back to V2 would keep the whole
      *  installation's writer role hostage.]
      */
+    // A logical release stops new passes immediately, but the physical lock
+    // must cover data writes, manifest commit, verification and cleanup alike.
+    async runWhileHeld(operation) {
+      if (!held || releaseRequested) throw new Error("V3 writer lease is no longer held");
+      publications += 1;
+      try { return await operation(); }
+      finally {
+        publications -= 1;
+        if (releaseRequested && publications === 0) {
+          const resolve = releaseHeld;
+          releaseHeld = null;
+          if (resolve) resolve();
+        }
+      }
+    },
     release() {
-      const resolve = releaseHeld;
-      releaseHeld = null;
+      releaseRequested = true;
       held = false;
-      if (resolve) resolve();
+      if (publications === 0) {
+        const resolve = releaseHeld;
+        releaseHeld = null;
+        if (resolve) resolve();
+      }
     },
   };
 }

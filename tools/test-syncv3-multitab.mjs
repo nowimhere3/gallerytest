@@ -453,6 +453,35 @@ await test("Two tabs cannot run own cleanup concurrently (req 7, 12)", async () 
   assertEqual(read.status, "valid", "the device directory is still a valid, complete generation");
 });
 
+
+await test("Release during publication retains physical lock through manifest and verification", async () => {
+  const origin = makeOrigin();
+  const a = await makeTab(origin), b = await makeTab(origin);
+  let reached, resume;
+  const entered = new Promise(r => reached=r), blocked = new Promise(r => resume=r);
+  let pause = true;
+  const dir = createVirtualDirectory("Handover", { onWrite: async () => {
+    if (pause) { pause=false; reached(); await blocked; }
+  }});
+  a.store.setFavorite("handover-heart.jpg", true);
+  await a.store.whenLocalWritesSettled();
+  const publishing = passFor(a,dir);
+  await entered;
+  a.lease.release();
+  const successor = await passFor(b,dir);
+  assertEqual(successor.published,false,"successor cannot write during predecessor's pending publication");
+  assert(successor.publishBlocked,"successor reports blocked lease");
+  resume();
+  assertEqual((await publishing).status,"ok","original generation verifies before physical release");
+  await settle(5);
+  const adopted = await passFor(b,dir);
+  assertEqual(adopted.status,"ok","successor can reconcile after publication settles");
+  const devices = await Transport.getDevicesDir(await Transport.getSyncV3Root(dir.handle));
+  const read = await Transport.readDeviceDirectory(devices,deviceDirectories(dir)[0]);
+  assertEqual(read.status,"valid","handover leaves hash-verified generation");
+  assert(Object.values(read.replica.profiles).some(p=>p.items["handover-heart.jpg"]?.favorite?.v?.on),"heart survives handover without re-hearting");
+});
+
 // ---- Live engine behaviour (16, 17, 18) ------------------------------------
 
 await test("On a reader tab, Profile edits and syncNow do not publish (req 16, 17, 18)", async () => {
