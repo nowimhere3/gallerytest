@@ -5643,3 +5643,6 @@ hr {
     animation: none;
   }
 }
+
+.automation-folder-scope { display: flex; align-items: center; gap: .4rem; font-size: .8rem; flex-basis: 100%; }
+.automation-step-workflow { flex-wrap: wrap; }

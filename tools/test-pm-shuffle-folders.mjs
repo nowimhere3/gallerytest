@@ -422,7 +422,7 @@ console.log("\n12. ⚡'s protected two-state contract is unchanged");
   const source = listener ? listener[0] : "";
 
   // Priority order preserved verbatim: active → stop; otherwise → toggle.
-  assert(/if \(videoLoopInput\.checked\)/.test(source), "⚡ still branches on videoLoopInput.checked first");
+  assert(/if \(videoLoopInput\.checked \|\| activeSpeedRule\.rate < 1\)/.test(source), "⚡ still branches on videoLoopInput.checked first");
   assert(/stopAllPresentationAutomations\(\);/.test(source), "an active automation is still stopped immediately by one click");
   assert(/toggleAutomationsTray\(\);/.test(source), "the idle case still toggles the shelf");
   const stopAt = source.indexOf("stopAllPresentationAutomations");
@@ -433,7 +433,7 @@ console.log("\n12. ⚡'s protected two-state contract is unchanged");
   // The indicator's single source of truth is untouched.
   const indicator = functionCode(mainJs, "syncAutomationsActiveIndicator");
   assert(Boolean(indicator), "syncAutomationsActiveIndicator() located");
-  assert(/const isActive = videoLoopInput\.checked;/.test(indicator), "⚡'s active state is still derived from videoLoopInput.checked alone");
+  assert(/const isActive = videoLoopInput\.checked \|\| activeSpeedRule\.rate < 1;/.test(indicator), "⚡'s active state is still derived from videoLoopInput.checked alone");
   assert(!indicator.includes("huffle"), "the indicator does not consider shuffle state");
 
   // The one tray-opening path stayed one path.

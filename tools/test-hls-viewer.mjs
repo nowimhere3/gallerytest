@@ -140,6 +140,8 @@ function harness({ loadHls } = {}) {
   const context = {
     console: { info() {}, log() {}, warn() {} }, performance, window: testWindow,
     document: { createElement(tag) { const node = new FakeNode(tag); nodes.push(node); return node; } },
+    activeSpeedRule: {rate:1,scope:"current"}, libraryLoadGeneration:0,
+    stopAllPresentationAutomations() {}, syncAutomationsActiveIndicator() {},
     runtime, hlsPlaybackAdapter, tsPlaybackAdapter, extractRemoteUrls,
     applyPrimaryForCurrentSource: async () => {},
     remoteProvider: new RemoteUrlProvider(), provider: disposable(), fsaProvider: disposable(),
@@ -173,6 +175,7 @@ function harness({ loadHls } = {}) {
   };
   vm.createContext(context);
   for (const name of [
+    "normalizeAutomationSpeed", "applyAutomationSpeed", "isFolderScopedLoopRule",
     "isTsItem", "isHlsItem", "showHlsStatus", "playViewerVideo", "clearViewerNode",
     "buildViewer", "mountThumbMedia", "togglePlay", "clearLoopRuleTimer",
     "applyLoopRuleToCurrentVideo", "armLoopRuleForCurrentVideo", "shouldLoopRuleRestartVideo",

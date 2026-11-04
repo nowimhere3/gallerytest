@@ -614,6 +614,15 @@ const overlayShuffleFoldersBtn = document.getElementById("overlay-shuffle-folder
 const automationPanel = document.getElementById("automation-panel");
 const automationStepChoose = document.getElementById("automation-step-choose");
 const automationStepTimes = document.getElementById("automation-step-times");
+const automationTimesFolder = document.getElementById("automation-times-folder");
+const automationTimerFolder = document.getElementById("automation-timer-folder");
+const automationSpeedFolder = document.getElementById("automation-speed-folder");
+const automationStepSpeed = document.getElementById("automation-step-speed");
+const automationSpeedInput = document.getElementById("automation-speed-input");
+const automationSpeedValue = document.getElementById("automation-speed-value");
+const automationSpeedChoice = document.getElementById("automation-speed-choice");
+const automationSpeedBack = document.getElementById("automation-speed-back");
+const automationSpeedApply = document.getElementById("automation-speed-apply");
 const automationStepTimer = document.getElementById("automation-step-timer");
 
 const automationChoiceForeverBtn = document.getElementById("automation-choice-forever-btn");
@@ -5403,6 +5412,7 @@ async function loadRemoteSession(text, { name, record = null, sourceKind = "cass
   currentSessionIsUrlBacked = true;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
+  stopAllPresentationAutomations();
   clearReverseCurationSuggestion();
   clearDeviceAwareMediaQuestion();
   lastMobileLoadFailed = false;
@@ -5502,6 +5512,7 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
+  stopAllPresentationAutomations();
   clearReverseCurationSuggestion();
   clearDeviceAwareMediaQuestion();
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] A fresh attempt
@@ -5756,6 +5767,7 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
+  stopAllPresentationAutomations();
   clearReverseCurationSuggestion();
   clearDeviceAwareMediaQuestion();
   // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Same reset as
@@ -7905,8 +7917,27 @@ function syncVideoLoopControl() {
 // moment the user returns to a video) rather than a bug, and changing it
 // would mean altering existing Loop/navigation engine behavior — out of
 // scope for this pass; see the STAGE 6 report for this exact note.
+// Two independent session-only slots; folder scope is bound to the current load.
+let activeSpeedRule = { rate: 1, scope: "current" };
+let committedAutomationValues = { loopTimes: 5, timerMinutes: 0, timerSeconds: 0, playbackSpeed: 1 };
+function normalizeAutomationSpeed(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(Math.max(0.1, Math.min(1, number)) * 10) / 10 : 1;
+}
+function isFolderScopedLoopRule() {
+  return activeLoopRule.scope === "folder" && activeLoopRule.generation === libraryLoadGeneration;
+}
+function applyAutomationSpeed(video) {
+  if (!video || video.tagName !== "VIDEO") return;
+  if (activeSpeedRule.scope === "folder" && activeSpeedRule.generation !== libraryLoadGeneration) activeSpeedRule = {rate:1,scope:"current"};
+  video.defaultPlaybackRate = video.playbackRate = normalizeAutomationSpeed(activeSpeedRule.rate);
+}
+function rememberAutomationValues(partial) {
+  Object.assign(committedAutomationValues, partial);
+  savePresentationPreferences(partial);
+}
 function syncAutomationsActiveIndicator() {
-  const isActive = videoLoopInput.checked;
+  const isActive = videoLoopInput.checked || activeSpeedRule.rate < 1;
   overlayAutomationsMenuBtn.classList.toggle("is-automation-active", isActive);
   const label = isActive ? "Stop automations" : "Automations";
   overlayAutomationsMenuBtn.setAttribute("aria-label", label);
@@ -7927,6 +7958,9 @@ function syncAutomationsActiveIndicator() {
 // Deliberately does NOT call runtime.notifyVideoEnded() or navigate —
 // stopping an automation must not itself advance or move media.
 function stopAllPresentationAutomations() {
+  loopRuleVideoToken += 1;
+  activeSpeedRule = {rate:1,scope:"current"};
+  applyAutomationSpeed(currentViewerNode);
   videoLoopInput.checked = false;
   syncVideoLoopControl();
 }
@@ -8001,6 +8035,11 @@ function completeFiniteLoopAutomationAndAdvance() {
   // beyond what clearing the timer/rule alone would guard against.
   loopRuleVideoToken += 1;
 
+  if (isFolderScopedLoopRule()) {
+    loopRuleCompletedPlays = 0;
+    runtime.notifyVideoEnded();
+    return;
+  }
   activeLoopRule = { type: "forever" };
   loopRuleCompletedPlays = 0;
 
@@ -8059,6 +8098,7 @@ function invalidateActiveFiniteAutomation() {
 //    counting/timer/completion/handoff lifecycle is untouched by this
 //    function.
 function handleManualNavigationLoopReset() {
+  if (isFolderScopedLoopRule()) return;
   if (videoLoopInput.checked && activeLoopRule.type === "forever") {
     // [DEBUG-8.4-MANUAL-NAV-RESET] Ordinary infinite Loop / Forever
     // automation is cancelled here on manual navigation.
@@ -8089,6 +8129,7 @@ let automationDraftMinutes = 0;
 let automationDraftSeconds = 0;
 
 function renderAutomationEditor() {
+  automationStepSpeed.classList.toggle("hidden", automationEditorStep !== "speed");
   automationStepChoose.classList.toggle("hidden", automationEditorStep !== "choose");
   automationStepTimes.classList.toggle("hidden", automationEditorStep !== "times");
   automationStepTimer.classList.toggle("hidden", automationEditorStep !== "timer");
@@ -8099,6 +8140,12 @@ function renderAutomationEditor() {
 }
 
 function openAutomationEditor() {
+  automationTimesFolder.checked = automationTimerFolder.checked = automationSpeedFolder.checked = false;
+  automationDraftTotalPlays = committedAutomationValues.loopTimes;
+  automationDraftMinutes = committedAutomationValues.timerMinutes;
+  automationDraftSeconds = committedAutomationValues.timerSeconds;
+  automationSpeedInput.value = committedAutomationValues.playbackSpeed;
+  automationSpeedValue.textContent = `${Number(automationSpeedInput.value).toFixed(1)}x`;
   automationEditorStep = "choose";
   renderAutomationEditor();
   automationPanel.classList.remove("hidden");
@@ -8112,9 +8159,9 @@ function openAutomationEditor() {
 function closeAutomationEditor() {
   automationPanel.classList.add("hidden");
   automationEditorStep = "choose";
-  automationDraftTotalPlays = 5;
-  automationDraftMinutes = 0;
-  automationDraftSeconds = 0;
+  automationDraftTotalPlays = committedAutomationValues.loopTimes;
+  automationDraftMinutes = committedAutomationValues.timerMinutes;
+  automationDraftSeconds = committedAutomationValues.timerSeconds;
   renderAutomationEditor();
 }
 
@@ -8357,7 +8404,7 @@ function exitFillMode() {
   overlayAutomationsMenuBtn.setAttribute("aria-expanded", "false");
   // "Ending Presentation clears the active Loop Rule. Nothing is
   // persisted." — Loop Rules are session-local by design (Phase 5).
-  resetLoopRuleToDefault();
+  stopAllPresentationAutomations();
 }
 
 // Renamed on screen to "Toolbar Opacity" — this function/id/storage field
@@ -8485,6 +8532,7 @@ function showHlsStatus(video, message) {
 }
 
 function playViewerVideo(video) {
+  applyAutomationSpeed(video);
   if (currentViewerNode !== video) return;
   // Source readiness belongs to this node; playback intent stays in Runtime.
   // Re-emits while the lazy module loads must not play an empty/stale source.
@@ -8499,6 +8547,12 @@ function playViewerVideo(video) {
 }
 
 function clearViewerNode() {
+  clearLoopRuleTimer();
+  loopRuleVideoToken += 1;
+  loopRuleCompletedPlays = 0;
+  if (activeSpeedRule.scope !== "folder") activeSpeedRule = {rate:1,scope:"current"};
+  syncAutomationsActiveIndicator();
+
   // Also cancels pending HLS module loads and destroys their network/MSE work.
   hlsPlaybackAdapter.detach();
   // Unconditional and cheap even when the outgoing item wasn't .ts — see
@@ -9145,6 +9199,8 @@ function buildViewer(state) {
     // A fresh video is on screen — arm whatever the active Loop Rule
     // needs for it (e.g. start an "Until Timer" countdown), and capture
     // the token this listener should keep matching against.
+    applyAutomationSpeed(video);
+    video.addEventListener("loadedmetadata", () => applyAutomationSpeed(video));
     const loopRuleToken = armLoopRuleForCurrentVideo();
 
     video.addEventListener("ended", () => {
@@ -10715,6 +10771,7 @@ nowPlayingReturnBtn.addEventListener("click", (event) => {
 clearBtn.addEventListener("click", () => {
   currentSessionIsUrlBacked = false;
   libraryLoadGeneration += 1;
+  stopAllPresentationAutomations();
   bumpGalleryGeneration();
   runtime.clear();
   provider.dispose();
@@ -10886,7 +10943,7 @@ ghostToggleBtn.addEventListener("click", () => {
 // automation always wins over the open/close toggle, per the brief's own
 // "IF automation active: stop... ELSE: toggle menu" state machine.
 overlayAutomationsMenuBtn.addEventListener("click", () => {
-  if (videoLoopInput.checked) {
+  if (videoLoopInput.checked || activeSpeedRule.rate < 1) {
     stopAllPresentationAutomations();
     closeAutomationsTray();
     return;
@@ -10908,28 +10965,9 @@ overlayAutomationBtn.addEventListener("click", () => {
   presentationSettings.classList.add("hidden");
   closeGhostPopunder();
 
-  // Phase 5.2: the button is never gated on Loop already being on. If
-  // Loop is off, one click both turns it on — through the exact same
-  // syncVideoLoopControl() the 🔁 checkbox's own change listener calls, so
-  // there's no second, special-cased way Loop ends up on — and opens the
-  // editor straight away, instead of making the user enable Loop first.
-  if (!videoLoopInput.checked) {
-    videoLoopInput.checked = true;
-    syncVideoLoopControl();
-    openAutomationEditor();
-    return;
-  }
-
-  // [DEBUG-8.4-AUTOMATION-TOGGLE] 🤖 is now a genuine ON/OFF control, not
-  // just a panel-visibility switch: while Loop is on, ANY click here turns
-  // it back off — cancelling the active automation, clearing its
-  // timer/progress, and closing the panel — via the exact same
-  // syncVideoLoopControl() path the 🔁 checkbox itself uses. Does not
-  // navigate media. (Previously this branch only toggled the panel's
-  // hidden state, leaving Loop running with no way to turn it off from 🤖
-  // itself — that one-directional behavior is the bug this replaces.)
-  videoLoopInput.checked = false;
-  syncVideoLoopControl();
+  // Editing either slot must not activate or cancel the other slot.
+  if (automationPanel.classList.contains("hidden")) openAutomationEditor();
+  else closeAutomationEditor();
 });
 
 // -- Step 1: choose the automation type --
@@ -10944,7 +10982,7 @@ automationChoiceForeverBtn.addEventListener("click", () => {
   // nested chooser, per "the controls have completed their job."
   activeLoopRule = { type: "forever" };
   applyLoopRuleToCurrentVideo();
-  closeAutomationsTray();
+  closeAutomationEditor(); // Keep the tray accessible to configure the independent slot.
 });
 
 automationChoiceTimesBtn.addEventListener("click", () => {
@@ -11013,15 +11051,19 @@ automationTimerSecondsIncreaseBtn.addEventListener("click", () => {
 // level higher.
 
 automationTimesApplyBtn.addEventListener("click", () => {
-  activeLoopRule = { type: "times", totalPlays: automationDraftTotalPlays };
+  activeLoopRule = { type: "times", totalPlays: automationDraftTotalPlays, scope: automationTimesFolder.checked ? "folder" : "current", generation: libraryLoadGeneration };
+  videoLoopInput.checked = true;
+  rememberAutomationValues({loopTimes:automationDraftTotalPlays});
   applyLoopRuleToCurrentVideo();
-  closeAutomationsTray();
+  closeAutomationEditor(); // Keep the tray accessible to configure the independent slot.
 });
 
 automationTimerApplyBtn.addEventListener("click", () => {
-  activeLoopRule = { type: "timer", minutes: automationDraftMinutes, seconds: automationDraftSeconds };
+  activeLoopRule = { type: "timer", minutes: automationDraftMinutes, seconds: automationDraftSeconds, scope: automationTimerFolder.checked ? "folder" : "current", generation: libraryLoadGeneration };
+  videoLoopInput.checked = true;
+  rememberAutomationValues({timerMinutes:automationDraftMinutes,timerSeconds:automationDraftSeconds});
   applyLoopRuleToCurrentVideo();
-  closeAutomationsTray();
+  closeAutomationEditor(); // Keep the tray accessible to configure the independent slot.
 });
 
 ghostOpacityInput.addEventListener("input", () => {
@@ -13504,6 +13546,7 @@ renderProfileSync();
 // must always show the built-in fallback, not that old number.
 function applyLoadedPreferences(preferences) {
   const { playback, presentation, microArcade, startup } = preferences;
+  Object.assign(committedAutomationValues, {loopTimes:presentation.loopTimes ?? 5,timerMinutes:presentation.timerMinutes ?? 0,timerSeconds:presentation.timerSeconds ?? 0,playbackSpeed:presentation.playbackSpeed ?? 1});
 
   intervalInput.value = String(playback.intervalSeconds);
   shuffleInput.checked = playback.shuffle;
@@ -14826,3 +14869,15 @@ primarySave.addEventListener("click", async () => {
 });
 profile.subscribe(renderPrimaryCuration);
 renderPrimaryCuration();
+
+automationSpeedChoice.addEventListener("click", () => setAutomationEditorStep("speed"));
+automationSpeedBack.addEventListener("click", () => setAutomationEditorStep("choose"));
+automationSpeedInput.addEventListener("input", () => { automationSpeedValue.textContent = `${normalizeAutomationSpeed(automationSpeedInput.value).toFixed(1)}x`; });
+automationSpeedApply.addEventListener("click", () => {
+  const rate = normalizeAutomationSpeed(automationSpeedInput.value);
+  activeSpeedRule = {rate,scope:rate < 1 && automationSpeedFolder.checked ? "folder" : "current",generation:libraryLoadGeneration};
+  rememberAutomationValues({playbackSpeed:rate});
+  applyAutomationSpeed(currentViewerNode);
+  syncAutomationsActiveIndicator();
+  closeAutomationEditor(); // Keep the tray accessible to configure the independent slot.
+});

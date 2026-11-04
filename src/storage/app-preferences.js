@@ -336,6 +336,10 @@ function normalizeRecord(raw) {
       autoplayOnFill: bool(playbackSource.autoplayOnFill, DEFAULT_PLAYBACK.autoplayOnFill),
     },
     presentation: {
+      loopTimes: Math.max(1, Math.min(999, Math.round(Number(presentationSource.loopTimes) || 5))),
+      timerMinutes: Math.max(0, Math.min(999, Math.round(Number(presentationSource.timerMinutes) || 0))),
+      timerSeconds: Math.max(0, Math.min(50, Math.round((Number(presentationSource.timerSeconds) || 0) / 10) * 10)),
+      playbackSpeed: Math.round(Math.max(0.1, Math.min(1, Number(presentationSource.playbackSpeed) || 1)) * 10) / 10,
       // Displayed on screen as "Toolbar Opacity" — see DEFAULT_PRESENTATION's
       // own comment above for why the storage field names stay "ghost".
       rememberGhostOpacity: bool(presentationSource.rememberGhostOpacity, DEFAULT_PRESENTATION.rememberGhostOpacity),
