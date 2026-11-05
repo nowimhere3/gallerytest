@@ -80,7 +80,7 @@ assert(resolve({
 
 const mainSource = await readFile(new URL("../src/main.js", import.meta.url), "utf8");
 const scopeResolutionAt = mainSource.indexOf("const scope = await resolveScopeForRoot");
-const inheritanceAt = mainSource.indexOf("await applyProvenParentCurationForLoad({ rootId, scope })");
+const inheritanceAt = mainSource.indexOf("await applyProvenParentCurationForLoad({ rootId, scope, loadTimePolicyDeadlineAt })");
 const projectionAt = mainSource.indexOf("const index = await buildAliasIndexForLoad(request)", inheritanceAt);
 assert(scopeResolutionAt >= 0 && scopeResolutionAt < inheritanceAt,
   "load integration consults N3 only after MEDIA-ID has resolved durable scope evidence");

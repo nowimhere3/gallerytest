@@ -1,3 +1,4 @@
+import { runIntakeMetadata } from "./runtime/intake-metadata.js";
 import { primaryFallbackTarget } from "./profile/primary-curation-policy.js";
 import { publishExplicitLocalBinding } from "./profile/explicit-binding-publication.js";
 import { publishLibraryIdentityForHeart } from "./profile/heart-time-identity.js";
@@ -1265,13 +1266,15 @@ function currentSourceHasChoice() {
   const record = activeLibraryRecord;
   if (!record) return false;
   if (record.libraryId && Object.prototype.hasOwnProperty.call(profile.getAssociations(), record.libraryId)) return true;
-  return Boolean(record.profileId);
+  return Boolean(record.profileId || record.intakeMetadataUnavailable);
 }
-async function applyPrimaryForCurrentSource() {
+async function applyPrimaryForCurrentSource({ isCurrent } = {}) {
   const target = primaryFallbackTarget({ primaryProfileId: profile.getPrimaryProfileId(),
     hasSourceChoice: currentSourceHasChoice(),
     safetyRefused: currentSourceKind === "legacy" && legacyHasDurableIdentity && !activeLibraryRecord && !pendingLegacySignature });
-  if (target && target !== profile.getProfileId()) await profile.switchProfile(target);
+  if (target && target !== profile.getProfileId() && (!isCurrent || isCurrent())) {
+    await profile.switchProfile(target, isCurrent ? { isCurrent } : undefined);
+  }
 }
 async function activateExplicitSourceChoice(target) {
   // Explicit Human Save activates its chosen destination even when re-saving S3.
@@ -4787,7 +4790,10 @@ async function rebuildProjectionFromStorage(reason) {
   }
 }
 
-async function applyProvenParentCurationForLoad({ rootId, scope }) {
+async function applyProvenParentCurationForLoad({ rootId, scope, loadTimePolicyDeadlineAt = Number.POSITIVE_INFINITY }) {
+  const generation = libraryLoadGeneration;
+  const isCurrent = () => generation === libraryLoadGeneration && Date.now() <= loadTimePolicyDeadlineAt
+    && activeLibraryRecord?.id === rootId;
   if (!rootId || !scope || scope.rootId !== rootId) return null;
   if (!activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
 
@@ -4814,15 +4820,15 @@ async function applyProvenParentCurationForLoad({ rootId, scope }) {
     const refreshed = await Promise.all(libraries.map((record) => getLibraryById(record.id)));
     libraries.splice(0, libraries.length, ...refreshed.filter(Boolean));
     candidate = resolveCandidate();
-    if (!candidate || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
+    if (!candidate || !isCurrent()) return null;
 
     const updated = await associateThroughSyncV2(rootId, candidate.profileId);
-    if (!updated || !activeLibraryRecord || activeLibraryRecord.id !== rootId) return null;
+    if (!updated || !isCurrent()) return null;
     activeLibraryRecord = updated;
     establishAmbientProfileContext(activeLibraryRecord);
 
     if (profile.getProfileId() !== candidate.profileId) {
-      const switched = await profile.switchProfile(candidate.profileId);
+      const switched = await profile.switchProfile(candidate.profileId, { isCurrent });
       if (!switched && profile.getProfileId() !== candidate.profileId) return null;
     }
 
@@ -5098,7 +5104,7 @@ async function prepareMediaIdentityForLoad({
   // association, so this path becomes unreachable on every future load unless
   // the customer explicitly changes it.
   const inheritedCuration = sourceKind === "fsa" && Date.now() <= loadTimePolicyDeadlineAt
-    ? await applyProvenParentCurationForLoad({ rootId, scope })
+    ? await applyProvenParentCurationForLoad({ rootId, scope, loadTimePolicyDeadlineAt })
     : null;
 
   // [NORTH-STAR / N4 / REVERSE-SUGGESTION]
@@ -5406,48 +5412,61 @@ function finishLoadingItems(items) {
   reloadRuntime({ randomizeInitial: shouldRandomizeInitialSelection() });
 }
 
+function createIntakeMetadataRunner(loadToken) {
+  const run = (operation) => runIntakeMetadata(operation, {
+    isCurrent: () => loadToken === libraryLoadGeneration,
+    onUnavailable: (error) => {
+      run.warning = `Curation setup could not finish. Using ${profile.getProfileName()} for now. Media loading can continue.`;
+      console.warn("[MEDIA INTAKE] Optional metadata unavailable.", error);
+    },
+  });
+  run.warning = "";
+  return run;
+}
+
 async function loadRemoteSession(text, { name, record = null, sourceKind = "cassette", curationId = null } = {}) {
   if (isLoadingFiles) return;
 
   currentSessionIsUrlBacked = true;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
-  stopAllPresentationAutomations();
-  clearReverseCurationSuggestion();
-  clearDeviceAwareMediaQuestion();
-  lastMobileLoadFailed = false;
-  syncMobileLoadState();
-  bumpGalleryGeneration();
-  runtime.clear();
-  clearViewerNode();
-  exitFillMode();
-  recentHideUndo = null;
-  syncUndoHideButton();
-
-  provider.dispose();
-  fsaProvider.dispose();
-  activeLibraryRecord = null;
-  activeCassetteRecord = record;
-  activeCassetteCurationId = record ? curationId : null;
-  sessionExplicitNoCuration = false;
-  associationWriteSuppression.setLoadedLibrary(null);
-  ambientProfileObserver.clearContext();
-  renderAmbientProfileOffer();
-  activeLibraryDisplayName = name || record?.name || (sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk");
-  currentSourceKind = sourceKind;
-  currentFolderPermissionState = "granted";
-  legacySessionAssociated = false;
-  legacyHasDurableIdentity = false;
-  pendingLegacySignature = null;
-  pendingLibraryAssociationIntent = false;
-  syncAssociateButtonVisibility();
-  fsaStatusText.textContent = "";
-  resetMediaRenderOutcomes();
-
-  const remoteSourceLabel = sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk";
-  remoteStatusText.textContent = `Loading ${remoteSourceLabel}…`;
-
+  const metadataForLoad = createIntakeMetadataRunner(loadToken);
   try {
+    stopAllPresentationAutomations();
+    clearReverseCurationSuggestion();
+    clearDeviceAwareMediaQuestion();
+    lastMobileLoadFailed = false;
+    syncMobileLoadState();
+    bumpGalleryGeneration();
+    runtime.clear();
+    clearViewerNode();
+    exitFillMode();
+    recentHideUndo = null;
+    syncUndoHideButton();
+
+    provider.dispose();
+    fsaProvider.dispose();
+    activeLibraryRecord = null;
+    activeCassetteRecord = record;
+    activeCassetteCurationId = record ? curationId : null;
+    sessionExplicitNoCuration = false;
+    associationWriteSuppression.setLoadedLibrary(null);
+    ambientProfileObserver.clearContext();
+    renderAmbientProfileOffer();
+    activeLibraryDisplayName = name || record?.name || (sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk");
+    currentSourceKind = sourceKind;
+    currentFolderPermissionState = "granted";
+    legacySessionAssociated = false;
+    legacyHasDurableIdentity = false;
+    pendingLegacySignature = null;
+    pendingLibraryAssociationIntent = false;
+    syncAssociateButtonVisibility();
+    fsaStatusText.textContent = "";
+    resetMediaRenderOutcomes();
+
+    const remoteSourceLabel = sourceKind === "cassette-folder" ? "Floppy Folder" : "Floppy Disk";
+    remoteStatusText.textContent = `Loading ${remoteSourceLabel}…`;
+
     const parseStartedAt = performance.now();
     const parsed = extractRemoteUrls(text);
     const parseMs = performance.now() - parseStartedAt;
@@ -5477,8 +5496,8 @@ async function loadRemoteSession(text, { name, record = null, sourceKind = "cass
     });
 
     if (activeCassetteCurationId && getProfileNameById(activeCassetteCurationId)) {
-      await profile.switchProfile(activeCassetteCurationId);
-    } else if (activeCassetteCurationId === null) await applyPrimaryForCurrentSource();
+      await metadataForLoad((current) => profile.switchProfile(activeCassetteCurationId, { isCurrent: current }));
+    } else if (activeCassetteCurationId === null) await metadataForLoad((current) => applyPrimaryForCurrentSource({ isCurrent: current }));
     if (loadToken !== libraryLoadGeneration) return;
     const firstPaintStartedAt = performance.now();
     finishLoadingItems(result.items);
@@ -5500,8 +5519,13 @@ async function loadRemoteSession(text, { name, record = null, sourceKind = "cass
       message: error instanceof Error ? error.message : "Unknown error",
     });
   } finally {
-    isLoadingFiles = false;
-    syncMobileLoadState();
+    if (loadToken === libraryLoadGeneration) {
+      isLoadingFiles = false;
+      if (loadToken === libraryLoadGeneration && metadataForLoad.warning) {
+        fsaStatusText.textContent = [fsaStatusText.textContent, metadataForLoad.warning].filter(Boolean).join(" ");
+      }
+      syncMobileLoadState();
+    }
   }
 }
 
@@ -5512,72 +5536,73 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
   currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
-  stopAllPresentationAutomations();
-  clearReverseCurationSuggestion();
-  clearDeviceAwareMediaQuestion();
-  // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] A fresh attempt
-  // clears any failure the PREVIOUS attempt left showing.
-  lastMobileLoadFailed = false;
-  syncMobileLoadState();
-
-  // Clear immediately so stale thumbnails / soon-to-be-revoked object URLs
-  // from a previous selection aren't left on screen while the new batch
-  // loads in the background.
-  bumpGalleryGeneration();
-  runtime.clear();
-  clearViewerNode();
-  exitFillMode();
-  setLoadingState(true, total);
-  // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] Mirrors the exact
-  // "0 / total" setLoadingState() just wrote into #status-text, so the
-  // takeover shows correct numbers from its very first frame rather than
-  // sitting blank until the first batch completes.
-  renderMobileLoadProgress("Loading media…", 0, total);
-  // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] A new media load is
-  // exactly the kind of major context change that makes any waypoint
-  // ambiguous — clearing it here is safer than pretending Undo (or its
-  // recovery window) still means anything against a different media set.
-  recentHideUndo = null;
-  syncUndoHideButton();
-  // [FSA] Switching TO the local-picker path — release whatever the FSA
-  // path had loaded, since only one media set is ever active at once.
-  fsaProvider.dispose();
-  remoteProvider.dispose();
-  remoteStatusText.textContent = "";
-  resetMediaRenderOutcomes();
-  activeLibraryRecord = null;
-  activeCassetteRecord = null;
-  activeCassetteCurationId = null;
-  sessionExplicitNoCuration = false;
-  associationWriteSuppression.setLoadedLibrary(null);
-  ambientProfileObserver.clearContext();
-  renderAmbientProfileOffer();
-  activeLibraryDisplayName = rootName || (isFolderPick ? "Loaded Media Folder" : "Selected files");
-  currentSourceKind = "legacy";
-  currentFolderPermissionState = "granted";
-  // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
-  // fingerprint) participates in durable identity — "Choose Files" keeps
-  // the old ephemeral, ununrecognizable-on-reload behavior unchanged (see
-  // association-state adapter). Recomputed on every load rather than
-  // trusted from a previous one.
-  legacyHasDurableIdentity = Boolean(isFolderPick && rootName);
-  legacySessionAssociated = false;
-  pendingLegacySignature = null;
-  // [LIBRARY-PROFILE-UX / Phase 8.5] A pending "navigate to Profile to
-  // associate" intent belongs to whatever was loaded when it was set —
-  // never carry it forward onto a new, unrelated load that's only just
-  // starting now.
-  pendingLibraryAssociationIntent = false;
-  fsaAssociateBtn.classList.add("hidden");
-  fsaAssociateBtn.disabled = true;
-
-  // [Phase 8.4-3] Mirrors loadFromFsaHandle's own recognizedProfileName —
-  // only set when a legacy re-pick actually causes a Profile switch, so
-  // the note below appears exactly for that case.
-  let recognizedProfileName = null;
-  let deferredLoadTimeOffer = null;
-
+  const metadataForLoad = createIntakeMetadataRunner(loadToken);
   try {
+    stopAllPresentationAutomations();
+    clearReverseCurationSuggestion();
+    clearDeviceAwareMediaQuestion();
+    // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] A fresh attempt
+    // clears any failure the PREVIOUS attempt left showing.
+    lastMobileLoadFailed = false;
+    syncMobileLoadState();
+
+    // Clear immediately so stale thumbnails / soon-to-be-revoked object URLs
+    // from a previous selection aren't left on screen while the new batch
+    // loads in the background.
+    bumpGalleryGeneration();
+    runtime.clear();
+    clearViewerNode();
+    exitFillMode();
+    setLoadingState(true, total);
+    // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] Mirrors the exact
+    // "0 / total" setLoadingState() just wrote into #status-text, so the
+    // takeover shows correct numbers from its very first frame rather than
+    // sitting blank until the first batch completes.
+    renderMobileLoadProgress("Loading media…", 0, total);
+    // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] A new media load is
+    // exactly the kind of major context change that makes any waypoint
+    // ambiguous — clearing it here is safer than pretending Undo (or its
+    // recovery window) still means anything against a different media set.
+    recentHideUndo = null;
+    syncUndoHideButton();
+    // [FSA] Switching TO the local-picker path — release whatever the FSA
+    // path had loaded, since only one media set is ever active at once.
+    fsaProvider.dispose();
+    remoteProvider.dispose();
+    remoteStatusText.textContent = "";
+    resetMediaRenderOutcomes();
+    activeLibraryRecord = null;
+    activeCassetteRecord = null;
+    activeCassetteCurationId = null;
+    sessionExplicitNoCuration = false;
+    associationWriteSuppression.setLoadedLibrary(null);
+    ambientProfileObserver.clearContext();
+    renderAmbientProfileOffer();
+    activeLibraryDisplayName = rootName || (isFolderPick ? "Loaded Media Folder" : "Selected files");
+    currentSourceKind = "legacy";
+    currentFolderPermissionState = "granted";
+    // [Phase 8.4-3] Only a real folder pick (webkitdirectory, has a root to
+    // fingerprint) participates in durable identity — "Choose Files" keeps
+    // the old ephemeral, ununrecognizable-on-reload behavior unchanged (see
+    // association-state adapter). Recomputed on every load rather than
+    // trusted from a previous one.
+    legacyHasDurableIdentity = Boolean(isFolderPick && rootName);
+    legacySessionAssociated = false;
+    pendingLegacySignature = null;
+    // [LIBRARY-PROFILE-UX / Phase 8.5] A pending "navigate to Profile to
+    // associate" intent belongs to whatever was loaded when it was set —
+    // never carry it forward onto a new, unrelated load that's only just
+    // starting now.
+    pendingLibraryAssociationIntent = false;
+    fsaAssociateBtn.classList.add("hidden");
+    fsaAssociateBtn.disabled = true;
+
+    // [Phase 8.4-3] Mirrors loadFromFsaHandle's own recognizedProfileName —
+    // only set when a legacy re-pick actually causes a Profile switch, so
+    // the note below appears exactly for that case.
+    let recognizedProfileName = null;
+    let deferredLoadTimeOffer = null;
+
     const items = await provider.loadFromFileList(fileList, {
       batchSize: BATCH_SIZE,
       onProgress: (loaded, totalCount) => {
@@ -5591,82 +5616,89 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     // exactly, so a recognized folder's Profile is active by the time
     // items get stamped, not after.
     if (legacyHasDurableIdentity) {
-      try {
-        const signature = await computeLegacySignature(items, rootName);
-        const storedRecords = await listLegacyLibraries();
-        logLegacyIdentity("signature generated", {
-          rootNameHash: signature.rootNameHash,
-          itemCount: signature.itemCount,
-          sampleSize: signature.sampleEntries.length,
-        });
-        logLegacyIdentity("candidates checked", { count: storedRecords.length });
+      await metadataForLoad(async (metadataCurrent) => {
+        try {
+          const signature = await computeLegacySignature(items, rootName);
+          if (!metadataCurrent()) return;
+          const storedRecords = await listLegacyLibraries();
+          if (!metadataCurrent()) return;
+          logLegacyIdentity("signature generated", {
+            rootNameHash: signature.rootNameHash,
+            itemCount: signature.itemCount,
+            sampleSize: signature.sampleEntries.length,
+          });
+          logLegacyIdentity("candidates checked", { count: storedRecords.length });
 
-        const matchResult = matchLegacySignature(signature, storedRecords);
+          const matchResult = matchLegacySignature(signature, storedRecords);
 
-        if (matchResult.status === "match") {
-          logLegacyIdentity("match found", { matchedId: matchResult.record.id, score: Number(matchResult.score.toFixed(2)) });
-          // Refresh the stored signature to what was just seen (drift
-          // tracking — see updateLegacyLibrarySignature's own comment),
-          // preserving id/profileId.
-          const refreshed = await updateLegacyLibrarySignature(matchResult.record.id, signature);
-          activeLibraryRecord = refreshed || matchResult.record;
-          associationWriteSuppression.setLoadedLibrary(activeLibraryRecord.id);
-          establishAmbientProfileContext(activeLibraryRecord);
-          pendingLegacySignature = null;
+          if (matchResult.status === "match") {
+            logLegacyIdentity("match found", { matchedId: matchResult.record.id, score: Number(matchResult.score.toFixed(2)) });
+            // Refresh the stored signature to what was just seen (drift
+            // tracking — see updateLegacyLibrarySignature's own comment),
+            // preserving id/profileId.
+            const refreshed = await updateLegacyLibrarySignature(matchResult.record.id, signature);
+            if (!metadataCurrent()) return;
+            activeLibraryRecord = refreshed || matchResult.record;
+            associationWriteSuppression.setLoadedLibrary(activeLibraryRecord.id);
+            establishAmbientProfileContext(activeLibraryRecord);
+            pendingLegacySignature = null;
 
-          const restoration = await restoreProfileForLoadedLibrary(activeLibraryRecord, loadToken);
-          if (restoration && !restoration.stale) {
-            const alreadyActive = restoration.result?.reason === "shared-target-already-active"
-              || restoration.result?.reason === "local-row-already-active";
-            if (restoration.switched || alreadyActive) {
-              recognizedProfileName = profile.getProfileName();
-              logLegacyIdentity("associated profile id", { profileId: profile.getProfileId() });
+            const restoration = await metadataForLoad((current) => restoreProfileForLoadedLibrary(activeLibraryRecord, loadToken, () => current() && metadataCurrent()));
+            if (restoration && !restoration.stale) {
+              const alreadyActive = restoration.result?.reason === "shared-target-already-active"
+                || restoration.result?.reason === "local-row-already-active";
+              if (restoration.switched || alreadyActive) {
+                recognizedProfileName = profile.getProfileName();
+                logLegacyIdentity("associated profile id", { profileId: profile.getProfileId() });
+              }
+              if (restoration.result?.action === "skip-and-ask") {
+                deferredLoadTimeOffer = {
+                  id: activeLibraryRecord.id,
+                  libraryId: restoration.libraryId,
+                  currentFactValue: restoration.currentFactValue,
+                };
+              }
+              if (restoration.result?.reason === "shared-target-unusable" && restoration.currentFactValue) {
+                // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+                // Preserve S4 when authoritative shared truth names a Profile
+                // this device does not yet have; never fall back to a stale row.
+                console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
+              } else if (restoration.result?.reason === "local-row-unusable" && activeLibraryRecord.profileId) {
+                console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
+              }
             }
-            if (restoration.result?.action === "skip-and-ask") {
-              deferredLoadTimeOffer = {
-                id: activeLibraryRecord.id,
-                libraryId: restoration.libraryId,
-                currentFactValue: restoration.currentFactValue,
-              };
-            }
-            if (restoration.result?.reason === "shared-target-unusable" && restoration.currentFactValue) {
-              // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
-              // Preserve S4 when authoritative shared truth names a Profile
-              // this device does not yet have; never fall back to a stale row.
-              console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
-            } else if (restoration.result?.reason === "local-row-unusable" && activeLibraryRecord.profileId) {
-              console.warn("[LEGACY-IDENTITY] Recognized library's associated Profile is unavailable.");
-            }
+          } else if (matchResult.status === "ambiguous") {
+            // Per spec: false negatives are preferable to guessing. Treated
+            // identically to "no match" from here on — unassociated, no
+            // profile switch, Associate button will offer to create a new
+            // record if the user proceeds.
+            logLegacyIdentity("ambiguous — refusing to guess", { candidateIds: matchResult.candidateIds });
+            activeLibraryRecord = null;
+            associationWriteSuppression.setLoadedLibrary(null);
+            pendingLegacySignature = signature;
+          } else {
+            logLegacyIdentity("no match — new/unrecognized library");
+            activeLibraryRecord = null;
+            associationWriteSuppression.setLoadedLibrary(null);
+            pendingLegacySignature = signature;
           }
-        } else if (matchResult.status === "ambiguous") {
-          // Per spec: false negatives are preferable to guessing. Treated
-          // identically to "no match" from here on — unassociated, no
-          // profile switch, Associate button will offer to create a new
-          // record if the user proceeds.
-          logLegacyIdentity("ambiguous — refusing to guess", { candidateIds: matchResult.candidateIds });
+        } catch (error) {
+          if (!metadataCurrent()) return;
+          // Identity resolution must never block the actual media load —
+          // worst case, this folder just isn't recognized this time.
+          console.warn("[LEGACY-IDENTITY] Could not resolve legacy folder identity.", error);
           activeLibraryRecord = null;
           associationWriteSuppression.setLoadedLibrary(null);
-          pendingLegacySignature = signature;
-        } else {
-          logLegacyIdentity("no match — new/unrecognized library");
-          activeLibraryRecord = null;
-          associationWriteSuppression.setLoadedLibrary(null);
-          pendingLegacySignature = signature;
+          pendingLegacySignature = null;
         }
-      } catch (error) {
-        // Identity resolution must never block the actual media load —
-        // worst case, this folder just isn't recognized this time.
-        console.warn("[LEGACY-IDENTITY] Could not resolve legacy folder identity.", error);
-        activeLibraryRecord = null;
-        associationWriteSuppression.setLoadedLibrary(null);
-        pendingLegacySignature = null;
-      }
+      });
     }
 
-    await applyPrimaryForCurrentSource();
+    await metadataForLoad((current) => applyPrimaryForCurrentSource({ isCurrent: current }));
     if (loadToken !== libraryLoadGeneration) return;
     finishLoadingItems(items);
-    await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
+    await metadataForLoad((current) => armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken, current));
+    if (loadToken !== libraryLoadGeneration) return;
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the legacy provider out from under it.
     __p1LegacySnapshot = [...items];
@@ -5699,48 +5731,62 @@ async function loadFiles(fileList, { isFolderPick = false, rootName = null } = {
     //  declined to recognize, simply has no shared libraryId and
     //  recordLibraryLoaded returns null — no identity is invented from a
     //  signature or a folder name.]
-    if (activeLibraryRecord && activeLibraryRecord.id) {
-      try {
-        await publishExplicitBindingForLoadedLibrary();
-        await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: activeLibraryRecord.name || rootName });
-        await recordPortableStructureForLoad(activeLibraryRecord.id, items);
-      } catch (error) {
-        console.warn("[SYNCV3] Could not record this legacy Library load/evidence in shared state.", error);
-      }
+    await metadataForLoad(async (metadataCurrent) => {
+      if (activeLibraryRecord && activeLibraryRecord.id) {
+        try {
+          await publishExplicitBindingForLoadedLibrary();
+          if (!metadataCurrent()) return;
+          await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: activeLibraryRecord.name || rootName });
+          if (!metadataCurrent()) return;
+          await recordPortableStructureForLoad(activeLibraryRecord.id, items);
+          if (!metadataCurrent()) return;
+        } catch (error) {
+          if (!metadataCurrent()) return;
+          console.warn("[SYNCV3] Could not record this legacy Library load/evidence in shared state.", error);
+        }
 
-      // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
-      // [WHY: a legacy pick has no handle, so no ancestry can be proven and this
-      //  root simply gets its own media scope — a single-root scope, for which
-      //  buildAliasIndexForLoad returns null and every read is a plain
-      //  delegation. That is a real limitation, not a degraded mode: structure
-      //  alone never auto-resolves, so a Legacy root is never merged into
-      //  another scope on a guess. Its evidence is still worth banking —
-      //  legacy-library-signature.js is the only place in this app that ever
-      //  retained historical path->size pairs.
-      //
-      //  The projection is not awaited here the way the FSA path awaits it: the
-      //  identity work for a legacy root cannot change what the first render
-      //  shows (no siblings, no proven prefix), so there is nothing to wait for.]
-      beginMediaIdentityForLoad({
-        rootId: activeLibraryRecord.id,
-        handle: null,
-        sourceKind: "legacy",
-        items,
-        rootName,
-        complete: true,
-      });
-    }
+        // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
+        // [WHY: a legacy pick has no handle, so no ancestry can be proven and this
+        //  root simply gets its own media scope — a single-root scope, for which
+        //  buildAliasIndexForLoad returns null and every read is a plain
+        //  delegation. That is a real limitation, not a degraded mode: structure
+        //  alone never auto-resolves, so a Legacy root is never merged into
+        //  another scope on a guess. Its evidence is still worth banking —
+        //  legacy-library-signature.js is the only place in this app that ever
+        //  retained historical path->size pairs.
+        //
+        //  The projection is not awaited here the way the FSA path awaits it: the
+        //  identity work for a legacy root cannot change what the first render
+        //  shows (no siblings, no proven prefix), so there is nothing to wait for.]
+        beginMediaIdentityForLoad({
+          rootId: activeLibraryRecord.id,
+          handle: null,
+          sourceKind: "legacy",
+          items,
+          rootName,
+          complete: true,
+        });
+      }
+    });
+  } catch (error) {
+    if (loadToken !== libraryLoadGeneration) return;
+    console.error("[MEDIA INTAKE] Could not load selected media.", error);
+    statusText.textContent = "Could not load selected media. Try another selection.";
+    fsaStatusText.textContent = statusText.textContent;
+    lastMobileLoadFailed = true;
   } finally {
-    isLoadingFiles = false;
-    setLoadingState(false);
-    // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] The authoritative
-    // completion point — after finishLoadingItems() (called above, inside the
-    // try block, only on success) has already run runtime.load(). This
-    // function has no catch block, so an exception here leaves
-    // lastMobileLoadFailed at whatever it already was; see that flag's own
-    // comment for why that asymmetry with the FSA path is left alone rather
-    // than expanded here.
-    syncMobileLoadState();
+    if (loadToken === libraryLoadGeneration) {
+      isLoadingFiles = false;
+      if (loadToken === libraryLoadGeneration && metadataForLoad.warning) {
+        fsaStatusText.textContent = [fsaStatusText.textContent, metadataForLoad.warning].filter(Boolean).join(" ");
+      }
+      setLoadingState(false);
+      // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] The authoritative
+      // completion point — after finishLoadingItems() (called above, inside the
+      // try block, only on success) has already run runtime.load(). This
+      // setup/provider errors are caught above and remain visible for retry.
+      syncMobileLoadState();
+    }
   }
 }
 
@@ -5767,122 +5813,114 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
   currentSessionIsUrlBacked = false;
   isLoadingFiles = true;
   const loadToken = ++libraryLoadGeneration;
-  stopAllPresentationAutomations();
-  clearReverseCurationSuggestion();
-  clearDeviceAwareMediaQuestion();
-  // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Same reset as
-  // loadFiles() above — covers a fresh pick AND every remembered-library
-  // resume call into this same function.
-  lastMobileLoadFailed = false;
-  syncMobileLoadState();
+  const metadataForLoad = createIntakeMetadataRunner(loadToken);
+  metadataForLoad.warning = libraryRecord?.intakeWarning || "";
+  try {
+    setLoadingState(true);
+    statusText.textContent = "Preparing folder?";
+    renderMobileLoadProgress("Preparing folder?", 0, null);
+    stopAllPresentationAutomations();
+    clearReverseCurationSuggestion();
+    clearDeviceAwareMediaQuestion();
+    // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Same reset as
+    // loadFiles() above — covers a fresh pick AND every remembered-library
+    // resume call into this same function.
+    lastMobileLoadFailed = false;
+    syncMobileLoadState();
 
-  // [P1-DIAGNOSTIC / TEMPORARY] Retains the root handle for the
-  // DevTools-callable probe at the bottom of this file — see that block's
-  // header comment for removal instructions. Not used by any production
-  // code path; safe to delete alongside that block.
-  __p1DiagnosticRootHandle = dirHandle;
-  __p1DiagnosticRootName = dirHandle.name;
+    // [P1-DIAGNOSTIC / TEMPORARY] Retains the root handle for the
+    // DevTools-callable probe at the bottom of this file — see that block's
+    // header comment for removal instructions. Not used by any production
+    // code path; safe to delete alongside that block.
+    __p1DiagnosticRootHandle = dirHandle;
+    __p1DiagnosticRootName = dirHandle.name;
 
-  // [LIBRARY-PROFILE-ASSOCIATION] Resolved BEFORE any of the staging/UI
-  // reset below, so a profile switch (if this library is associated with
-  // one) happens once, cleanly — the rest of this function's UI reset
-  // (tags grid, profile selector, etc., via profile.subscribe()
-  // elsewhere) already reflects the CORRECT profile while "Scanning
-  // folder…" is showing, rather than briefly showing the outgoing
-  // profile's state. See the breadcrumb at the top of
-  // library-registry.js for where this association is stored and why.
-  //
-  // NOTE: profile.listProfiles()/getProfileId() read ProfileStore's
-  // already-resolved in-memory state; switchProfile() itself internally
-  // awaits ProfileStore's own readiness, so this is safe even if called
-  // very early. The one path not fully covered is listProfiles() being
-  // read before that initial resolution completes (returns an empty
-  // list) — in practice unreachable here, since reaching this function
-  // at all requires either the FSA folder-picker round trip or a Recent
-  // Libraries click, both far slower than one IndexedDB open.
-  activeLibraryRecord = libraryRecord || null;
-  activeCassetteRecord = null;
-  activeCassetteCurationId = null;
-  sessionExplicitNoCuration = false;
-  associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
-  establishAmbientProfileContext(activeLibraryRecord);
-  activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
-  currentSourceKind = "fsa";
-  currentFolderPermissionState = "granted";
-  // [LIBRARY-PROFILE-UX / Phase 8.5] Same reset as loadFiles() — a new
-  // load starting means any pending Associate/Change-Profile navigation
-  // intent from a PREVIOUS load no longer applies.
-  pendingLibraryAssociationIntent = false;
-  fsaAssociateBtn.classList.add("hidden");
-  fsaAssociateBtn.disabled = true;
+    // Restore a remembered Curation before first paint, within the optional
+    // metadata budget. Busy status is already visible; a pending decision or
+    // Profile read must not prevent the folder scan or a subsequent intake.
+    activeLibraryRecord = libraryRecord || null;
+    activeCassetteRecord = null;
+    activeCassetteCurationId = null;
+    sessionExplicitNoCuration = false;
+    associationWriteSuppression.setLoadedLibrary(activeLibraryRecord?.id || null);
+    establishAmbientProfileContext(activeLibraryRecord);
+    activeLibraryDisplayName = dirHandle.name || (libraryRecord && libraryRecord.name) || "Loaded Media Folder";
+    currentSourceKind = "fsa";
+    currentFolderPermissionState = "granted";
+    // [LIBRARY-PROFILE-UX / Phase 8.5] Same reset as loadFiles() — a new
+    // load starting means any pending Associate/Change-Profile navigation
+    // intent from a PREVIOUS load no longer applies.
+    pendingLibraryAssociationIntent = false;
+    fsaAssociateBtn.classList.add("hidden");
+    fsaAssociateBtn.disabled = true;
 
-  // [Phase 8.5-2] Set for an associated library that was genuinely
-  // recognized: either an existing folder was re-picked, or a Recent
-  // Library resumed and switched profiles. A newly registered folder is
-  // not described as recognized merely because it has a record now.
-  let recognizedProfileName = null;
-  let deferredLoadTimeOffer = null;
+    // [Phase 8.5-2] Set for an associated library that was genuinely
+    // recognized: either an existing folder was re-picked, or a Recent
+    // Library resumed and switched profiles. A newly registered folder is
+    // not described as recognized merely because it has a record now.
+    let recognizedProfileName = null;
+    let deferredLoadTimeOffer = null;
 
-  if (activeLibraryRecord && activeLibraryRecord.id) {
-    const restoration = await restoreProfileForLoadedLibrary(activeLibraryRecord, loadToken);
-    if (restoration && !restoration.stale) {
-      const alreadyActive = restoration.result?.reason === "shared-target-already-active"
-        || restoration.result?.reason === "local-row-already-active";
-      if (restoration.switched || (activeLibraryRecord.wasExisting && alreadyActive)) {
-        recognizedProfileName = profile.getProfileName();
-      }
-      if (restoration.result?.action === "skip-and-ask") {
-        deferredLoadTimeOffer = {
-          id: activeLibraryRecord.id,
-          libraryId: restoration.libraryId,
-          currentFactValue: restoration.currentFactValue,
-        };
-      }
-      if ((restoration.result?.reason === "shared-target-unusable" && restoration.currentFactValue)
-        || (restoration.result?.reason === "local-row-unusable" && activeLibraryRecord.profileId)) {
-        // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
-        // Never guess when the authoritative shared target (or Rule 0 local
-        // fallback) is unavailable. Preserve S4/local identity for recovery.
-        console.warn(
-          `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" is associated with a Profile that is unavailable.`
-        );
+    if (activeLibraryRecord && activeLibraryRecord.id) {
+      const restoration = await metadataForLoad((current) => restoreProfileForLoadedLibrary(activeLibraryRecord, loadToken, current));
+      if (loadToken !== libraryLoadGeneration) return;
+      if (restoration && !restoration.stale) {
+        const alreadyActive = restoration.result?.reason === "shared-target-already-active"
+          || restoration.result?.reason === "local-row-already-active";
+        if (restoration.switched || (activeLibraryRecord.wasExisting && alreadyActive)) {
+          recognizedProfileName = profile.getProfileName();
+        }
+        if (restoration.result?.action === "skip-and-ask") {
+          deferredLoadTimeOffer = {
+            id: activeLibraryRecord.id,
+            libraryId: restoration.libraryId,
+            currentFactValue: restoration.currentFactValue,
+          };
+        }
+        if ((restoration.result?.reason === "shared-target-unusable" && restoration.currentFactValue)
+          || (restoration.result?.reason === "local-row-unusable" && activeLibraryRecord.profileId)) {
+          // [SYNCV3 / STAGE-07 / ASSOCIATION-STATE]
+          // Never guess when the authoritative shared target (or Rule 0 local
+          // fallback) is unavailable. Preserve S4/local identity for recovery.
+          console.warn(
+            `[LIBRARY-REGISTRY] "${activeLibraryRecord.name}" is associated with a Profile that is unavailable.`
+          );
+        }
       }
     }
-  }
 
-  bumpGalleryGeneration();
-  runtime.clear();
-  clearViewerNode();
-  exitFillMode();
-  setLoadingState(true);
-  statusText.textContent = "Scanning folder…";
-  // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] total is null: the
-  // FSA scan has no total until it finishes, so the takeover's count line
-  // stays hidden and its activity bar runs the indeterminate sweep instead
-  // of a fabricated percentage.
-  renderMobileLoadProgress("Scanning folder…", 0, null);
-  // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] Same reasoning as the
-  // legacy-picker load path above — a new media load clears any waypoint.
-  recentHideUndo = null;
-  syncUndoHideButton();
-  // [FSA] Switching TO the FSA path — release whatever the local <input>
-  // picker had loaded.
-  provider.dispose();
-  remoteProvider.dispose();
-  remoteStatusText.textContent = "";
-  resetMediaRenderOutcomes();
+    bumpGalleryGeneration();
+    runtime.clear();
+    clearViewerNode();
+    exitFillMode();
+    setLoadingState(true);
+    statusText.textContent = "Scanning folder…";
+    // [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER] total is null: the
+    // FSA scan has no total until it finishes, so the takeover's count line
+    // stays hidden and its activity bar runs the indeterminate sweep instead
+    // of a fabricated percentage.
+    renderMobileLoadProgress("Scanning folder…", 0, null);
+    // [UI-REDESIGN / STAGE 6] [PM-HIDE-UNDO-WAYPOINT] Same reasoning as the
+    // legacy-picker load path above — a new media load clears any waypoint.
+    recentHideUndo = null;
+    syncUndoHideButton();
+    // [FSA] Switching TO the FSA path — release whatever the local <input>
+    // picker had loaded.
+    provider.dispose();
+    remoteProvider.dispose();
+    remoteStatusText.textContent = "";
+    resetMediaRenderOutcomes();
 
-  fsaStatusText.textContent = "";
+    fsaStatusText.textContent = "";
 
-  // [LIBRARY-REGISTRY] Reliability requirement: given the diagnosed FSA
-  // traversal gap (see library-registry.js's header comment / the
-  // investigation this came out of), a resume must never silently trust
-  // whatever count a fresh walk returns. Compare against what this
-  // library's registry record last reported, if anything.
-  const previousCount =
-    activeLibraryRecord && typeof activeLibraryRecord.itemCount === "number" ? activeLibraryRecord.itemCount : null;
+    // [LIBRARY-REGISTRY] Reliability requirement: given the diagnosed FSA
+    // traversal gap (see library-registry.js's header comment / the
+    // investigation this came out of), a resume must never silently trust
+    // whatever count a fresh walk returns. Compare against what this
+    // library's registry record last reported, if anything.
+    const previousCount =
+      activeLibraryRecord && typeof activeLibraryRecord.itemCount === "number" ? activeLibraryRecord.itemCount : null;
 
-  try {
     const result = await fsaProvider.loadFromDirectoryHandle(dirHandle, {
       batchSize: BATCH_SIZE,
       onProgress: (loaded) => {
@@ -5952,10 +5990,11 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       preparedMediaIdentity?.portableCurrentSample || null
     );
 
-    await applyPrimaryForCurrentSource();
+    await metadataForLoad((current) => applyPrimaryForCurrentSource({ isCurrent: current }));
     if (loadToken !== libraryLoadGeneration) return;
     finishLoadingItems(result.items);
-    await armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken);
+    await metadataForLoad((current) => armDeferredLoadTimeOffer(deferredLoadTimeOffer, loadToken, current));
+    if (loadToken !== libraryLoadGeneration) return;
     // [P1-DIAGNOSTIC / TEMPORARY] Snapshot BEFORE anything later in this
     // session can dispose() the FSA provider out from under it.
     __p1FsaSnapshot = [...result.items];
@@ -5975,42 +6014,50 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
       rootHandleName: dirHandle.name,
     };
 
-    if (activeLibraryRecord && activeLibraryRecord.id) {
-      try {
-        await touchLibrary(activeLibraryRecord.id, { itemCount: count });
-      } catch (error) {
-        // Doesn't affect this session's already-loaded library — only
-        // means the registry's remembered count/timestamp is stale.
-        console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
-      }
-
-      // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
-      // [WHY: THE meaningful-load moment, and deliberately the same one
-      //  touchLibrary already uses — the scan finished and this device knows
-      //  which local Library it produced. Gated on `!result.incomplete` because
-      //  a scan that stopped early is exactly what the provider reports as NOT a
-      //  complete load; publishing "last loaded" for it would tell other devices
-      //  this Library was opened successfully when it was not.
-      //
-      //  recordLibraryLoaded reads the shared libraryId and never mints one, so
-      //  a folder that has never been explicitly associated is simply not
-      //  catalogued (returns null) rather than acquiring a synchronized identity
-      //  from being opened — Stage D3's rule, preserved. It writes locally and
-      //  announces to sibling tabs; Drive is the scheduler's job, not this
-      //  call's.]
-      if (!result.incomplete) {
+    await metadataForLoad(async (metadataCurrent) => {
+      if (activeLibraryRecord && activeLibraryRecord.id) {
         try {
-          await publishExplicitBindingForLoadedLibrary();
-          await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: dirHandle.name });
-          await recordPortableStructureForLoad(activeLibraryRecord.id, result.items);
+          await touchLibrary(activeLibraryRecord.id, { itemCount: count });
+            if (!metadataCurrent()) return;
         } catch (error) {
-          console.warn("[SYNCV3] Could not record this Library load/evidence in shared state.", error);
+          if (!metadataCurrent()) return;
+          // Doesn't affect this session's already-loaded library — only
+          // means the registry's remembered count/timestamp is stale.
+          console.warn("[LIBRARY-REGISTRY] Could not update this library's saved record.", error);
         }
+
+        // [SYNCV3 / STAGE-04B / SHARED-LIBRARY-RECORD]
+        // [WHY: THE meaningful-load moment, and deliberately the same one
+        //  touchLibrary already uses — the scan finished and this device knows
+        //  which local Library it produced. Gated on `!result.incomplete` because
+        //  a scan that stopped early is exactly what the provider reports as NOT a
+        //  complete load; publishing "last loaded" for it would tell other devices
+        //  this Library was opened successfully when it was not.
+        //
+        //  recordLibraryLoaded reads the shared libraryId and never mints one, so
+        //  a folder that has never been explicitly associated is simply not
+        //  catalogued (returns null) rather than acquiring a synchronized identity
+        //  from being opened — Stage D3's rule, preserved. It writes locally and
+        //  announces to sibling tabs; Drive is the scheduler's job, not this
+        //  call's.]
+        if (!result.incomplete) {
+          try {
+            await publishExplicitBindingForLoadedLibrary();
+            if (!metadataCurrent()) return;
+            await profile.recordLibraryLoaded(activeLibraryRecord.id, { name: dirHandle.name });
+            if (!metadataCurrent()) return;
+            await recordPortableStructureForLoad(activeLibraryRecord.id, result.items);
+            if (!metadataCurrent()) return;
+          } catch (error) {
+          if (!metadataCurrent()) return;
+            console.warn("[SYNCV3] Could not record this Library load/evidence in shared state.", error);
+          }
+        }
+
+        await renderRecentLibraries();
       }
 
-      await renderRecentLibraries();
-    }
-
+    });
     // [MEDIA-ID / STAGE-02 / LOCAL-PROJECTION]
     // The evidence pass is started by beginMediaIdentityForLoad() above, off the
     // same resolved scope, so the ancestry probing and any re-base happen
@@ -6025,8 +6072,10 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // button, since a click would have nothing to associate).
     syncAssociateButtonVisibility();
   } catch (error) {
+    if (loadToken !== libraryLoadGeneration) return;
     console.error("[FSA] Failed to load the selected folder.", error);
     fsaStatusText.textContent = `Could not load that folder: ${error.message}`;
+    statusText.textContent = fsaStatusText.textContent;
     // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] The one genuine,
     // already-truthful failure path this loader has — reached only when zero
     // items were accepted. Keeps the mobile Live-Status-only view up,
@@ -6034,14 +6083,19 @@ async function loadFromFsaHandle(dirHandle, libraryRecord) {
     // to the ordinary empty-state UI.
     lastMobileLoadFailed = true;
   } finally {
-    isLoadingFiles = false;
-    setLoadingState(false);
-    // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Authoritative
-    // completion point for this loader too — after finishLoadingItems() (only
-    // reached on success, inside the try block above) has already run
-    // runtime.load(), or after the catch above has already recorded a
-    // genuine failure.
-    syncMobileLoadState();
+    if (loadToken === libraryLoadGeneration) {
+      isLoadingFiles = false;
+      if (loadToken === libraryLoadGeneration && metadataForLoad.warning) {
+        fsaStatusText.textContent = [fsaStatusText.textContent, metadataForLoad.warning].filter(Boolean).join(" ");
+      }
+      setLoadingState(false);
+      // [UI-REDESIGN / STAGE 6] [MOBILE-LOAD-STATUS-HANDOFF] Authoritative
+      // completion point for this loader too — after finishLoadingItems() (only
+      // reached on success, inside the try block above) has already run
+      // runtime.load(), or after the catch above has already recorded a
+      // genuine failure.
+      syncMobileLoadState();
+    }
   }
 }
 
@@ -6061,6 +6115,8 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
     return;
   }
 
+  const pickedGeneration = libraryLoadGeneration;
+  fsaStatusText.textContent = "Inspecting selected folder?";
   let folderIntake;
   try {
     folderIntake = await readRememberedFolder(dirHandle);
@@ -6093,17 +6149,23 @@ fsaChooseFolderBtn.addEventListener("click", async () => {
   // [LIBRARY-REGISTRY] addOrUpdateLibrary() deduplicates via the real FSA
   // isSameEntry() identity check, so re-picking a folder that's already
   // registered updates that record instead of creating a duplicate entry.
-  let record;
-  try {
-    record = await addOrUpdateLibrary(dirHandle);
-    await renderRecentLibraries();
-  } catch (error) {
-    // Persistence failing doesn't block using the folder THIS session —
-    // it just won't be resumable next time. Fall back to an in-memory-only
-    // record so the load below still has something to report drift against.
-    console.warn("[LIBRARY-REGISTRY] Could not save this folder for future sessions.", error);
-    record = { id: null, name: dirHandle.name, itemCount: null };
-  }
+  fsaStatusText.textContent = "Remembering selected folder?";
+  const saved = await runIntakeMetadata(async (current) => {
+    const record = await addOrUpdateLibrary(dirHandle);
+    if (!current()) return null;
+    renderRecentLibraries().catch((error) => console.warn("[LIBRARY-REGISTRY] Could not refresh Saved Libraries.", error));
+    return record;
+  }, {
+    isCurrent: () => pickedGeneration === libraryLoadGeneration,
+    onUnavailable: (error) => console.warn("[LIBRARY-REGISTRY] Could not finish remembering the selected folder.", error),
+  });
+  if (pickedGeneration !== libraryLoadGeneration) return;
+  // Unknown registry state cannot be treated as a proven unassigned source.
+  // Scan safely with the current Curation; do not invent shared identity.
+  const record = saved || {
+    id: null, name: dirHandle.name, itemCount: null, intakeMetadataUnavailable: true,
+    intakeWarning: "Could not finish remembering this folder. Using the current Curation for this session; retry Remember Folder to save its setup.",
+  };
 
   await loadFromFsaHandle(dirHandle, record);
 });
@@ -11908,7 +11970,7 @@ function isLibraryLoadCurrent(loadToken, libraryRecord) {
     && (activeLibraryRecord.libraryId || null) === (libraryRecord?.libraryId || null);
 }
 
-async function restoreProfileForLoadedLibrary(libraryRecord, loadToken) {
+async function restoreProfileForLoadedLibrary(libraryRecord, loadToken, current = () => true) {
   try {
     const outcome = await applyLoadTimeProfileRestoration({
       libraryRecord,
@@ -11917,8 +11979,8 @@ async function restoreProfileForLoadedLibrary(libraryRecord, loadToken) {
       getActiveProfileId: () => profile.getProfileId(),
       loadDecision: loadAmbientProfileDecision,
       deleteDecision: deleteAmbientProfileDecision,
-      switchProfile: (target) => profile.switchProfile(target),
-      isCurrent: () => isLibraryLoadCurrent(loadToken, libraryRecord),
+      switchProfile: (target) => profile.switchProfile(target, { isCurrent: current }),
+      isCurrent: () => current() && isLibraryLoadCurrent(loadToken, libraryRecord),
     });
     if (outcome.decisionDeleteError) {
       console.warn("[SYNCV3 / STAGE-09] Could not clear a stale local association decision.", outcome.decisionDeleteError);
@@ -11933,8 +11995,8 @@ async function restoreProfileForLoadedLibrary(libraryRecord, loadToken) {
   }
 }
 
-async function armDeferredLoadTimeOffer(deferredOffer, loadToken) {
-  if (!deferredOffer || !isLibraryLoadCurrent(loadToken, deferredOffer)) return false;
+async function armDeferredLoadTimeOffer(deferredOffer, loadToken, current = () => true) {
+  if (!current() || !deferredOffer || !isLibraryLoadCurrent(loadToken, deferredOffer)) return false;
   let decision;
   try {
     decision = await loadAmbientProfileDecision(deferredOffer.libraryId);
@@ -11942,7 +12004,7 @@ async function armDeferredLoadTimeOffer(deferredOffer, loadToken) {
     console.warn("[SYNCV3 / STAGE-09] Could not re-read LATER before arming its load-time offer.", error);
     return false;
   }
-  if (!isLibraryLoadCurrent(loadToken, deferredOffer)) return false;
+  if (!current() || !isLibraryLoadCurrent(loadToken, deferredOffer)) return false;
   const associations = profile.getAssociations();
   const hasSharedFact = Object.prototype.hasOwnProperty.call(associations, deferredOffer.libraryId);
   const currentFactValue = hasSharedFact ? associations[deferredOffer.libraryId]?.v ?? null : null;

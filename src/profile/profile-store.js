@@ -1662,8 +1662,9 @@ export class ProfileStore {
   // profile it was queued for, not on whatever becomes active afterward.
   //
   // No-op if profileId is already active, or isn't a known profile.
-  async switchProfile(profileId) {
+  async switchProfile(profileId, { isCurrent } = {}) {
     await this.#ready;
+    if (typeof isCurrent === "function") return this.#switchProfileForIntake(profileId, isCurrent);
     if (!profileId || profileId === this.#profileId) return false;
 
     const target = this.#profiles.find((candidate) => candidate.id === profileId);
@@ -1724,6 +1725,50 @@ export class ProfileStore {
     await this.#adoptFacts(incomingFacts);
 
     this.#emit();
+    return true;
+  }
+
+  // Intake can abandon optional Curation work when its source/deadline changes.
+  // Resolve every external read before touching the active Profile, then make
+  // the final guard and in-memory handoff without an intervening await. The
+  // ordinary explicit switch path above retains its existing semantics.
+  async #switchProfileForIntake(profileId, isCurrent) {
+    if (!profileId || profileId === this.#profileId || !isCurrent()) return false;
+    if (!this.#profiles.some((entry) => entry.id === profileId)) return false;
+    const outgoingProfileId = this.#profileId;
+    const { items, tags, facts } = await loadProfileData(profileId);
+    await this.#identity.ready;
+    if (!isCurrent()) return false;
+    await this.#drainPendingWrites();
+    const target = this.#profiles.find((entry) => entry.id === profileId);
+    if (!target || !isCurrent() || this.#profileId !== outgoingProfileId) return false;
+
+    this.#recordsByPath = new Map();
+    this.#tags = [];
+    this.#changedBeforeLoad = new Set();
+    this.#tagIdsChangedBeforeLoad = new Set();
+    this.#replaceBeforeLoad = false;
+    this.#facts = { items: {}, tags: {} };
+    this.#profileId = target.id;
+    this.#profileName = target.name || DEFAULT_PROFILE_NAME;
+    this.#masterFolder = target.masterFolder || null;
+    for (const [path, record] of Object.entries(items)) {
+      if (typeof path === "string" && path && isPlainObject(record)) this.#setRecord(path, record);
+    }
+    for (const tag of tags) {
+      if (isPlainObject(tag) && typeof tag.id === "string") this.#tags.push({ ...tag });
+    }
+    // identity.ready was resolved above, so adoption cannot wait on an
+    // external dependency after the active Profile pointer has changed.
+    await this.#adoptFacts(facts);
+    this.#emit();
+    if (this.#profileId === target.id) {
+      try {
+        await this.#saveRegistryAndAnnounce({ activeProfileId: target.id, profiles: this.#profiles });
+      } catch (error) {
+        console.warn("Could not save the active profile pointer after intake restoration.", error);
+      }
+    }
     return true;
   }
 

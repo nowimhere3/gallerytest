@@ -94,7 +94,7 @@ eq(Object.keys(assoc).filter((k) => k !== updated.libraryId).length, 0, 'no asso
 const src = fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const hooks = src.split('await publishExplicitBindingForLoadedLibrary();');
 eq(hooks.length - 1, 2, 'FSA and legacy load paths both publish');
-ok(hooks.slice(1).every((tail) => /^\s*await profile\.recordLibraryLoaded\(/.test(tail)), 'publication precedes recordLibraryLoaded');
+ok(hooks.slice(1).every((tail) => /^\s*if \(!metadataCurrent\(\)\) return;\s*await profile\.recordLibraryLoaded\(/.test(tail)), 'publication precedes recordLibraryLoaded');
 ok(src.includes('associate: associateThroughSyncV2'), 'publication uses the single association seam');
 
 console.log(`ok    ${n} assertion(s) passed - explicit local bindings reach V3; fallback/open never do.`);

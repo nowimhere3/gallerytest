@@ -144,6 +144,7 @@ function harness({ loadHls } = {}) {
     stopAllPresentationAutomations() {}, syncAutomationsActiveIndicator() {},
     runtime, hlsPlaybackAdapter, tsPlaybackAdapter, extractRemoteUrls,
     applyPrimaryForCurrentSource: async () => {},
+    createIntakeMetadataRunner: () => Object.assign(async fn => fn(() => true), {warning:""}),
     remoteProvider: new RemoteUrlProvider(), provider: disposable(), fsaProvider: disposable(),
     viewerStage: new FakeNode("div"), viewerEmpty: new FakeNode("div"), appShell: new FakeNode("div"),
     clearBtn: new FakeNode("button"),

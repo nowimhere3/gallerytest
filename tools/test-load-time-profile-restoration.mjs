@@ -148,7 +148,7 @@ for (const pathName of ["legacy", "FSA"]) {
 // observer remains execution-free.
 {
   const main = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-  const callCount = (main.match(/restoreProfileForLoadedLibrary\(activeLibraryRecord, loadToken\)/g) || []).length;
+  const callCount = (main.match(/restoreProfileForLoadedLibrary\(activeLibraryRecord, loadToken,/g) || []).length;
   assert(callCount === 2, "legacy and FSA each invoke the one load-time restoration boundary");
   const observer = fs.readFileSync(new URL("../src/profile/ambient-profile-observer.js", import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
