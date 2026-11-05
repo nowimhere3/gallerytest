@@ -2586,6 +2586,28 @@ button:not(:disabled):hover,
   display: none;
 }
 
+.viewer-loading-overlay {
+  gap: 4px;
+  padding: 6px 24px;
+  color: #00ff00;
+}
+
+.viewer-loading-overlay p {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer-loading-phase {
+  font-weight: 600;
+}
+
+.viewer-loading-bar {
+  font-family: "Courier New", ui-monospace, monospace;
+  letter-spacing: 0.12em;
+}
+
 @media (min-width: 981px) {
   .app-shell[data-mobile-load-state="loading"] .viewer-loading-overlay {
     display: flex;

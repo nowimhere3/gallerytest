@@ -501,6 +501,9 @@ const mobileLoadCountText = document.getElementById("mobile-load-count-text");
 // it (verified: one capture, one CSS rule, one markup line).
 const mobileLoadCanvas = document.getElementById("mobile-load-canvas");
 const viewerLoadingCanvas = document.getElementById("viewer-loading-canvas");
+const viewerLoadingPhase = document.getElementById("viewer-loading-phase");
+const viewerLoadingBar = document.getElementById("viewer-loading-bar");
+const viewerLoadingCount = document.getElementById("viewer-loading-count");
 const warmStartOverlay = document.getElementById("warm-start-overlay");
 const warmStartCanvas = document.getElementById("warm-start-canvas");
 const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
@@ -1901,25 +1904,33 @@ let mobileLoadLoadedCount = 0;
 const MOBILE_ACTIVITY_BAR_WIDTH = 10;
 
 function renderMobileLoadProgress(primaryText, loaded, total) {
+  const previouslyKnownTotal = mobileLoadHasKnownTotal;
   mobileLoadPrimaryText.textContent = primaryText;
+  // Both presentations consume the loader's same batch progress; no second
+  // counter or estimated total. Live Status retains accessibility authority.
+  viewerLoadingPhase.textContent = primaryText;
   mobileLoadHasKnownTotal = typeof total === "number" && total > 0;
   mobileLoadLoadedCount = typeof loaded === "number" && loaded > 0 ? loaded : 0;
 
   if (mobileLoadHasKnownTotal) {
     mobileLoadCountText.textContent = `${loaded.toLocaleString()} / ${total.toLocaleString()} media files`;
+    viewerLoadingCount.textContent = mobileLoadCountText.textContent;
     mobileLoadCountText.classList.remove("hidden");
     renderMobileActivityBarRatio(loaded / total);
   } else {
+    viewerLoadingCount.textContent = `${mobileLoadLoadedCount.toLocaleString()} media files found so far`;
     mobileLoadCountText.textContent = "";
     mobileLoadCountText.classList.add("hidden");
-    // Left as whatever the last indeterminate sweep tick drew — the next
-    // tick (every 550ms while animating) repaints it regardless.
+    // A new unknown-total scan must not retain a previous load's full ratio
+    // bar, especially when reduced motion disables subsequent sweep ticks.
+    if (previouslyKnownTotal) renderMobileActivityBarSweep(0);
   }
 }
 
 function renderMobileActivityBarRatio(ratio) {
   const filled = Math.round(Math.max(0, Math.min(1, ratio)) * MOBILE_ACTIVITY_BAR_WIDTH);
   mobileLoadActivityBar.textContent = `[${"▓".repeat(filled)}${"░".repeat(MOBILE_ACTIVITY_BAR_WIDTH - filled)}]`;
+  viewerLoadingBar.textContent = mobileLoadActivityBar.textContent;
 }
 
 function renderMobileActivityBarSweep(tick) {
@@ -1929,6 +1940,7 @@ function renderMobileActivityBarSweep(tick) {
   const cells = new Array(MOBILE_ACTIVITY_BAR_WIDTH).fill("░");
   for (let i = 0; i < windowSize; i++) cells[pos + i] = "▓";
   mobileLoadActivityBar.textContent = `[${cells.join("")}]`;
+  viewerLoadingBar.textContent = mobileLoadActivityBar.textContent;
 }
 
 // ---- [V2-POLISH / MICRO-ARCADE-CANVAS] [V2-POLISH / STARFIGHTER-PROTOTYPE] -
