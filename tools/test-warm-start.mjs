@@ -38,7 +38,7 @@ const mainSource = fs.readFileSync(new URL("../src/main.js", import.meta.url), "
 const htmlSource = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 assert(mainSource.includes("const PLAN_LENGTH = 6;") && mainSource.includes("const MAX_PREPARED = 6;"), "six-item plan and prepared caps remain frozen");
 assert(mainSource.includes("const MAX_CONCURRENT_WARMING = 2;"), "warming concurrency remains exactly two");
-assert(mainSource.includes("function startArcadeAnimation(canvas)") && mainSource.includes("startArcadeAnimation(mobileLoadCanvas);"), "the existing mobile takeover passes its original canvas to the shared engine");
+assert(mainSource.includes("function startArcadeAnimation(canvas)") && mainSource.includes("isCompactViewport() ? mobileLoadCanvas : viewerLoadingCanvas"), "loading routes the compact and viewer canvases through the shared engine");
 assert(mainSource.includes('window.matchMedia("(prefers-reduced-motion: reduce)").matches'), "the shared arcade engine retains reduced-motion handling");
 assert(mainSource.includes("entry.loadGeneration === libraryLoadGeneration") && mainSource.includes("plannedItems.includes(item)"), "warm-start readiness validates generations and current plan membership");
 assert((mainSource.match(/currentSessionIsUrlBacked = true;/g) || []).length === 1, "URL-backed provenance is written by one converged remote loader");

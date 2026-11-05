@@ -2151,7 +2151,8 @@ button:not(:disabled):hover,
   background: #050814;
 }
 
-#warm-start-canvas {
+#warm-start-canvas,
+#viewer-loading-canvas {
   display: block;
   width: 480px;
   max-width: 100%;
@@ -2578,14 +2579,18 @@ button:not(:disabled):hover,
   display: none;
 }
 
-/* [UI-REDESIGN / STAGE 6] [MOBILE-LIVE-STATUS-TAKEOVER]
-   Same DESKTOP-OFF-by-default pattern as the sheet parts above, for the same
-   reason: the takeover composition is invisible everywhere until the compact
-   block at the end of this file explicitly turns it on for
-   [data-mobile-load-state="loading"] specifically — never for "failed" (see
-   that state's own comment) and never on desktop. */
-.mobile-load-takeover {
+/* Compact keeps its takeover; desktop loading covers only the viewer.
+   Existing status fields remain the text/accessibility authority. */
+.mobile-load-takeover,
+.viewer-loading-overlay {
   display: none;
+}
+
+@media (min-width: 981px) {
+  .app-shell[data-mobile-load-state="loading"] .viewer-loading-overlay {
+    display: flex;
+    pointer-events: none;
+  }
 }
 
 .playback-popover {

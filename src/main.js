@@ -500,6 +500,7 @@ const mobileLoadCountText = document.getElementById("mobile-load-count-text");
 // longer exists. Nothing outside this file's animation code ever referenced
 // it (verified: one capture, one CSS rule, one markup line).
 const mobileLoadCanvas = document.getElementById("mobile-load-canvas");
+const viewerLoadingCanvas = document.getElementById("viewer-loading-canvas");
 const warmStartOverlay = document.getElementById("warm-start-overlay");
 const warmStartCanvas = document.getElementById("warm-start-canvas");
 const mobileLoadAtmosphereText = document.getElementById("mobile-load-atmosphere-text");
@@ -4583,9 +4584,24 @@ function stopMobileTakeoverTextTicker() {
 // Both are idempotent; every exit path calls stop unconditionally rather
 // than tracking whether reduced-motion left a timer unset.
 function startMobileTakeoverAnimation() {
+  // Loading owns the shared canvas engine until intake settles. Retire any
+  // Fill Mode warm-up before rebinding it to the visible loading surface.
+  if (warmStartState === "warming") finishWarmStart("media-load", 0);
+  stopArcadeAnimation();
   startMobileTakeoverTextTicker();
-  startArcadeAnimation(mobileLoadCanvas);
+  syncLoadingArcadeCanvas();
 }
+
+// One engine follows the visible loading surface, including viewport changes.
+function syncLoadingArcadeCanvas() {
+  if (!isLoadingFiles) return;
+  const canvas = isCompactViewport() ? mobileLoadCanvas : viewerLoadingCanvas;
+  if (arcadeCanvas === canvas && arcadeCurrentScene) return;
+  stopArcadeAnimation();
+  startArcadeAnimation(canvas);
+}
+
+window.matchMedia("(max-width: 980px)").addEventListener("change", syncLoadingArcadeCanvas);
 
 function stopMobileTakeoverAnimation() {
   stopMobileTakeoverTextTicker();
@@ -8835,7 +8851,7 @@ function finishWarmStart(reason, preparedCount) {
     warmStartTimeoutId = null;
   }
   warmStartOverlay.classList.add("hidden");
-  stopArcadeAnimation();
+  if (arcadeCanvas === warmStartCanvas) stopArcadeAnimation();
   console.info("[PM WARM START] Release", {
     reason,
     elapsed_ms: Math.round(elapsedMs),
@@ -8864,6 +8880,7 @@ function cancelWarmStart() {
 }
 
 function maybeBeginWarmStart() {
+  if (isLoadingFiles) return;
   if (warmStartState === "warming") return;
   const item = runtime.getState().currentItem;
   if (!fillModeActive || !currentSessionIsUrlBacked || item?.kind !== "image") return;
