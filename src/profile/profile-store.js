@@ -2853,6 +2853,36 @@ export class ProfileStore {
     }
   }
 
+  // [SYNCV3 / STAGE-11 / ACTIVE-CURATION-NAME-REGISTRY-SYNC]
+  // [WHY: a Curation's name lives in TWO places that every reader treats as one:
+  //  the registry entry (#profiles[i].name - what listProfiles() returns, and so
+  //  what the Primary dropdown, "This Device Is Using", the Media Library picker
+  //  and every collision check show) and #profileName (what getProfileName()
+  //  returns, and so what the Rename dialog and status text show). Synced name
+  //  facts reached #profileName for the ACTIVE Curation but never its registry
+  //  entry: adoptMergedReplica updates entry.name only for NON-active Curations,
+  //  and #applyFactsToLocal only touched #profileName. So once a name fact for
+  //  the active Curation changed, the pickers kept the old name for good -
+  //  through hard refreshes too, because a reload restores #profileName from the
+  //  (stale) registry, #adoptFacts then re-heals only #profileName, and the
+  //  registry is never rewritten. Rename "did nothing" for the same reason: it
+  //  compares against #profileName, which was already right.
+  //
+  //  Reconciled on EVERY call, not only when the name diff fires: the live
+  //  failure had #profileName already healed (so the diff was empty) while the
+  //  registry was still stale. The equality check makes it free when nothing is
+  //  wrong; the registry write is the same one setProfileName uses, so sibling
+  //  tabs are announced through the existing path. The fact is the authority -
+  //  nothing here mints a stamp or changes a fact.]
+  #syncActiveRegistryName() {
+    if (!this.#profileId) return false;
+    const index = this.#profiles.findIndex((candidate) => candidate.id === this.#profileId);
+    if (index < 0 || this.#profiles[index].name === this.#profileName) return false;
+    this.#profiles[index] = { ...this.#profiles[index], name: this.#profileName, updatedAt: Date.now() };
+    this.#persistProfileMeta();
+    return true;
+  }
+
   #applyFactsToLocal(facts) {
     const diff = diffFactsAgainstProfileData(facts, {
       name: this.#profileName,
@@ -2866,6 +2896,9 @@ export class ProfileStore {
       this.#profileName = diff.profileName;
       changed = true;
     }
+
+    // Independent of the diff above on purpose: see #syncActiveRegistryName.
+    if (this.#syncActiveRegistryName()) changed = true;
 
     for (const tag of diff.tags.add) {
       this.#tags.push({ id: tag.id, name: tag.name });
